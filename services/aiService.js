@@ -17,7 +17,7 @@ function getSystemPrompt(moduleName = 'default') {
 
 async function completeChat({ messages, moduleName = 'default', model = 'deepseek-chat', temperature = 0.2 }) {
   if (!env.deepseekApiKey) {
-    const error = new Error('后端未配置 DEEPSEEK_API_KEY');
+    const error = new Error('当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。');
     error.status = 503;
     throw error;
   }

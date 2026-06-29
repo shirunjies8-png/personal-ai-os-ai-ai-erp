@@ -19,7 +19,7 @@ module.exports = async function handler(req, res) {
   } catch (error) {
     return res.status(error.status || 500).json({
       ok: false,
-      message: error.message || 'AI 调用失败'
+      message: error.message || '当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。'
     });
   }
 };
