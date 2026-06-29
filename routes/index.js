@@ -11,6 +11,7 @@ const mailRoutes = require('./mailRoutes');
 const feedbackRoutes = require('./feedbackRoutes');
 const logRoutes = require('./logRoutes');
 const excelRoutes = require('./excelRoutes');
+const chatRoutes = require('./chatRoutes');
 
 const router = express.Router();
 
@@ -25,6 +26,7 @@ router.use('/mail', mailRoutes);
 router.use('/feedback', feedbackRoutes);
 router.use('/logs', logRoutes);
 router.use('/excel', excelRoutes);
+router.use('/chat', chatRoutes);
 
 router.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'personal-ai-os-api', time: new Date().toISOString() });

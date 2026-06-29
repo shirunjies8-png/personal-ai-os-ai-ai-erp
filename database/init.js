@@ -106,9 +106,23 @@ CREATE TABLE IF NOT EXISTS mail_records (
 `);
 
 async function seed() {
-  if (userModel.findByEmail(env.defaultAdminEmail)) return;
-  const enterpriseId = uuidv4();
   const now = new Date().toISOString();
+  const existing = userModel.findByEmail(env.defaultAdminEmail);
+  if (existing) {
+    enterpriseModel.updateById(existing.enterprise_id, {
+      name: env.defaultEnterpriseName,
+      contact_name: '系统管理员',
+      contact_phone: ''
+    });
+    userModel.updatePassword(existing.id, await hashPassword(env.defaultAdminPassword));
+    db.prepare(`
+      UPDATE users
+      SET name = ?, role = ?, status = ?, department = ?, team = ?, updated_at = ?
+      WHERE id = ?
+    `).run('企业管理员', '企业管理员', '启用', '管理部', '默认班组', now, existing.id);
+    return;
+  }
+  const enterpriseId = uuidv4();
   enterpriseModel.create({
     id: enterpriseId,
     name: env.defaultEnterpriseName,

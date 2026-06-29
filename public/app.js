@@ -286,9 +286,9 @@ const App = {
       'ocr-txt': () => this.ocrTxt(),
       'ocr-excel': () => this.ocrExcel(),
       'ocr-word': () => this.ocrWord(),
-      'sql-generate': () => this.sqlGenerate(),
-      'sql-optimize': () => this.sqlOptimize(),
-      'sql-explain': () => this.sqlExplain(),
+      'sql-generate': () => this.sqlGenerate(el),
+      'sql-optimize': () => this.sqlOptimize(el),
+      'sql-explain': () => this.sqlExplain(el),
       'sql-copy': () => this.copy(this.temp.sql.output),
       'writing-generate': () => this.writingGenerate(el),
       'writing-optimize': () => this.writingOptimize(el),
@@ -373,6 +373,10 @@ const App = {
       'risk-refresh': () => this.riskRefresh(),
       'assistant-run': () => this.assistantRun(),
       'search-run': () => this.searchRun(),
+      'rl-run': () => this.rlRun(el),
+      'rl-regenerate': () => this.rlRun(el, true),
+      'rl-rate-good': () => this.rlQuickRate('有用'),
+      'rl-rate-bad': () => this.rlQuickRate('无用'),
       'rl-save': () => this.rlSave(),
       'rl-refresh': () => this.rlRefresh(),
       'settings-backup': () => this.settingsBackup(),
@@ -530,20 +534,32 @@ const App = {
     const history = chat.messages.slice(-8).map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.content}`).join('\n');
     const commandHint = text.startsWith('/') ? `快捷命令：${text}\n` : '';
     chat.messages.push({ role: 'user', content: text, time: Date.now() });
+    const loadingId = uid();
+    chat.messages.push({ id: loadingId, role: 'assistant', content: 'AI 正在思考中...', time: Date.now(), mode: 'loading' });
     if (chat.title === '新对话') chat.title = text.slice(0, 24);
     chat.updatedAt = Date.now();
     Store.save();
     this.rerender();
     const prompt = `${commandHint}${fileContext ? `相关文件：\n${fileContext}\n\n` : ''}${history ? `历史上下文：\n${history}\n\n` : ''}当前问题：${text}`;
-    const res = await AIService.complete(prompt, { mode: 'chat' });
-    chat = Store.state.chats.find(c => c.id === chat.id);
-    chat.messages.push({ role: 'assistant', content: res.text, time: Date.now(), mode: res.mode });
-    chat.updatedAt = Date.now();
-    Store.addActivity(`AI聊天：${chat.title}`, 'ai');
-    if (input) input.value = '';
-    if (res.error) this.toast(`接口连接失败，已使用本地回复：${res.error}`, 'error');
-    this.renderNav();
-    this.rerender();
+    try {
+      const res = await AIService.complete(prompt, { mode: 'chat', module: 'ai-chat' });
+      chat = Store.state.chats.find(c => c.id === chat.id);
+      chat.messages = chat.messages.filter(item => item.id !== loadingId);
+      chat.messages.push({ role: 'assistant', content: res.text, time: Date.now(), mode: res.mode });
+      chat.updatedAt = Date.now();
+      Store.addActivity(`AI聊天：${chat.title}`, 'ai');
+      if (input) input.value = '';
+      this.renderNav();
+      this.rerender();
+    } catch (error) {
+      chat = Store.state.chats.find(c => c.id === chat.id);
+      chat.messages = chat.messages.filter(item => item.id !== loadingId);
+      chat.messages.push({ role: 'assistant', content: `错误：${error.message}`, time: Date.now(), mode: 'error' });
+      chat.updatedAt = Date.now();
+      Store.save();
+      this.toast(error.message, 'error');
+      this.rerender();
+    }
   },
 
   clearChat() {
@@ -851,7 +867,13 @@ const App = {
       const extracted = await this.ensurePdfExtracted();
       const file = this.temp.pdf.files[0];
       const modeText = this.temp.pdf.scanMode === 'ocr' ? '扫描版 PDF 已自动 OCR。' : '已读取文字层 PDF。';
-      this.temp.pdf.result = `PDF总结\n\n文件：${file.name}\n${modeText}\n\n${KnowledgeEngine.summary(extracted)}\n\n建议：继续使用 PDF 问答或转 Word 处理。`;
+      const summary = Store.state.settings.accessMode === 'local'
+        ? KnowledgeEngine.summary(extracted)
+        : (await AIService.complete(
+            `请总结以下 PDF 内容，提取重点、风险、关键数据和建议。\n文件：${file.name}\n模式：${modeText}\n内容：\n${extracted.slice(0, 12000)}`,
+            { mode: 'pdf', module: 'ai-pdf' }
+          )).text;
+      this.temp.pdf.result = `PDF总结\n\n文件：${file.name}\n${modeText}\n\n${summary}\n\n建议：继续使用 PDF 问答或转 Word 处理。`;
       Store.addActivity('AI 总结 PDF', 'ai');
       this.rerender();
     });
@@ -1015,40 +1037,72 @@ const App = {
     await Utils.exportDocx('OCR识别结果', this.temp.ocr.result, 'OCR识别结果');
   },
 
-  sqlGenerate() {
+  async sqlGenerate(btn) {
     const dialect = document.getElementById('sqlDialect')?.value || this.temp.sql.dialect;
     const prompt = document.getElementById('sqlPrompt')?.value.trim() || '';
     if (!prompt) throw new Error('请输入自然语言需求');
-    const result = SQLBuilder.build(dialect, prompt);
-    this.temp.sql = { dialect, prompt, output: result.sql, explanation: result.explanation };
-    Store.addActivity('生成 SQL', 'ai');
-    this.rerender();
+    await this.busy(btn, async () => {
+      if (Store.state.settings.accessMode === 'local') {
+        const result = SQLBuilder.build(dialect, prompt);
+        this.temp.sql = { dialect, prompt, output: result.sql, explanation: result.explanation };
+      } else {
+        const res = await AIService.complete(
+          `请根据以下业务需求生成 ${dialect} SQL，并附带简短说明。要求尽量使用真实业务字段，例如 customer_name、delivery_quantity、amount、delivery_date、status。需求：${prompt}`,
+          { mode: 'sql', module: 'ai-sql' }
+        );
+        const sqlMatch = res.text.match(/```sql([\\s\\S]*?)```/i) || res.text.match(/```([\\s\\S]*?)```/);
+        const sql = (sqlMatch?.[1] || res.text).trim();
+        this.temp.sql = { dialect, prompt, output: sql, explanation: res.text };
+      }
+      Store.addActivity('生成 SQL', 'ai');
+      this.rerender();
+    });
   },
 
-  sqlOptimize() {
+  async sqlOptimize(btn) {
     const sql = document.getElementById('sqlOutput')?.value.trim() || this.temp.sql.output;
     if (!sql) throw new Error('请先生成或输入 SQL');
-    this.temp.sql.output = formatSQL(sql);
-    this.temp.sql.explanation = [
-      '优化建议：避免 SELECT *，为 WHERE / GROUP BY / JOIN 涉及字段建立索引。',
-      '索引建议：客户统计场景建议为 customer_name、delivery_date、status 建立组合或单列索引。',
-      '执行计划提示：在 MySQL 用 EXPLAIN，在 SQL Server 查看 Actual Execution Plan，在 Oracle 查看 PLAN_TABLE。'
-    ].join('\n');
-    Store.addActivity('优化 SQL', 'ai');
-    this.rerender();
+    await this.busy(btn, async () => {
+      if (Store.state.settings.accessMode === 'local') {
+        this.temp.sql.output = formatSQL(sql);
+        this.temp.sql.explanation = [
+          '优化建议：避免 SELECT *，为 WHERE / GROUP BY / JOIN 涉及字段建立索引。',
+          '索引建议：客户统计场景建议为 customer_name、delivery_date、status 建立组合或单列索引。',
+          '执行计划提示：在 MySQL 用 EXPLAIN，在 SQL Server 查看 Actual Execution Plan，在 Oracle 查看 PLAN_TABLE。'
+        ].join('\n');
+      } else {
+        const res = await AIService.complete(
+          `请优化以下 ${this.temp.sql.dialect} SQL，并给出索引建议与执行计划提示：\n${sql}`,
+          { mode: 'sql-optimize', module: 'ai-sql' }
+        );
+        this.temp.sql.explanation = res.text;
+      }
+      Store.addActivity('优化 SQL', 'ai');
+      this.rerender();
+    });
   },
 
-  sqlExplain() {
+  async sqlExplain(btn) {
     const sql = document.getElementById('sqlOutput')?.value.trim() || this.temp.sql.output;
     if (!sql) throw new Error('请先生成或输入 SQL');
-    const actions = [];
-    if (/select/i.test(sql)) actions.push('读取查询结果');
-    if (/group by/i.test(sql)) actions.push('按业务字段进行分组汇总');
-    if (/sum\(/i.test(sql)) actions.push('聚合计算数量或金额');
-    if (/where/i.test(sql)) actions.push('按条件过滤业务数据');
-    if (/order by/i.test(sql)) actions.push('按关键指标排序');
-    this.temp.sql.explanation = `SQL 解释：\n${actions.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n字段检查：请确认 customer_name、delivery_quantity、amount、delivery_date 等字段与真实库结构一致。`;
-    this.rerender();
+    await this.busy(btn, async () => {
+      if (Store.state.settings.accessMode === 'local') {
+        const actions = [];
+        if (/select/i.test(sql)) actions.push('读取查询结果');
+        if (/group by/i.test(sql)) actions.push('按业务字段进行分组汇总');
+        if (/sum\(/i.test(sql)) actions.push('聚合计算数量或金额');
+        if (/where/i.test(sql)) actions.push('按条件过滤业务数据');
+        if (/order by/i.test(sql)) actions.push('按关键指标排序');
+        this.temp.sql.explanation = `SQL 解释：\n${actions.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n\n字段检查：请确认 customer_name、delivery_quantity、amount、delivery_date 等字段与真实库结构一致。`;
+      } else {
+        const res = await AIService.complete(
+          `请逐步解释以下 ${this.temp.sql.dialect} SQL 的作用，并指出潜在字段、索引与性能风险：\n${sql}`,
+          { mode: 'sql-explain', module: 'ai-sql' }
+        );
+        this.temp.sql.explanation = res.text;
+      }
+      this.rerender();
+    });
   },
 
   saveWritingDraft() {
@@ -1060,7 +1114,12 @@ const App = {
     const prompt = document.getElementById('writingPrompt')?.value.trim() || '';
     if (!prompt) throw new Error('请输入写作要求');
     await this.busy(btn, async () => {
-      const output = WritingTemplates.generate(type, prompt);
+      const output = Store.state.settings.accessMode === 'local'
+        ? WritingTemplates.generate(type, prompt)
+        : (await AIService.complete(
+            `文档类型：${type}\n要求：${prompt}\n请严格保留数量、客户、产品、交期、付款方式等关键数据，并使用对应正式模板输出。`,
+            { mode: 'writing', module: 'ai-office-writing' }
+          )).text;
       this.temp.writing = { type, prompt, output };
       this.saveWritingDraft();
       Store.addActivity(`AI写作：${type}`, 'ai');
@@ -1620,7 +1679,17 @@ const App = {
         default: {
           const source = [ws.prompt, ...(ws.files || []).map(item => `【${item.name}】\n${item.content}`)].filter(Boolean).join('\n\n');
           const summary = source ? KnowledgeEngine.summary(source) : '未输入内容。';
-          ws.result = `${moduleById(route).name}处理结果\n\n摘要：${summary}\n\n输入资料：${(ws.files || []).length} 个文件\n保存时间：${new Date().toLocaleString('zh-CN')}\n\n建议：继续补充具体业务字段后导出或归档。`;
+          if (Store.state.settings.accessMode !== 'local' && source) {
+            ws.result = (await AIService.complete(
+              `模块：${moduleById(route).name}\n请根据以下资料生成可执行结果，尽量保留数量、客户、产品、交期、付款方式等关键字段。\n\n${source}`,
+              {
+                mode: route,
+                module: route === 'chip' ? 'chip-assistant' : route
+              }
+            )).text;
+          } else {
+            ws.result = `${moduleById(route).name}处理结果\n\n摘要：${summary}\n\n输入资料：${(ws.files || []).length} 个文件\n保存时间：${new Date().toLocaleString('zh-CN')}\n\n建议：继续补充具体业务字段后导出或归档。`;
+          }
         }
       }
       ws.updatedAt = Date.now();
@@ -2264,13 +2333,13 @@ const App = {
 
   applyProviderPreset(provider) {
     const presets = {
-      '本地模式': ['', 'gpt-4o-mini'],
-      'OpenAI': ['https://api.openai.com/v1', 'gpt-4o-mini'],
-      'DeepSeek': ['https://api.deepseek.com/v1', 'deepseek-chat'],
-      'Claude': ['https://api.anthropic.com/v1', 'claude-3-5-sonnet-latest'],
-      'Gemini': ['https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-2.0-flash'],
-      'Qwen': ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen-plus'],
-      '本地模型': ['http://127.0.0.1:11434/v1', 'qwen2.5:7b'],
+      '本地模式': ['', 'deepseek-chat'],
+      'DeepSeek OpenAI-compatible API': [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
+      OpenAI: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
+      DeepSeek: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
+      Claude: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
+      Gemini: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
+      Qwen: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
       '自定义': ['', '']
     };
     if (!presets[provider]) return;
@@ -2287,7 +2356,6 @@ const App = {
     const syncMode = document.getElementById('syncMode')?.value || 'local';
     const provider = document.getElementById('apiProvider')?.value || '自定义';
     const apiUrl = document.getElementById('apiUrl')?.value.trim();
-    const apiKey = document.getElementById('apiKey')?.value.trim();
     const model = document.getElementById('apiModel')?.value.trim();
     if (accessMode !== 'local' && (!apiUrl || !model)) throw new Error('API 模式或云端模式下请填写接口地址和模型名称');
     Store.state.settings = {
@@ -2297,7 +2365,7 @@ const App = {
       provider,
       apiEnabled: accessMode !== 'local',
       apiUrl: accessMode === 'local' ? '' : apiUrl,
-      apiKey: accessMode === 'local' ? '' : apiKey,
+      apiKey: '',
       model
     };
     Store.save();
@@ -2309,9 +2377,9 @@ const App = {
     this.settingsSaveAI();
     if (Store.state.settings.accessMode === 'local') throw new Error('当前是本地模式，无需测试远程接口');
     await this.busy(btn, async () => {
-      const res = await AIService.complete('请只回复：连接成功');
-      if (res.mode === 'api') this.toast(`连接成功：${Store.state.settings.model}`);
-      else throw new Error(res.error || '连接失败，已回退本地模式');
+      const res = await APIClient.health(Store.state.settings.apiUrl);
+      if (res.ok) this.toast(`连接成功：${Store.state.settings.apiUrl}`);
+      else throw new Error(res.message || '连接失败');
     });
   },
 
@@ -2361,6 +2429,35 @@ const App = {
     const email = document.getElementById('accountEmail')?.value.trim();
     const password = document.getElementById('accountPassword')?.value.trim();
     if (!email || !password) throw new Error('请输入邮箱和密码');
+    if (window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ENABLED) {
+      const customDemoPassword = localStorage.getItem('personal-ai-os-demo-password') || DEMO_ACCOUNT.password;
+      if (email === DEMO_ACCOUNT.email && password === customDemoPassword) {
+        AuthClient.save({
+          token: 'demo-local-session',
+          demo: true,
+          user: {
+            id: 'demo-admin',
+            enterpriseId: 'demo-enterprise',
+            email: DEMO_ACCOUNT.email,
+            name: DEMO_ACCOUNT.name,
+            role: DEMO_ACCOUNT.role,
+            status: '启用'
+          },
+          enterprise: {
+            id: 'demo-enterprise',
+            name: DEMO_ACCOUNT.enterpriseName
+          }
+        });
+        this.toast('演示账号登录成功');
+        this.renderNav();
+        this.navigate('home');
+        this.rerender();
+        return;
+      }
+      if (window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
+        throw new Error('账号或密码错误，请使用演示账号 admin@personal-ai-os.local / 123456');
+      }
+    }
     const res = await APIClient.request('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password })
@@ -2385,6 +2482,29 @@ const App = {
     const role = document.getElementById('accountRole')?.value || '企业管理员';
     if (!enterpriseName || !name || !email || !password) throw new Error('请填写企业名称、姓名、邮箱和密码');
     if (confirmPassword && password !== confirmPassword) throw new Error('两次密码不一致');
+    if (window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
+      AuthClient.save({
+        token: 'demo-local-session',
+        demo: true,
+        user: {
+          id: uid(),
+          enterpriseId: 'demo-enterprise',
+          email,
+          name,
+          role,
+          status: '启用'
+        },
+        enterprise: {
+          id: 'demo-enterprise',
+          name: enterpriseName
+        }
+      });
+      this.toast('已在演示模式下创建本地企业账号');
+      this.renderNav();
+      this.navigate('home');
+      this.rerender();
+      return;
+    }
     const res = await APIClient.request('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify({ enterpriseName, name, email, password, role })
@@ -2412,6 +2532,13 @@ const App = {
     const currentPassword = document.getElementById('accountPassword')?.value.trim();
     const newPassword = document.getElementById('accountNextPassword')?.value.trim();
     if (!currentPassword || !newPassword) throw new Error('请输入当前密码和新密码');
+    if (AuthClient.isDemo()) {
+      const saved = localStorage.getItem('personal-ai-os-demo-password') || DEMO_ACCOUNT.password;
+      if (currentPassword !== saved) throw new Error('当前密码错误');
+      localStorage.setItem('personal-ai-os-demo-password', newPassword);
+      this.toast('演示账号密码已保存在当前浏览器');
+      return;
+    }
     await APIClient.request('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword })
@@ -2422,6 +2549,19 @@ const App = {
   async authSaveEnterprise() {
     const name = document.getElementById('accountEnterpriseName')?.value.trim();
     if (!name) throw new Error('请输入企业名称');
+    if (AuthClient.isDemo()) {
+      const session = AuthClient.session;
+      AuthClient.save({
+        ...session,
+        enterprise: {
+          ...(session.enterprise || {}),
+          name
+        }
+      });
+      this.toast('演示企业信息已保存到本地');
+      this.rerender();
+      return;
+    }
     await APIClient.request('/api/enterprise', {
       method: 'PUT',
       body: JSON.stringify({ name })
@@ -2439,7 +2579,11 @@ const App = {
   },
 
   async refreshOrders(showToast = false) {
-    if (!AuthClient.isLoggedIn()) return;
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) {
+      if (showToast) this.toast('当前为本地演示数据');
+      if (this.route === 'orders' || this.route === 'home' || this.route === 'productionplan' || this.route === 'riskcenter') this.rerender();
+      return;
+    }
     const res = await APIClient.request('/api/orders');
     Store.state.orders = res.data.items || [];
     Store.save();
@@ -2460,6 +2604,25 @@ const App = {
       priority: document.getElementById('orderPriority')?.value
     };
     if (!payload.orderNo || !payload.customer || !payload.product) throw new Error('请填写订单号、客户、产品');
+    if (AuthClient.isDemo()) {
+      const now = Date.now();
+      Store.state.orders.unshift({
+        id: uid(),
+        order_no: payload.orderNo,
+        customer: payload.customer,
+        product: payload.product,
+        quantity: Number(payload.quantity || 0),
+        delivery_date: payload.deliveryDate,
+        status: payload.status,
+        priority: payload.priority,
+        created_at: new Date(now).toISOString(),
+        updated_at: new Date(now).toISOString()
+      });
+      Store.save();
+      await this.refreshDashboard();
+      this.toast('订单已保存到本地演示数据');
+      return;
+    }
     await APIClient.request('/api/orders', {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -2470,13 +2633,24 @@ const App = {
 
   async deleteOrder(id) {
     if (!confirm('确定删除这条订单？')) return;
+    if (AuthClient.isDemo()) {
+      Store.state.orders = Store.state.orders.filter(item => item.id !== id);
+      Store.save();
+      await this.refreshDashboard();
+      this.toast('订单已从本地演示数据删除');
+      return;
+    }
     await APIClient.request(`/api/orders/${id}`, { method: 'DELETE' });
     await this.refreshOrders();
     this.toast('订单已删除');
   },
 
   async refreshInventory(showToast = false) {
-    if (!AuthClient.isLoggedIn()) return;
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) {
+      if (showToast) this.toast('当前为本地演示数据');
+      if (this.route === 'inventory' || this.route === 'home' || this.route === 'productionplan' || this.route === 'riskcenter') this.rerender();
+      return;
+    }
     const res = await APIClient.request('/api/inventory');
     Store.state.inventory = res.data.items || [];
     Store.save();
@@ -2495,6 +2669,21 @@ const App = {
       location: document.getElementById('inventoryLocation')?.value.trim()
     };
     if (!payload.productName) throw new Error('请填写产品名称');
+    if (AuthClient.isDemo()) {
+      Store.state.inventory.unshift({
+        id: uid(),
+        product_code: payload.productCode,
+        product_name: payload.productName,
+        stock_quantity: Number(payload.stockQuantity || 0),
+        safety_stock: Number(payload.safetyStock || 0),
+        location: payload.location,
+        updated_at: new Date().toISOString()
+      });
+      Store.save();
+      await this.refreshDashboard();
+      this.toast('库存已保存到本地演示数据');
+      return;
+    }
     await APIClient.request('/api/inventory', {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -2505,6 +2694,13 @@ const App = {
 
   async deleteInventory(id) {
     if (!confirm('确定删除这条库存记录？')) return;
+    if (AuthClient.isDemo()) {
+      Store.state.inventory = Store.state.inventory.filter(item => item.id !== id);
+      Store.save();
+      await this.refreshDashboard();
+      this.toast('库存已从本地演示数据删除');
+      return;
+    }
     await APIClient.request(`/api/inventory/${id}`, { method: 'DELETE' });
     await this.refreshInventory();
     this.toast('库存已删除');
@@ -2531,6 +2727,12 @@ const App = {
     if (!prompt.trim()) throw new Error('请输入任务');
     const orders = Store.state.orders || [];
     const inventory = Store.state.inventory || [];
+    const context = [
+      `订单数：${orders.length}`,
+      `库存记录数：${inventory.length}`,
+      `最近邮件：${(Store.state.mailInbox || []).slice(0, 3).map(item => `${item.subject}/${item.from}`).join('；') || '无'}`,
+      `知识条目：${(Store.state.knowledge || []).length}`
+    ].join('\n');
     let result = '';
     if (/优先|订单/.test(prompt)) {
       result += `优先订单：\n${orders.slice().sort((a, b) => String(a.delivery_date || '').localeCompare(String(b.delivery_date || ''))).slice(0, 5).map(item => `${item.order_no} / ${item.customer} / ${item.delivery_date}`).join('\n') || '暂无订单'}\n\n`;
@@ -2553,8 +2755,14 @@ const App = {
     if (/日报/.test(prompt)) {
       result += `日报建议：\n订单 ${orders.length} 条；低库存 ${inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length} 条；请人工确认后导出。\n\n`;
     }
-    if (!result) {
-      const ai = await AIService.complete(prompt, { mode: 'chat' });
+    if (Store.state.settings.accessMode !== 'local') {
+      const ai = await AIService.complete(`你是企业 AI 助手中心，请根据上下文完成任务。\n\n系统上下文：\n${context}\n\n用户任务：${prompt}`, {
+        mode: 'chat',
+        module: 'assistant'
+      });
+      result = ai.text;
+    } else if (!result) {
+      const ai = await AIService.complete(prompt, { mode: 'chat', module: 'assistant' });
       result = ai.text;
     }
     ws.result = result.trim();
@@ -2590,20 +2798,74 @@ const App = {
     this.rerender();
   },
 
+  rlQuickRate(label) {
+    const select = document.getElementById('rlRating');
+    if (select) select.value = label === '有用' ? '★★★★★' : '不可用';
+    const reason = document.getElementById('rlReason');
+    if (reason && !reason.value.trim()) reason.value = label === '有用' ? '结果可直接使用' : '结果需要重新生成或修正';
+  },
+
+  async rlRun(btn, forceRetry = false) {
+    const ws = this.getWorkspace('rlcenter');
+    const task = document.getElementById('rlTask')?.value.trim() || ws.task || '';
+    if (!task) throw new Error('请输入任务');
+    ws.task = task;
+    const history = (Store.state.rlFeedback || []).filter(item => String(item.task || '').includes(task.slice(0, 6))).slice(0, 5);
+    const preference = history.length ? history.map(item => `${item.rating || item.success}\n${item.reason || ''}\n${item.modifiedContent || item.modified_content || ''}`).join('\n---\n') : '暂无历史反馈';
+    await this.busy(btn, async () => {
+      const planRes = await AIService.complete(
+        `请把以下任务拆解为 3-6 个可执行步骤，每行一个步骤，不要输出多余说明。\n任务：${task}\n历史反馈：${preference}\n${forceRetry ? '要求：避免上次错误，重新生成更稳妥的步骤。' : ''}`,
+        { mode: 'rl-plan', module: 'agentic-rl' }
+      );
+      ws.prompt = task;
+      ws.steps = planRes.text.split('\n').map(line => line.replace(/^\d+[\.\、\s]*/, '').trim()).filter(Boolean).slice(0, 6);
+      ws.stepResults = [];
+      for (const step of ws.steps) {
+        const stepRes = await AIService.complete(`原始任务：${task}\n当前步骤：${step}\n请只返回本步骤的执行结果。`, {
+          mode: 'rl-step',
+          module: 'agentic-rl'
+        });
+        ws.stepResults.push({ step, reply: stepRes.text });
+        Store.save();
+        this.rerender();
+      }
+      const finalRes = await AIService.complete(
+        `请基于以下步骤结果，汇总最终答案。\n原始任务：${task}\n步骤结果：\n${ws.stepResults.map(item => `${item.step}\n${item.reply}`).join('\n\n')}`,
+        { mode: 'rl-final', module: 'agentic-rl' }
+      );
+      ws.result = finalRes.text;
+      ws.updatedAt = Date.now();
+      Store.addActivity(`Agentic RL 任务：${task.slice(0, 20)}`, 'ai');
+      Store.save();
+      this.rerender();
+    });
+  },
+
   async rlSave() {
     const rating = document.getElementById('rlRating')?.value;
     const reason = document.getElementById('rlReason')?.value.trim();
     const modifiedContent = document.getElementById('rlModifiedContent')?.value.trim();
     if (!rating) throw new Error('请选择评分');
     const ws = this.getWorkspace('rlcenter');
-    ws.records = ws.records || [];
-    ws.records.unshift({
+    const record = {
       id: uid(),
+      task: ws.task || '',
+      module: 'agentic-rl',
+      prompt: ws.prompt || '',
+      reply: ws.result || '',
       rating,
       reason,
+      modifiedContent,
       modified_content: modifiedContent,
+      success: !/★☆☆☆☆|不可用|无用/.test(rating),
+      createdAt: Date.now(),
       time: Date.now()
-    });
+    };
+    ws.records = ws.records || [];
+    ws.records.unshift(record);
+    Store.state.rlFeedback = Store.state.rlFeedback || [];
+    Store.state.rlFeedback.unshift(record);
+    Store.state.rlFeedback = Store.state.rlFeedback.slice(0, 100);
     if (AuthClient.isLoggedIn()) {
       try {
         await APIClient.request('/api/feedback', {
@@ -2620,17 +2882,29 @@ const App = {
   },
 
   async rlRefresh() {
-    if (!AuthClient.isLoggedIn()) return;
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) {
+      const ws = this.getWorkspace('rlcenter');
+      ws.records = Store.state.rlFeedback || [];
+      Store.save();
+      this.rerender();
+      return;
+    }
     try {
       const res = await APIClient.request('/api/feedback');
       const ws = this.getWorkspace('rlcenter');
-      ws.records = (res.data.items || []).map(item => ({
+      const items = (res.data.items || []).map(item => ({
         id: item.id,
+        task: item.category,
+        module: 'agentic-rl',
         rating: item.rating,
         reason: item.reason,
+        modifiedContent: item.modified_content,
         modified_content: item.modified_content,
+        createdAt: new Date(item.created_at).getTime(),
         time: new Date(item.created_at).getTime()
       }));
+      ws.records = items;
+      Store.state.rlFeedback = items;
       Store.save();
       this.rerender();
     } catch (error) {
@@ -2640,6 +2914,25 @@ const App = {
 
   async refreshDashboard() {
     if (!AuthClient.isLoggedIn()) return;
+    if (AuthClient.isDemo()) {
+      const delayedOrders = (Store.state.orders || []).filter(item => item.delivery_date && new Date(item.delivery_date) < new Date() && item.status !== '已完成');
+      const inventoryAlerts = (Store.state.inventory || []).filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length;
+      Store.state.dashboard = {
+        todayOrders: (Store.state.orders || []).length,
+        inventoryAlerts,
+        delayedOrders: delayedOrders.length,
+        todayPlan: Math.min((Store.state.orders || []).length, 8),
+        aiSuggestions: [
+          inventoryAlerts ? `发现 ${inventoryAlerts} 条低库存，请优先补料。` : '暂无低库存风险。',
+          delayedOrders.length ? `发现 ${delayedOrders.length} 条延期订单，请优先排产。` : '当前未发现延期订单。'
+        ],
+        agentExecutions: (Store.state.agentRuns || []).length,
+        aiLearningTimes: (Store.state.rlFeedback || []).length,
+        systemStatus: 'GitHub Pages Demo'
+      };
+      Store.save();
+      return;
+    }
     try {
       const res = await APIClient.request('/api/dashboard');
       Store.state.dashboard = res.data.dashboard || Store.state.dashboard;

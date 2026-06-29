@@ -1,0 +1,1 @@
+{"time":"2026-06-29T06:31:48.936Z","level":"error","message":"账号或密码错误","path":"/api/auth/login","stack":"Error: 账号或密码错误\n    at Object.login (/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/services/authService.js:49:19)\n    at async login (/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/controllers/authController.js:16:18)"}
