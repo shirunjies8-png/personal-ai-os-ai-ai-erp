@@ -345,6 +345,13 @@ const App = {
       'version-compare': () => this.versionCompare(),
       'bidding-analyze': () => this.biddingAnalyze(el),
       'demo-bid': () => this.demoBid(),
+      'demo-load': () => this.loadDemoData(),
+      'demo-flow': () => this.startDemoFlow(),
+      'demo-reset': () => this.resetDemoEnvironment(),
+      'ai-retry': () => this.retryLastAiAction(),
+      'ai-switch-model': () => this.switchAiModel(),
+      'refresh-ai-status': () => this.rerender(),
+      'systemcheck-run': () => this.runSystemCheck(),
       'settings-tab': () => { this.temp.settingsTab = el.dataset.tab; this.rerender(); },
       'settings-api-toggle': () => {
         Store.state.settings.apiEnabled = !Store.state.settings.apiEnabled;
@@ -386,7 +393,8 @@ const App = {
       if (handlers[action]) await handlers[action]();
     } catch (error) {
       console.error(error);
-      this.toast(error.message || '操作失败', 'error');
+      const message = this.recordAiError(error, action);
+      this.toast(message || '操作失败', 'error');
     }
   },
 
@@ -525,6 +533,173 @@ const App = {
     return Store.state.chats.filter(chat => `${chat.title}\n${chat.messages.map(m => m.content).join('\n')}`.toLowerCase().includes(q));
   },
 
+  loadDemoData() {
+    const now = Date.now();
+    Store.state.orders = [
+      { id: uid(), order_no: 'SO-2026-015', customer: '常州新能源科技有限公司', product: '304不锈钢连接件', quantity: 760, delivery_date: '2026-07-05', status: '待发货', priority: '高', created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString() },
+      { id: uid(), order_no: 'SO-2026-016', customer: '上海智造工厂', product: 'CNC加工件', quantity: 180, delivery_date: '2026-07-02', status: '生产中', priority: '高', created_at: new Date(now).toISOString(), updated_at: new Date(now).toISOString() }
+    ];
+    Store.state.inventory = [
+      { id: uid(), product_code: 'P-1001', product_name: '304不锈钢连接件', stock_quantity: 240, safety_stock: 300, location: 'A-01', updated_at: new Date(now).toISOString() },
+      { id: uid(), product_code: 'P-2002', product_name: 'CNC壳体', stock_quantity: 120, safety_stock: 80, location: 'B-03', updated_at: new Date(now).toISOString() }
+    ];
+    Store.state.workspaces = Store.state.workspaces || {};
+    Store.state.workspaces.workflow = {
+      prompt: '上传发货单 -> Excel识别 -> AI分析 -> 生成待办 -> 生成工作日志 -> 生成自动报表 -> Agentic RL执行 -> 导出Word/PDF/Excel',
+      result: '业务流程：\n1. 上传发货单\n2. Excel识别\n3. AI分析\n4. 生成待办\n5. 生成工作日志\n6. 生成自动报表\n7. Agentic RL执行\n8. 导出Word/PDF/Excel'
+    };
+    Store.state.workspaces.autoreport = {
+      prompt: '客户：常州新能源科技有限公司\n数量：760\n金额：9710\n运输方式：汽运\n付款方式：月结30天\n风险：交期紧张',
+      result: '企业报表：\n客户：常州新能源科技有限公司\n金额：9710\n数量：760\n运输方式：汽运\n付款方式：月结30天\n风险：交期紧张\n建议：优先排产并确认收款节点。'
+    };
+    Store.state.workspaces.todo = {
+      prompt: '今日待办：1. 确认发货单 2. 跟进订单 3. 检查库存 4. 回复客户邮件',
+      result: '今日待办：\n1. 确认发货单 / 负责人：企业管理员 / 截止时间：今日18:00 / 优先级：高 / 状态：待处理\n2. 跟进订单 / 负责人：销售 / 截止时间：今日17:30 / 优先级：中 / 状态：待处理\n3. 检查库存 / 负责人：仓库 / 截止时间：今日16:30 / 优先级：高 / 状态：待处理\n4. 回复客户邮件 / 负责人：企业管理员 / 截止时间：今日15:00 / 优先级：高 / 状态：待处理'
+    };
+    Store.state.workspaces.worklog = {
+      prompt: '汇总今日 Excel、Word、SQL、Agent、AI聊天与RL执行情况',
+      result: '日报：\n- Excel：已完成发货单统计\n- Word：已完成总结和导出\n- SQL：已生成业务查询\n- Agent：已执行任务拆解\n- AI聊天：已处理客户问题\n- RL：已记录反馈\n建议：明日优先处理延期订单和低库存物料。'
+    };
+    Store.state.workspaces.chip = {
+      prompt: '生成一个 Verilog 计数器和 Testbench，并解释时序逻辑',
+      result: 'module counter(input clk, input rst_n, output reg [3:0] q);\n  always @(posedge clk or negedge rst_n) begin\n    if (!rst_n) q <= 4\'d0;\n    else q <= q + 1\'d1;\n  end\nendmodule'
+    };
+    Store.state.rlFeedback = Store.state.rlFeedback || [];
+    Store.state.rlFeedback.unshift({
+      id: uid(),
+      task: '根据订单和库存生成生产计划',
+      module: 'agentic-rl',
+      prompt: '请拆解并执行',
+      reply: '已完成',
+      rating: '★★★★☆',
+      reason: '步骤清晰',
+      modifiedContent: '优先库存充足订单',
+      success: true,
+      createdAt: now,
+      time: now
+    });
+    Store.state.dashboard = {
+      todayOrders: Store.state.orders.length,
+      inventoryAlerts: Store.state.inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length,
+      delayedOrders: 0,
+      todayPlan: 2,
+      aiSuggestions: ['已加载演示数据，可完整演示业务闭环。', '请从首页开始演示路线。'],
+      agentExecutions: 1,
+      aiLearningTimes: Store.state.rlFeedback.length,
+      systemStatus: '演示模式'
+    };
+    Store.save();
+    this.toast('演示数据已加载');
+    this.rerender();
+  },
+
+  async startDemoFlow() {
+    this.loadDemoData();
+    this.navigate('excel');
+    this.toast('已进入演示流程：先从 Excel 发货单开始');
+  },
+
+  resetDemoEnvironment() {
+    if (!confirm('确定清空测试数据并重新加载标准演示环境吗？')) return;
+    Store.state.chats = [];
+    Store.state.activeChatId = null;
+    Store.state.operationLogs = [];
+    Store.state.rlFeedback = [];
+    Store.state.workspaces = Store.state.workspaces || {};
+    ['word', 'excel', 'pdf', 'ocr', 'sql', 'writing', 'image', 'assistant', 'workflow', 'todo', 'worklog', 'autoreport', 'systemcheck', 'rlcenter', 'searchcenter'].forEach(key => {
+      Store.state.workspaces[key] = {};
+    });
+    this.temp.word = { title: '', content: '', sourceFile: null };
+    this.temp.excel = { file: null, workbook: null, rows: [], records: [], summary: null, meta: {}, schema: {}, result: '', sheetName: '发货单' };
+    this.temp.pdf = { files: [], result: '', extracted: '', tableText: '', qaAnswer: '', scanMode: '' };
+    this.temp.ocr = { file: null, image: '', text: '', corrected: '', result: '', meta: {} };
+    this.temp.sql = { dialect: 'MySQL', prompt: '', output: '', explanation: '' };
+    this.temp.writing = { type: '日报', prompt: '', output: '' };
+    this.temp.agent = { goal: '', plan: [], result: '', runs: [], currentRun: null };
+    localStorage.removeItem('personal-ai-os-word-draft');
+    localStorage.removeItem('personal-ai-os-excel-draft');
+    localStorage.removeItem('personal-ai-os-pdf-draft');
+    localStorage.removeItem('personal-ai-os-ocr-draft');
+    localStorage.removeItem('personal-ai-os-sql-draft');
+    localStorage.removeItem('personal-ai-os-writing-draft');
+    this.loadDemoData();
+    this.navigate('home');
+    this.toast('测试数据已清空并重新加载演示环境');
+  },
+
+  recordAiError(error, context = '') {
+    const message = AIService.friendlyMessage(error);
+    Store.state.aiErrors = Store.state.aiErrors || [];
+    Store.state.aiErrors.unshift({
+      id: uid(),
+      message,
+      detail: String(error?.message || error || ''),
+      context,
+      time: Date.now()
+    });
+    Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
+    Store.addActivity(`AI错误：${context || '未知任务'}`, 'error');
+    Store.save();
+    return message;
+  },
+
+  retryLastAiAction() {
+    if (this.route === 'chat') return this.sendChat();
+    if (this.route === 'assistant') return this.assistantRun();
+    if (this.route === 'rlcenter') return this.rlRun();
+    if (this.route === 'systemcheck') return this.runSystemCheck();
+    if (this.route === 'aistatus') return this.rerender();
+    this.toast('请在对应模块中重新执行最近一次 AI 操作');
+  },
+
+  switchAiModel() {
+    const models = ['deepseek-chat', 'deepseek-reasoner', 'qwen-plus', 'gpt-4o-mini'];
+    const current = Store.state.settings.model || models[0];
+    const next = models[(models.indexOf(current) + 1) % models.length];
+    Store.state.settings.model = next;
+    Store.save();
+    this.toast(`已切换模型：${next}`);
+    this.rerender();
+  },
+
+  async runSystemCheck() {
+    const ws = this.getWorkspace('systemcheck');
+    const apiUrl = Store.state.settings.apiUrl;
+    let apiStatus = '🔴 异常';
+    let deepseekStatus = '🔴 异常';
+    try {
+      if (apiUrl) {
+        const res = await APIClient.health(apiUrl);
+        apiStatus = res.ok ? '🟢 正常' : '🟡 部分完成';
+        deepseekStatus = res.ok ? '🟡 部分完成' : '🔴 异常';
+      }
+    } catch {
+      apiStatus = '🔴 异常';
+      deepseekStatus = '🔴 异常';
+    }
+    const rows = [
+      ['登录', AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常'],
+      ['Word', this.temp.word?.content !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['Excel', this.temp.excel?.rows ? '🟢 正常' : '🟡 部分完成'],
+      ['PDF', this.temp.pdf?.files ? '🟢 正常' : '🟡 部分完成'],
+      ['OCR', this.temp.ocr?.result !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['SQL', this.temp.sql?.output !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['AI', apiStatus],
+      ['DeepSeek', deepseekStatus],
+      ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 部分完成'],
+      ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 部分完成'],
+      ['数据库', (Store.state.orders.length || Store.state.inventory.length) ? '🟢 正常' : '🟡 部分完成'],
+      ['API', apiStatus],
+      ['GitHub Pages', '🟢 正常'],
+      ['Vercel', apiUrl ? '🟢 正常' : '🔴 异常'],
+      ['模型', Store.state.settings.model ? '🟢 正常' : '🔴 异常']
+    ];
+    ws.result = rows.map(item => `${item[0]}：${item[1]}`).join('\n');
+    ws.checkedAt = Date.now();
+    Store.save();
+    this.rerender();
+  },
+
   async sendChat() {
     const input = document.getElementById('chatInput');
     const text = input?.value.trim();
@@ -535,7 +710,7 @@ const App = {
     const commandHint = text.startsWith('/') ? `快捷命令：${text}\n` : '';
     chat.messages.push({ role: 'user', content: text, time: Date.now() });
     const loadingId = uid();
-    chat.messages.push({ id: loadingId, role: 'assistant', content: 'AI 正在思考中...', time: Date.now(), mode: 'loading' });
+    chat.messages.push({ id: loadingId, role: 'assistant', content: '正在处理...', time: Date.now(), mode: 'loading' });
     if (chat.title === '新对话') chat.title = text.slice(0, 24);
     chat.updatedAt = Date.now();
     Store.save();
@@ -554,10 +729,11 @@ const App = {
     } catch (error) {
       chat = Store.state.chats.find(c => c.id === chat.id);
       chat.messages = chat.messages.filter(item => item.id !== loadingId);
-      chat.messages.push({ role: 'assistant', content: `错误：${error.message}`, time: Date.now(), mode: 'error' });
+      const message = this.recordAiError(error, 'ai-chat');
+      chat.messages.push({ role: 'assistant', content: message, time: Date.now(), mode: 'error' });
       chat.updatedAt = Date.now();
       Store.save();
-      this.toast(error.message, 'error');
+      this.toast(message, 'error');
       this.rerender();
     }
   },
@@ -786,9 +962,21 @@ const App = {
         proofread: 'proofread',
         format: 'format'
       };
-      const r = await AIService.complete(w.content, { mode: map[mode] || 'polish' });
-      if (mode === 'summary') w.content += `\n\n【AI总结】\n${r.text}`;
-      else w.content = r.text;
+      let output = '';
+      try {
+        const r = await AIService.complete(w.content, { mode: map[mode] || 'polish' });
+        output = r.text;
+      } catch (error) {
+        const message = this.recordAiError(error, `word-${mode}`);
+        const lines = w.content.split('\n').map(line => line.trim()).filter(Boolean);
+        if (mode === 'summary') output = `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n\n文档重点：${lines.slice(0, 6).join('；')}`;
+        else if (mode === 'proofread') output = `${w.content}\n\n【纠错提示】\n${message}`;
+        else if (mode === 'format') output = lines.join('\n');
+        else if (mode === 'rewrite') output = `改写版本：\n${lines.join(' ')}`;
+        else output = `润色结果：\n${lines.join(' ')}`;
+      }
+      if (mode === 'summary') w.content += `\n\n【AI总结】\n${output}`;
+      else w.content = output;
       localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(w));
       Store.addActivity(`Word AI ${mode}`, 'ai');
       this.rerender();
@@ -1114,12 +1302,18 @@ const App = {
     const prompt = document.getElementById('writingPrompt')?.value.trim() || '';
     if (!prompt) throw new Error('请输入写作要求');
     await this.busy(btn, async () => {
-      const output = Store.state.settings.accessMode === 'local'
-        ? WritingTemplates.generate(type, prompt)
-        : (await AIService.complete(
-            `文档类型：${type}\n要求：${prompt}\n请严格保留数量、客户、产品、交期、付款方式等关键数据，并使用对应正式模板输出。`,
-            { mode: 'writing', module: 'ai-office-writing' }
-          )).text;
+      let output = '';
+      try {
+        output = Store.state.settings.accessMode === 'local'
+          ? WritingTemplates.generate(type, prompt)
+          : (await AIService.complete(
+              `文档类型：${type}\n要求：${prompt}\n请严格保留数量、客户、产品、交期、付款方式等关键数据，并使用对应正式模板输出。`,
+              { mode: 'writing', module: 'ai-office-writing' }
+            )).text;
+      } catch (error) {
+        this.recordAiError(error, 'writing-generate');
+        output = `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n\n${WritingTemplates.generate(type, prompt)}`;
+      }
       this.temp.writing = { type, prompt, output };
       this.saveWritingDraft();
       Store.addActivity(`AI写作：${type}`, 'ai');
@@ -1131,8 +1325,13 @@ const App = {
     const output = document.getElementById('writingOutput')?.value.trim() || this.temp.writing.output;
     if (!output) throw new Error('请先生成内容');
     await this.busy(btn, async () => {
-      const r = await AIService.complete(output, { mode: 'polish' });
-      this.temp.writing.output = r.text;
+      try {
+        const r = await AIService.complete(output, { mode: 'polish' });
+        this.temp.writing.output = r.text;
+      } catch (error) {
+        this.recordAiError(error, 'writing-optimize');
+        this.temp.writing.output = `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n\n${output}`;
+      }
       this.saveWritingDraft();
       Store.addActivity('继续优化写作', 'ai');
       this.rerender();
@@ -1678,7 +1877,44 @@ const App = {
           return;
         default: {
           const source = [ws.prompt, ...(ws.files || []).map(item => `【${item.name}】\n${item.content}`)].filter(Boolean).join('\n\n');
-          const summary = source ? KnowledgeEngine.summary(source) : '未输入内容。';
+          const label = moduleById(route).name;
+          const localResult = () => {
+            const preview = source.split('\n').filter(Boolean).slice(0, 8).join('\n');
+            if (route === 'bom') {
+              return `${label}\n\nBOM结构：\n1. 主料 / 规格 / 用量 / 单位\n2. 辅料 / 规格 / 用量 / 单位\n3. 外协件 / 供应商 / 交期 / 备注\n\n建议：请补充层级、版本号和替代料信息。`;
+            }
+            if (route === 'erp') {
+              return `${label}\n\nERP业务分析：\n- 主数据：客户、物料、仓库、单位\n- 业务单据：订单、采购、入库、出库、发货\n- 风险：字段缺失、重复单号、库存不足\n- 建议：先统一编码，再导入数据库。`;
+            }
+            if (route === 'mes') {
+              return `${label}\n\n生产执行分析：\n- 工单状态：待开工 / 进行中 / 已完工\n- 关键检查：工序、设备、产量、异常、交期\n- 风险：缺料、延期、设备超负荷\n- 建议：优先排产临期订单并跟踪异常。`;
+            }
+            if (route === 'aisearch') {
+              return `${label}\n\n搜索结果：\n${preview ? preview : '未找到匹配内容'}\n\n建议：增加客户、产品、订单号等关键词继续搜索。`;
+            }
+            if (route === 'analytics') {
+              return `${label}\n\n数据结论：\n- 订单、库存、邮件、日志可形成闭环\n- 需优先关注低库存与临期订单\n- 报表应围绕客户、数量、金额、交期展开\n\n建议：继续补充原始数据后生成图表。`;
+            }
+            if (route === 'workflow') {
+              return `${label}\n\n流程步骤：\n1. 上传资料\n2. 自动识别关键字段\n3. 校验订单与库存\n4. 生成计划与报表\n5. 人工确认后归档\n\n负责人：按业务模块分配`;
+            }
+            if (route === 'todo') {
+              return `${label}\n\n待办事项：\n1. 确认发货单 / 负责人：仓库 / 截止时间：今日 16:00 / 优先级：高\n2. 跟进订单 / 负责人：销售 / 截止时间：今日 17:00 / 优先级：高\n3. 复核库存 / 负责人：计划员 / 截止时间：今日 15:30 / 优先级：中`;
+            }
+            if (route === 'worklog') {
+              return `${label}\n\n工作日志：\n- Excel：已完成发货单统计\n- Word：已生成业务文稿\n- SQL：已完成查询准备\n- Agent：已执行流程拆解\n\n建议：下班前补齐交期与异常记录。`;
+            }
+            if (route === 'autoreport') {
+              return `${label}\n\n企业报表：\n客户：常州新能源科技有限公司\n数量：760\n金额：9710.00\n运输方式：物流配送\n付款方式：月结30天\n风险：交期紧张\n建议：优先确认发货与回款。`;
+            }
+            if (route === 'modeladmin') {
+              return `${label}\n\n模型状态：\n- 当前模型：${Store.state.settings.model || '未配置'}\n- 接口状态：${Store.state.settings.apiEnabled ? '已启用' : '未启用'}\n- 后端地址：${Store.state.settings.apiUrl || '未配置'}\n- 建议：确认 Vercel 环境变量后再上线。`;
+            }
+            if (route === 'apiadmin') {
+              return `${label}\n\nAPI状态：\n- AI API：${Store.state.settings.apiUrl ? '已配置' : '未配置'}\n- Mail API：${Store.state.settings.agentMail?.apiUrl ? '已配置' : '未配置'}\n- 认证方式：JWT\n- 建议：统一检查 HTTPS 地址与密钥权限。`;
+            }
+            return `${label}处理结果\n\n${preview ? `关键内容：\n${preview}\n\n` : ''}输入资料：${(ws.files || []).length} 个文件\n保存时间：${new Date().toLocaleString('zh-CN')}\n\n建议：继续补充具体业务字段后导出或归档。`;
+          };
           if (Store.state.settings.accessMode !== 'local' && source) {
             ws.result = (await AIService.complete(
               `模块：${moduleById(route).name}\n请根据以下资料生成可执行结果，尽量保留数量、客户、产品、交期、付款方式等关键字段。\n\n${source}`,
@@ -1688,7 +1924,7 @@ const App = {
               }
             )).text;
           } else {
-            ws.result = `${moduleById(route).name}处理结果\n\n摘要：${summary}\n\n输入资料：${(ws.files || []).length} 个文件\n保存时间：${new Date().toLocaleString('zh-CN')}\n\n建议：继续补充具体业务字段后导出或归档。`;
+            ws.result = localResult();
           }
         }
       }
@@ -1789,8 +2025,13 @@ const App = {
     const ws = this.getMailWorkspace();
     if (!ws.body) throw new Error('请先生成邮件内容');
     await this.busy(btn, async () => {
-      const res = await AIService.complete(ws.body, { mode: 'polish' });
-      ws.body = res.text;
+      try {
+        const res = await AIService.complete(ws.body, { mode: 'polish' });
+        ws.body = res.text;
+      } catch (error) {
+        this.recordAiError(error, 'mail-polish');
+        ws.body = `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n\n${ws.body}`;
+      }
       ws.result = `主题：${ws.subject}\n\n${ws.body}`;
       Store.save();
       this.rerender();
@@ -1801,8 +2042,13 @@ const App = {
     const ws = this.getMailWorkspace();
     if (!ws.body) throw new Error('请先生成邮件内容');
     await this.busy(btn, async () => {
-      const res = await AIService.complete(`请把下面邮件翻译成商务英文：\n${ws.body}`, { mode: 'rewrite' });
-      ws.body = res.text;
+      try {
+        const res = await AIService.complete(`请把下面邮件翻译成商务英文：\n${ws.body}`, { mode: 'rewrite' });
+        ws.body = res.text;
+      } catch (error) {
+        this.recordAiError(error, 'mail-translate');
+        ws.body = `Business Email Draft\n\n${ws.body}`;
+      }
       ws.result = `主题：${ws.subject}\n\n${ws.body}`;
       Store.save();
       this.rerender();
@@ -1813,8 +2059,13 @@ const App = {
     const ws = this.getMailWorkspace();
     if (!ws.body) throw new Error('请先生成邮件内容');
     await this.busy(btn, async () => {
-      const res = await AIService.complete(ws.body, { mode: 'summary' });
-      ws.result = `邮件总结\n\n${res.text}\n\n主题：${ws.subject}\n收件人：${ws.recipient || '未填写'}\n附件：${(ws.attachments || []).map(item => item.name).join('、') || '无'}`;
+      try {
+        const res = await AIService.complete(ws.body, { mode: 'summary' });
+        ws.result = `邮件总结\n\n${res.text}\n\n主题：${ws.subject}\n收件人：${ws.recipient || '未填写'}\n附件：${(ws.attachments || []).map(item => item.name).join('、') || '无'}`;
+      } catch (error) {
+        this.recordAiError(error, 'mail-summary');
+        ws.result = `邮件总结\n\n当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n\n主题：${ws.subject}\n收件人：${ws.recipient || '未填写'}\n附件：${(ws.attachments || []).map(item => item.name).join('、') || '无'}`;
+      }
       Store.save();
       this.rerender();
     });
@@ -2375,11 +2626,11 @@ const App = {
 
   async settingsTestAI(btn) {
     this.settingsSaveAI();
-    if (Store.state.settings.accessMode === 'local') throw new Error('当前是本地模式，无需测试远程接口');
+    if (Store.state.settings.accessMode === 'local') throw new Error('当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。');
     await this.busy(btn, async () => {
       const res = await APIClient.health(Store.state.settings.apiUrl);
-      if (res.ok) this.toast(`连接成功：${Store.state.settings.apiUrl}`);
-      else throw new Error(res.message || '连接失败');
+      if (res.ok) this.toast(`AI 后端连接成功：${Store.state.settings.apiUrl}`);
+      else throw new Error(res.message || 'AI 后端连接失败');
     });
   },
 
@@ -2419,7 +2670,7 @@ const App = {
         Store.save();
         this.toast('Agent Mail 连接成功');
       } catch (error) {
-        this.toast(`未连通真实接口，演示模式可继续使用：${error.message}`, 'error');
+        this.toast(`当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。${error.message ? `（${error.message}）` : ''}`, 'error');
       }
       this.rerender();
     });
@@ -2762,8 +3013,18 @@ const App = {
       });
       result = ai.text;
     } else if (!result) {
-      const ai = await AIService.complete(prompt, { mode: 'chat', module: 'assistant' });
-      result = ai.text;
+      const low = inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0));
+      const delayed = orders.filter(item => item.delivery_date && new Date(item.delivery_date) < new Date() && item.status !== '已完成');
+      result = [
+        '当前为演示模式，已使用内置演示数据生成结果。',
+        '如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。',
+        '',
+        `优先处理订单：\n${orders.slice().sort((a, b) => String(a.delivery_date || '').localeCompare(String(b.delivery_date || ''))).slice(0, 5).map(item => `${item.order_no} / ${item.customer} / ${item.delivery_date}`).join('\n') || '暂无订单'}`,
+        `库存预警：\n${low.map(item => `${item.product_name} / 当前 ${item.stock_quantity} / 安全 ${item.safety_stock}`).join('\n') || '暂无低库存'}`,
+        `延期风险：\n${delayed.map(item => `${item.order_no} / ${item.customer} / ${item.delivery_date}`).join('\n') || '暂无延期风险'}`,
+        `待回复邮件：\n${(Store.state.mailInbox || []).slice(0, 5).map(item => `${item.subject} / ${item.from}`).join('\n') || '暂无邮件'}`,
+        '建议：优先处理低库存与临期订单，并生成生产计划和跟进邮件。'
+      ].join('\n');
     }
     ws.result = result.trim();
     Store.save();
@@ -2813,27 +3074,64 @@ const App = {
     const history = (Store.state.rlFeedback || []).filter(item => String(item.task || '').includes(task.slice(0, 6))).slice(0, 5);
     const preference = history.length ? history.map(item => `${item.rating || item.success}\n${item.reason || ''}\n${item.modifiedContent || item.modified_content || ''}`).join('\n---\n') : '暂无历史反馈';
     await this.busy(btn, async () => {
-      const planRes = await AIService.complete(
-        `请把以下任务拆解为 3-6 个可执行步骤，每行一个步骤，不要输出多余说明。\n任务：${task}\n历史反馈：${preference}\n${forceRetry ? '要求：避免上次错误，重新生成更稳妥的步骤。' : ''}`,
-        { mode: 'rl-plan', module: 'agentic-rl' }
-      );
+      const demoMode = Store.state.settings.accessMode === 'local' || !Store.state.settings.apiEnabled || !Store.state.settings.apiUrl;
+      const plannerSeed = [
+        `任务输入：${task}`,
+        `历史反馈：${preference}`,
+        forceRetry ? '复用策略：避免上次错误，优先给出更稳妥的步骤。' : ''
+      ].filter(Boolean).join('\n');
+      const fallbackSteps = [
+        '识别任务目标与关键业务字段',
+        '检查相关订单、库存、邮件或文档',
+        '生成可执行步骤与责任人',
+        '汇总结果并提醒人工确认',
+        '记录反馈用于下次优化'
+      ];
+      let plannedText = '';
+      if (demoMode) {
+        plannedText = fallbackSteps.join('\n');
+      } else {
+        const planRes = await AIService.complete(
+          `Planner 生成真实步骤。请基于以下信息输出 3-6 个可执行步骤，每行一个步骤，不要输出多余说明。\n${plannerSeed}`,
+          { mode: 'rl-plan', module: 'agentic-rl' }
+        );
+        plannedText = planRes.text;
+      }
       ws.prompt = task;
-      ws.steps = planRes.text.split('\n').map(line => line.replace(/^\d+[\.\、\s]*/, '').trim()).filter(Boolean).slice(0, 6);
+      ws.steps = plannedText.split('\n').map(line => line.replace(/^\d+[\.\、\s]*/, '').trim()).filter(Boolean).slice(0, 6);
       ws.stepResults = [];
       for (const step of ws.steps) {
-        const stepRes = await AIService.complete(`原始任务：${task}\n当前步骤：${step}\n请只返回本步骤的执行结果。`, {
-          mode: 'rl-step',
-          module: 'agentic-rl'
-        });
-        ws.stepResults.push({ step, reply: stepRes.text });
+        let reply = '';
+        if (demoMode) {
+          reply = `已完成：${step}。基于当前演示数据，结果已整理并可供人工确认。`;
+        } else {
+          const stepRes = await AIService.complete(`Executor 逐步执行。\n原始任务：${task}\n当前步骤：${step}\n请只返回本步骤的执行结果，不要输出 Prompt。`, {
+            mode: 'rl-step',
+            module: 'agentic-rl'
+          });
+          reply = stepRes.text;
+        }
+        ws.stepResults.push({ step, reply });
         Store.save();
         this.rerender();
       }
-      const finalRes = await AIService.complete(
-        `请基于以下步骤结果，汇总最终答案。\n原始任务：${task}\n步骤结果：\n${ws.stepResults.map(item => `${item.step}\n${item.reply}`).join('\n\n')}`,
-        { mode: 'rl-final', module: 'agentic-rl' }
-      );
-      ws.result = finalRes.text;
+      if (demoMode) {
+        ws.result = [
+          '当前为演示模式，已使用内置演示数据生成结果。',
+          '如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。',
+          '',
+          'Aggregator 汇总最终结果：',
+          `任务：${task}`,
+          `步骤数：${ws.steps.length}`,
+          '建议：先人工确认计划，再执行关键业务变更。'
+        ].join('\n');
+      } else {
+        const finalRes = await AIService.complete(
+          `Aggregator 汇总最终结果。\n原始任务：${task}\n步骤结果：\n${ws.stepResults.map(item => `${item.step}\n${item.reply}`).join('\n\n')}`,
+          { mode: 'rl-final', module: 'agentic-rl' }
+        );
+        ws.result = finalRes.text;
+      }
       ws.updatedAt = Date.now();
       Store.addActivity(`Agentic RL 任务：${task.slice(0, 20)}`, 'ai');
       Store.save();

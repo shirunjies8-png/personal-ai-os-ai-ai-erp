@@ -19,6 +19,7 @@ const DefaultState = {
     apiUrl: RuntimeConfig.API_BASE_URL || '',
     apiKey: '',
     model: 'deepseek-chat',
+    backupModels: ['deepseek-reasoner', 'qwen-plus'],
     provider: RuntimeConfig.API_BASE_URL ? 'DeepSeek OpenAI-compatible API' : '本地模式',
     syncMode: 'local',
     dark: false,
@@ -54,6 +55,7 @@ const DefaultState = {
     { id: 'role-viewer', name: '只读用户', permissions: '只读查看、下载' }
   ],
   operationLogs: [],
+  aiErrors: [],
   mailDrafts: [],
   mailRecords: [],
   rlFeedback: [],
@@ -74,7 +76,7 @@ const DefaultState = {
       id: 'demo-mail-1',
       subject: '标书确认回执',
       from: 'tender@demo-company.com',
-      preview: '已收到贵司投标文件，请等待后续评审通知。',
+      preview: '投标文件已确认接收，请等待后续评审通知。',
       time: Date.now() - 1000 * 60 * 60 * 2,
       status: '未读'
     },
@@ -82,7 +84,7 @@ const DefaultState = {
       id: 'demo-mail-2',
       subject: '报价确认邮件',
       from: 'buyer@nova-gmbh.com',
-      preview: '报价已收到，请补充交货周期说明。',
+      preview: '报价文件已确认接收，请补充交货周期说明。',
       time: Date.now() - 1000 * 60 * 60 * 6,
       status: '未读'
     },
@@ -204,6 +206,7 @@ const Store = {
       if (!Array.isArray(this.state.users)) this.state.users = structuredClone(DefaultState.users);
       if (!Array.isArray(this.state.roles)) this.state.roles = structuredClone(DefaultState.roles);
       if (!Array.isArray(this.state.operationLogs)) this.state.operationLogs = [];
+      if (!Array.isArray(this.state.aiErrors)) this.state.aiErrors = [];
       if (!this.state.settings.accessMode) this.state.settings.accessMode = this.state.settings.apiEnabled ? 'api' : 'local';
       if (!this.state.settings.syncMode) this.state.settings.syncMode = 'local';
       if (!this.state.settings.provider) this.state.settings.provider = this.state.settings.accessMode === 'local' ? '本地模式' : '自定义';
@@ -675,15 +678,16 @@ const ExcelBusiness = {
   isDetailRow(row = [], schema = {}) {
     const values = Object.values(schema).filter(index => index != null).map(index => row[index]);
     const quantity = schema.quantity != null ? Utils.number(row[schema.quantity]) : NaN;
-    const amount = schema.amount != null ? Utils.number(row[schema.amount]) : NaN;
     const code = schema.code != null ? String(row[schema.code] || '').trim() : '';
     const name = schema.name != null ? String(row[schema.name] || '').trim() : '';
     const spec = schema.spec != null ? String(row[schema.spec] || '').trim() : '';
-    const hasBusinessFields = [code, name, spec].filter(Boolean).length >= 1;
-    const hasNumeric = Number.isFinite(quantity) || Number.isFinite(amount);
+    const indexText = schema.index != null ? String(row[schema.index] || '').trim() : '';
     const text = values.join(' ');
-    const looksMeta = /联系电话|电话|备注|说明|地址|日期|订单号|客户|传真|邮箱/.test(text) && !hasNumeric;
-    return !looksMeta && (hasBusinessFields || hasNumeric);
+    const forbidden = /合计|备注|签收|说明|包装件数|签收人|发货说明|联系电话|电话|地址|订单号|传真|邮箱/;
+    if (forbidden.test(text)) return false;
+    if (!/^\d+$/.test(indexText)) return false;
+    if (!code || !name) return false;
+    return Number.isFinite(quantity) || spec || true;
   },
   extract(rows = []) {
     if (!rows.length) throw new Error('表格为空');
@@ -734,7 +738,19 @@ const ExcelBusiness = {
   classifyRows(records = []) {
     return records.map(item => ({
       ...item,
-      businessCategory: /轴承|齿轮|传动|支架|电机|阀|组件/.test(item.name + item.spec) ? '产品明细' : '其他明细'
+      businessCategory: /CNC|加工|铣|车|复合/.test(item.name + item.spec)
+        ? 'CNC加工件'
+        : /销轴|轴类/.test(item.name + item.spec)
+          ? '销轴类'
+          : /支架/.test(item.name + item.spec)
+            ? '支架类'
+            : /板|板件/.test(item.name + item.spec)
+              ? '板件'
+              : /车削|数控车/.test(item.name + item.spec)
+                ? '数控车件'
+                : /复合/.test(item.name + item.spec)
+                  ? '车铣复合件'
+                  : '未分类'
     }));
   },
   dedupe(records = []) {
@@ -782,7 +798,7 @@ const ExcelBusiness = {
     const stats = this.stats(records, meta);
     const issues = this.anomalies(records, stats);
     return [
-      `产品明细行数：${stats.lineCount}`,
+      `产品明细：${stats.lineCount} 行`,
       `总数量：${stats.totalQuantity}`,
       `总金额：${stats.totalAmount.toFixed(2)}`,
       `平均单价：${stats.avgPrice.toFixed(2)}`,
@@ -1246,7 +1262,7 @@ const ImageAssistant = {
   },
   analyzeByType(type, ocrText = '', meta = {}) {
     if (type === '单据') {
-      return `图片类型：单据\n已自动执行 OCR 纠错。\n识别摘要：${KnowledgeEngine.summary(ocrText)}\n建议：核对数量、金额、客户和交期后再归档。`;
+      return `图片类型：单据\n已自动执行 OCR 纠错。\n识别结果概览：${KnowledgeEngine.summary(ocrText)}\n建议：核对数量、金额、客户和交期后再归档。`;
     }
     if (type === '产品图') {
       return `图片类型：产品图\n产品描述：适合用于产品档案、报价资料或官网详情页。\n瑕疵检查：建议关注边缘缺口、表面划痕、色差与污点。\n用途建议：可生成产品介绍、质检记录和客户发送素材。\n尺寸：${meta.width || '-'} × ${meta.height || '-'}`;
@@ -1262,44 +1278,49 @@ const ImageAssistant = {
 };
 
 const AIService = {
-  lastMode: 'mock',
+  lastMode: 'api',
+  isRetryable(error = {}) {
+    const text = String(error.message || error || '');
+    return /Selected model is at capacity|Rate limit exceeded|\b429\b|\b503\b|Timeout|Network Error|AI 后端连接失败/i.test(text);
+  },
+  friendlyMessage(error = {}) {
+    const text = String(error.message || error || '');
+    if (/DEEPSEEK_API_KEY/.test(text)) return '当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。';
+    if (this.isRetryable(error)) return '当前 AI 模型繁忙，请稍后重试。';
+    return text || 'AI 调用失败';
+  },
   async complete(prompt, options = {}) {
     const settings = Store.state.settings;
     if (settings.apiEnabled && settings.apiUrl && settings.accessMode !== 'local') {
       const system = options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。';
-      const payload = await APIClient.chat([
-        { role: 'system', content: system },
-        { role: 'user', content: prompt }
-      ], options.module || options.mode || 'general', {
-        model: settings.model || 'deepseek-chat',
-        temperature: options.temperature ?? 0.2
-      });
-      const text = payload.reply || payload.data?.reply || payload.text;
-      if (!text) throw new Error('模型返回为空');
-      this.lastMode = 'api';
-      return { text, mode: 'api' };
+      const models = [settings.model || 'deepseek-chat', ...(settings.backupModels || [])].filter(Boolean);
+      let lastError = null;
+      for (let i = 0; i < models.length; i += 1) {
+        const model = models[i];
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const payload = await APIClient.chat([
+              { role: 'system', content: system },
+              { role: 'user', content: prompt }
+            ], options.module || options.mode || 'general', {
+              model,
+              temperature: options.temperature ?? 0.2
+            });
+            const text = payload.reply || payload.data?.reply || payload.text;
+            if (!text) throw new Error('模型返回为空');
+            this.lastMode = 'api';
+            if (model !== settings.model) Store.state.settings.model = model;
+            return { text, mode: 'api', model };
+          } catch (error) {
+            lastError = error;
+            if (!this.isRetryable(error) || attempt === 1) break;
+            await wait(400);
+          }
+        }
+      }
+      throw new Error(this.friendlyMessage(lastError));
     }
-    this.lastMode = 'mock';
-    await wait(220);
-    return { text: this.mock(prompt, options.mode), mode: 'mock' };
-  },
-  mock(prompt, mode = 'chat') {
-    const input = String(prompt || '').trim();
-    if (mode === 'polish') return input.replace(/然后/g, '随后').replace(/非常/g, '较为').trim();
-    if (mode === 'summary') return KnowledgeEngine.summary(input) || input.slice(0, 180);
-    if (mode === 'rewrite') return `改写结果：\n${input}`;
-    if (mode === 'proofread') return `纠错结果：\n${input.replace(/的的/g, '的').replace(/了了/g, '了')}`;
-    if (mode === 'format') return input.split('\n').map(line => line.trim()).filter(Boolean).join('\n');
-    if (mode === 'continue') return `${input}\n\n后续建议：补充负责人、交期、风险与验收标准。`;
-    if (mode === 'pdf') return `PDF 业务总结\n\n${KnowledgeEngine.summary(input)}\n\n建议：继续核对关键字段并归档。`;
-    if (mode === 'kb') return KnowledgeEngine.summary(input);
-    if (mode === 'vision') return `图像分析：${input}`;
-    if (mode === 'writing') {
-      const matchType = input.match(/类型[:：]\s*([^\n]+)/);
-      const matchPrompt = input.match(/要求[:：]\s*([\s\S]+)/);
-      return WritingTemplates.generate(matchType?.[1] || '文档', matchPrompt?.[1] || input);
-    }
-    return `已收到：${input}\n\n当前处于本地模拟模式。我会保留关键业务字段，并优先给出可执行结果。`;
+    throw new Error('当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。');
   }
 };
 

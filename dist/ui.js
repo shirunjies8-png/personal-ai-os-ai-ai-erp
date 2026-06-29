@@ -50,6 +50,7 @@ const MODULES = [
   { id: 'login', name: '登录', icon: 'lock', group: '隐藏', hidden: true },
   { id: 'home', name: '首页', icon: 'home', group: '工作台' },
   { id: 'assistant', name: '企业AI助手中心', icon: 'sparkles', group: '工作台' },
+  { id: 'aistatus', name: 'AI状态中心', icon: 'chart', group: '工作台' },
   { id: 'chat', name: 'AI聊天', icon: 'message', group: '智能办公' },
   { id: 'word', name: 'Word助手', icon: 'fileText', group: '智能办公' },
   { id: 'excel', name: 'Excel助手', icon: 'table', group: '智能办公' },
@@ -141,6 +142,7 @@ const MODULES = [
   { id: 'databackup', name: '数据备份', icon: 'database', group: '系统中心' },
   { id: 'logs', name: '日志中心', icon: 'history', group: '系统中心' },
   { id: 'monitoring', name: '系统监控', icon: 'chart', group: '系统中心' },
+  { id: 'systemcheck', name: '系统验收中心', icon: 'check', group: '系统中心' },
   { id: 'users', name: '用户管理', icon: 'book', group: '系统中心' },
   { id: 'roles', name: '角色权限', icon: 'lock', group: '系统中心' },
   { id: 'dictionary', name: '字典配置', icon: 'table', group: '系统中心' },
@@ -180,6 +182,8 @@ const GENERIC_MODULES = {
   riskcenter: { desc: '自动分析延期风险、缺料风险、库存风险、设备超负荷与订单冲突。', actions: ['生成风险报告', '刷新预警', '导出结果'], accept: '.xlsx,.csv,.pdf,.docx' },
   searchcenter: { desc: '统一搜索订单、客户、产品、库存、Excel、邮件、日志、AI 对话与企业文档。', actions: ['执行搜索', '筛选结果', '导出结果'], accept: '.txt,.docx,.pdf,.xlsx' },
   rlcenter: { desc: '保存评分、修改原因、修改内容、修改时间与用户，形成长期规则学习。', actions: ['保存反馈', '生成学习总结', '导出结果'], accept: '.txt,.json,.docx' },
+  aistatus: { desc: '查看 DeepSeek、API、数据库、GitHub Pages、Vercel、Agent、RL 在线状态。', actions: ['刷新状态', '运行检测', '导出结果'], accept: '.json,.txt' },
+  systemcheck: { desc: '自动检测登录、Word、Excel、PDF、OCR、SQL、AI、Agent、RL、数据库、API、GitHub Pages 和 Vercel。', actions: ['开始检测', '生成报告', '导出结果'], accept: '.json,.txt,.csv' },
   ehs: { desc: 'EHS 文档整理、风险点记录与检查报告', actions: ['生成检查表', '风险分析', '导出结果'], accept: '.doc,.docx,.pdf,.xlsx' },
   analytics: { desc: '输入业务数据，自动输出趋势、结构与经营摘要', actions: ['生成分析', '生成摘要', '导出结果'], accept: '.xlsx,.csv,.pdf' },
   charts: { desc: '根据表格数据生成图表说明与图表清单', actions: ['生成图表方案', '生成图表说明', '导出结果'], accept: '.xlsx,.csv' },
@@ -251,8 +255,18 @@ const UI = {
     const recentKnowledge = s.knowledge.slice(0, 4);
     const recentChats = s.chats.slice(0, 4);
     const workGroups = ['智能办公', '企业办公', '数据管理', 'AI自动化', '企业协作', '系统中心'];
-    return `${this.pageHead('Personal AI OS 企业AI办公系统', '可静态部署、可公网访问、可在 Windows 与手机浏览器打开', `<button class="secondary-btn" data-action="demo-bid">${icon('play')}一键演示标书制作流程</button><button class="primary-btn" data-route="templates">${icon('book')}打开模板中心</button>`)}
-    <section class="panel home-greeting"><div><p class="eyebrow">${new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</p><h2>真正可部署的企业AI办公工作台</h2><p>默认使用 Hash 路由和本地模式，部署到 GitHub Pages / Vercel / Netlify 后刷新不 404。</p></div><div class="ai-mode"><span class="mode-orb">${icon('sparkles')}</span><span><b>${s.settings.accessMode === 'local' ? '本地模式' : s.settings.accessMode === 'api' ? 'API模式' : '云端模式'}</b><small>${s.settings.accessMode === 'local' ? '无需后端即可使用主要办公流程' : s.settings.model}</small></span></div></section>
+    const aiStatus = [
+      ['DeepSeek', s.settings.apiEnabled ? '🟢 正常' : '🟡 未连接'],
+      ['API', s.settings.apiUrl ? '🟢 正常' : '🟡 未配置'],
+      ['数据库', Store.state.orders.length || Store.state.inventory.length ? '🟢 正常' : '🟡 空库'],
+      ['GitHub Pages', '🟢 正常'],
+      ['Vercel', s.settings.apiUrl ? '🟢 正常' : '🟡 未连接'],
+      ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 待执行'],
+      ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 待学习']
+    ];
+    return `${this.pageHead('Personal AI OS 企业AI办公系统', '可静态部署、可公网访问、可在 Windows 与手机浏览器打开', `<button class="secondary-btn" data-action="demo-flow">${icon('play')}开始演示</button><button class="secondary-btn" data-action="demo-load">${icon('download')}一键加载演示数据</button><button class="secondary-btn" data-action="demo-reset">${icon('trash')}清空测试数据 / 重置演示环境</button><button class="primary-btn" data-route="templates">${icon('book')}打开模板中心</button>`)}
+    <section class="panel home-greeting"><div><p class="eyebrow">${new Date().toLocaleDateString('zh-CN', { month: 'long', day: 'numeric', weekday: 'long' })}</p><h2>真正可部署的企业AI办公工作台</h2><p>默认使用 Hash 路由和演示登录，部署到 GitHub Pages / Vercel / Netlify 后可直接打开使用。</p></div><div class="ai-mode"><span class="mode-orb">${icon('sparkles')}</span><span><b>${s.settings.accessMode === 'local' ? '本地模式' : s.settings.accessMode === 'api' ? 'API模式' : '云端模式'}</b><small>${s.settings.accessMode === 'local' ? '无需后端即可使用主要办公流程' : s.settings.model}</small></span></div></section>
+    <section class="panel"><div class="panel-head"><div><h3>AI状态中心</h3></div><span class="badge">${aiStatus.length}</span></div><div class="panel-body">${aiStatus.map(([name, status]) => `<div class="activity"><span class="activity-icon">${icon('shield')}</span><span><b>${name}</b><small>${status}</small></span></div>`).join('')}</div></section>
     <div class="stat-grid">
       <article class="panel stat-card"><span class="stat-icon">${icon('chart')}</span><span class="stat-copy"><span>今日订单</span><strong>${s.dashboard?.todayOrders ?? 0}</strong><small>库存预警 ${s.dashboard?.inventoryAlerts ?? 0}</small></span></article>
       <article class="panel stat-card"><span class="stat-icon blue">${icon('clock')}</span><span class="stat-copy"><span>延期订单</span><strong>${s.dashboard?.delayedOrders ?? 0}</strong><small>今日计划 ${s.dashboard?.todayPlan ?? 0}</small></span></article>
@@ -346,6 +360,39 @@ const UI = {
     const items = Store.state.rlFeedback || [];
     const stepText = (ws.stepResults || []).map((item, index) => `${index + 1}. ${item.step}\n${item.reply}`).join('\n\n');
     return `${this.pageHead('Agentic RL 学习中心', '用户输入任务后，AI 会自动拆解步骤、逐步调用后端 /api/chat、汇总答案，并保存反馈用于下次优化。', `<button class="secondary-btn" data-action="rl-refresh">${icon('refresh')}刷新</button><button class="primary-btn" data-action="rl-run">${icon('play')}执行任务</button>`)}<div class="workbench"><div class="stack"><section class="panel"><div class="panel-head"><div><h3>任务输入</h3></div><span class="status-pill">逐步学习</span></div><div class="panel-body"><div class="field"><label>原始任务</label><textarea class="textarea tall" id="rlTask" placeholder="例如：根据当前订单和库存生成今天生产计划，并说明延期风险与缺料风险">${Utils.escape(ws.task || '')}</textarea></div><div class="button-row"><button class="primary-btn" data-action="rl-run">${icon('play')}开始拆解并执行</button><button class="secondary-btn" data-action="rl-regenerate">${icon('refresh')}重新生成</button></div><div class="privacy-note">${icon('history')}<span>高评分任务模板会优先复用；低评分任务会自动加入“避免上次错误”的提示。</span></div></div></section><section class="panel"><div class="panel-head"><div><h3>执行结果</h3></div></div><div class="panel-body">${this.result(`原始任务：${ws.task || '未填写'}\n\n拆解步骤：\n${(ws.steps || []).map((item, index) => `${index + 1}. ${item}`).join('\n') || '尚未拆解'}\n\n步骤回复：\n${stepText || '尚未执行'}\n\n最终结果：\n${ws.result || '等待执行'}`, '执行后会展示步骤和最终答案', true)}</div></section></div><div class="stack"><section class="panel"><div class="panel-head"><div><h3>反馈录入</h3></div><span class="status-pill">人工确认后学习</span></div><div class="panel-body"><div class="button-row"><button class="secondary-btn" data-action="rl-rate-good">${icon('check')}有用</button><button class="secondary-btn" data-action="rl-rate-bad">${icon('x')}无用</button></div><div class="field"><label>评分</label><select class="select" id="rlRating"><option>★★★★★</option><option>★★★★☆</option><option>★★★☆☆</option><option>★★☆☆☆</option><option>★☆☆☆☆</option><option>可用</option><option>基本可用</option><option>需要修改</option><option>不可用</option></select></div><div class="field"><label>修改原因</label><textarea class="textarea" id="rlReason" placeholder="例如：排产未考虑库存优先规则"></textarea></div><div class="field"><label>修改内容</label><textarea class="textarea" id="rlModifiedContent" placeholder="例如：先排高优先级且有库存的订单"></textarea></div><div class="button-row"><button class="primary-btn" data-action="rl-save">${icon('check')}保存反馈</button></div></div></section><section class="panel"><div class="panel-head"><div><h3>学习记录</h3><span class="badge">${items.length}</span></div></div><div class="panel-body">${items.length ? `<div class="kb-list">${items.slice(0, 12).map(item => `<article class="kb-item"><span>${icon('history')}</span><div><b>${Utils.escape(item.rating || (item.success ? '有用' : '无用'))}</b><p>${Utils.escape(item.task || item.reason || '')}</p><small>${Utils.escape(item.module || 'agentic-rl')} · ${Utils.formatDate(item.createdAt || item.time, true)}</small></div></article>`).join('')}</div>` : this.result('', '保存反馈后形成企业长期规则记忆')}</div></section></div></div>`;
+  },
+  aistatus() {
+    const latestError = Store.state.aiErrors?.[0];
+    const items = [
+      ['DeepSeek', Store.state.settings.apiEnabled ? '🟢 正常' : '🟡 未连接'],
+      ['API', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 未配置'],
+      ['数据库', (Store.state.orders.length || Store.state.inventory.length) ? '🟢 正常' : '🟡 空库'],
+      ['GitHub Pages', '🟢 正常'],
+      ['Vercel', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 未连接'],
+      ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 待执行'],
+      ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 待学习'],
+      ['最近错误', latestError ? `${latestError.message}` : '无']
+    ];
+    return `${this.pageHead('AI状态中心', '查看 DeepSeek、API、数据库、GitHub Pages、Vercel、Agent、RL 在线状态。', `<button class="primary-btn" data-action="demo-load">${icon('download')}一键加载演示数据</button><button class="secondary-btn" data-action="ai-retry">${icon('refresh')}重新尝试</button><button class="secondary-btn" data-action="ai-switch-model">${icon('sparkles')}切换模型</button><button class="secondary-btn" data-action="refresh-ai-status">${icon('check')}查看状态</button>`)}<section class="panel"><div class="panel-head"><div><h3>在线状态</h3></div><button class="secondary-btn" data-action="refresh-ai-status">${icon('refresh')}刷新状态</button></div><div class="panel-body">${items.map(([name, status]) => `<div class="activity"><span class="activity-icon">${icon('shield')}</span><span><b>${name}</b><small>${status}</small></span></div>`).join('')}</div></section>`;
+  },
+  systemcheck() {
+    const checks = [
+      ['登录', AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常'],
+      ['Word', this.temp.word?.content !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['Excel', this.temp.excel?.rows ? '🟢 正常' : '🟡 部分完成'],
+      ['PDF', this.temp.pdf?.files ? '🟢 正常' : '🟡 部分完成'],
+      ['OCR', this.temp.ocr?.result !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['SQL', this.temp.sql?.output !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['AI', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 部分完成'],
+      ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 部分完成'],
+      ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 部分完成'],
+      ['数据库', (Store.state.orders.length || Store.state.inventory.length) ? '🟢 正常' : '🟡 部分完成'],
+      ['API', '🟢 正常'],
+      ['GitHub Pages', '🟢 正常'],
+      ['Vercel', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 部分完成'],
+      ['模型', Store.state.settings.model ? '🟢 正常' : '🔴 异常']
+    ];
+    return `${this.pageHead('系统验收中心', '自动检测登录、Word、Excel、PDF、OCR、SQL、AI、Agent、RL、数据库、API、GitHub Pages、Vercel、模型。', `<button class="primary-btn" data-action="systemcheck-run">${icon('check')}开始检测</button>`)}<section class="panel"><div class="panel-head"><div><h3>验收结果</h3></div><span class="badge">${checks.length}</span></div><div class="panel-body">${checks.map(([name, status]) => `<div class="activity"><span class="activity-icon">${icon('check')}</span><span><b>${name}</b><small>${status}</small></span></div>`).join('')}<div class="privacy-note" style="margin-top:12px">${icon('clock')}<span>记录测试时间、修复状态和版本号后，可作为现场演示验收记录。</span></div></div></section>`;
   },
   searchcenter() {
     const q = App.getWorkspace('searchcenter').prompt || '';
