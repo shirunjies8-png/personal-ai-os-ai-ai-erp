@@ -7,6 +7,7 @@ const publicDir = path.join(root, 'public');
 const entries = [
   'index.html',
   'styles.css',
+  'config.js',
   'core.js',
   'ui.js',
   'app.js',

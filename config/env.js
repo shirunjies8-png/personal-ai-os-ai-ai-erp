@@ -19,6 +19,6 @@ module.exports = {
   mailAgentBaseUrl: process.env.MAIL_AGENT_BASE_URL || '',
   mailAgentApiKey: process.env.MAIL_AGENT_API_KEY || '',
   defaultAdminEmail: process.env.DEFAULT_ADMIN_EMAIL || 'admin@personal-ai-os.local',
-  defaultAdminPassword: process.env.DEFAULT_ADMIN_PASSWORD || 'Admin123!',
+  defaultAdminPassword: process.env.DEFAULT_ADMIN_PASSWORD || '123456',
   defaultEnterpriseName: process.env.DEFAULT_ENTERPRISE_NAME || 'Personal AI OS Demo Enterprise'
 };

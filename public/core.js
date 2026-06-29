@@ -1,15 +1,25 @@
 const APP_KEY = 'personal-ai-os-v1';
 const AUTH_KEY = 'personal-ai-os-auth';
+const RuntimeConfig = {
+  ...((typeof window !== 'undefined' && window.PERSONAL_AI_OS_CONFIG) || {})
+};
+const DEMO_ACCOUNT = {
+  email: 'admin@personal-ai-os.local',
+  password: '123456',
+  enterpriseName: 'Personal AI OS Demo Enterprise',
+  name: '企业管理员',
+  role: '企业管理员'
+};
 
 const DefaultState = {
   version: 2,
   settings: {
-    accessMode: 'local',
-    apiEnabled: false,
-    apiUrl: '',
+    accessMode: RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY ? 'cloud' : 'local',
+    apiEnabled: Boolean(RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY),
+    apiUrl: RuntimeConfig.API_BASE_URL || '',
     apiKey: '',
-    model: 'gpt-4o-mini',
-    provider: '本地模式',
+    model: 'deepseek-chat',
+    provider: RuntimeConfig.API_BASE_URL ? 'DeepSeek OpenAI-compatible API' : '本地模式',
     syncMode: 'local',
     dark: false,
     agentMail: {
@@ -46,6 +56,7 @@ const DefaultState = {
   operationLogs: [],
   mailDrafts: [],
   mailRecords: [],
+  rlFeedback: [],
   orders: [],
   inventory: [],
   dashboard: {
@@ -108,17 +119,26 @@ const AuthClient = {
   },
   isLoggedIn() {
     return !!this.token;
+  },
+  isDemo() {
+    return this.session?.demo === true;
   }
 };
 
 const APIClient = {
-  async request(path, options = {}) {
+  resolveUrl(path, baseUrl = '') {
+    if (/^https?:\/\//.test(path)) return path;
+    const base = String(baseUrl || '').replace(/\/$/, '');
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    return base ? `${base}${normalizedPath}` : normalizedPath;
+  },
+  async request(path, options = {}, meta = {}) {
     const headers = {
       'Content-Type': 'application/json',
       ...(options.headers || {})
     };
     if (AuthClient.token) headers.Authorization = `Bearer ${AuthClient.token}`;
-    const response = await fetch(path, {
+    const response = await fetch(this.resolveUrl(path, meta.baseUrl), {
       ...options,
       headers
     });
@@ -133,6 +153,31 @@ const APIClient = {
       throw new Error(detail || `HTTP ${response.status}`);
     }
     return response.json();
+  },
+  async chat(messages, module = 'ai-chat', extra = {}) {
+    const baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '';
+    if (!baseUrl || /your-vercel-backend\.vercel\.app/.test(baseUrl)) {
+      throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
+    }
+    try {
+      return await this.request('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages,
+          module,
+          ...extra
+        })
+      }, { baseUrl });
+    } catch (error) {
+      if (/Failed to fetch|Load failed|NetworkError|fetch/i.test(error.message)) {
+        throw new Error('AI 后端连接失败');
+      }
+      throw error;
+    }
+  },
+  async health(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
+    if (!baseUrl) throw new Error('未配置后端地址');
+    return this.request('/api/health', {}, { baseUrl });
   }
 };
 
@@ -168,10 +213,16 @@ const Store = {
       };
       if (!Array.isArray(this.state.mailDrafts)) this.state.mailDrafts = [];
       if (!Array.isArray(this.state.mailRecords)) this.state.mailRecords = [];
+      if (!Array.isArray(this.state.rlFeedback)) this.state.rlFeedback = [];
       if (!Array.isArray(this.state.orders)) this.state.orders = [];
       if (!Array.isArray(this.state.inventory)) this.state.inventory = [];
       if (!this.state.dashboard || typeof this.state.dashboard !== 'object') this.state.dashboard = structuredClone(DefaultState.dashboard);
       if (!Array.isArray(this.state.mailInbox) || !this.state.mailInbox.length) this.state.mailInbox = structuredClone(DefaultState.mailInbox);
+      if (!this.state.settings.apiUrl && RuntimeConfig.API_BASE_URL) this.state.settings.apiUrl = RuntimeConfig.API_BASE_URL;
+      if (this.state.settings.apiUrl && this.state.settings.accessMode === 'local' && !RuntimeConfig.DEMO_LOGIN_ONLY) {
+        this.state.settings.accessMode = 'cloud';
+        this.state.settings.apiEnabled = true;
+      }
     } catch {
       this.state = structuredClone(DefaultState);
     }
@@ -229,12 +280,12 @@ const Store = {
     this.save();
   },
   scheduleSync() {
-    if (!AuthClient.isLoggedIn()) return;
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) return;
     clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => this.syncToServer(), 400);
   },
   async hydrateFromServer() {
-    if (!AuthClient.isLoggedIn()) return this.state;
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) return this.state;
     try {
       const [stateRes, dashboardRes, enterpriseRes, logRes] = await Promise.all([
         APIClient.request('/api/state'),
@@ -274,7 +325,7 @@ const Store = {
     return this.state;
   },
   async syncToServer() {
-    if (!AuthClient.isLoggedIn() || this.syncing) return;
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo() || this.syncing) return;
     this.syncing = true;
     try {
       await APIClient.request('/api/state', {
@@ -1214,30 +1265,19 @@ const AIService = {
   lastMode: 'mock',
   async complete(prompt, options = {}) {
     const settings = Store.state.settings;
-    if (settings.apiEnabled && settings.apiUrl && settings.model && settings.accessMode !== 'local' && (settings.apiKey || settings.provider === '本地模型')) {
-      try {
-        const base = settings.apiUrl.replace(/\/$/, '');
-        const messages = [
-          { role: 'system', content: options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。' },
-          { role: 'user', content: prompt }
-        ];
-        const headers = { 'Content-Type': 'application/json' };
-        if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
-        const response = await fetch(`${base}/chat/completions`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ model: settings.model, messages, temperature: options.temperature ?? 0.2 })
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 180)}`);
-        const data = await response.json();
-        const text = data.choices?.[0]?.message?.content;
-        if (!text) throw new Error('模型返回为空');
-        this.lastMode = 'api';
-        return { text, mode: 'api' };
-      } catch (error) {
-        this.lastMode = 'fallback';
-        return { text: this.mock(prompt, options.mode), mode: 'fallback', error: error.message };
-      }
+    if (settings.apiEnabled && settings.apiUrl && settings.accessMode !== 'local') {
+      const system = options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。';
+      const payload = await APIClient.chat([
+        { role: 'system', content: system },
+        { role: 'user', content: prompt }
+      ], options.module || options.mode || 'general', {
+        model: settings.model || 'deepseek-chat',
+        temperature: options.temperature ?? 0.2
+      });
+      const text = payload.reply || payload.data?.reply || payload.text;
+      if (!text) throw new Error('模型返回为空');
+      this.lastMode = 'api';
+      return { text, mode: 'api' };
     }
     this.lastMode = 'mock';
     await wait(220);
