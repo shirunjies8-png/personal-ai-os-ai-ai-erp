@@ -1,0 +1,32 @@
+{
+  "name": "personal-ai-os",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Personal AI OS 个人AI工作操作系统",
+  "scripts": {
+    "prestart": "node scripts/sync-public.mjs",
+    "prebuild": "node scripts/sync-public.mjs",
+    "build": "node scripts/build-static.mjs",
+    "start": "node server.js",
+    "dev": "node server.js",
+    "db:init": "node scripts/init-db.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^12.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mammoth": "^1.10.0",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.2",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^5.4.624",
+    "tesseract.js": "^6.0.1",
+    "uuid": "^11.1.0",
+    "xlsx": "^0.18.5"
+  }
+}

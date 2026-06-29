@@ -1,0 +1,9 @@
+{
+  "name": "Personal AI OS",
+  "short_name": "PersonalAIOS",
+  "display": "standalone",
+  "start_url": "/",
+  "scope": "/",
+  "background_color": "#f4f5f7",
+  "theme_color": "#1d2433"
+}
