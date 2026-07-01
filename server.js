@@ -13,6 +13,10 @@ const errorHandler = require('./middleware/errorHandler');
 const app = express();
 const publicDir = path.join(process.cwd(), 'public');
 
+const deepseekStatus = env.deepseekApiKey
+  ? `DeepSeek 已连接 | Base URL: ${env.deepseekBaseUrl} | Model: ${env.deepseekModel}`
+  : '未检测到 DEEPSEEK_API_KEY';
+
 app.use(helmet({
   crossOriginResourcePolicy: false
 }));
@@ -41,4 +45,5 @@ app.use(errorHandler);
 
 app.listen(env.port, env.host, () => {
   console.log(`Personal AI OS server running on ${env.appUrl}`);
+  console.log(deepseekStatus);
 });

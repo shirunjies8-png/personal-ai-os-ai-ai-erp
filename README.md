@@ -1,324 +1,223 @@
-# Personal AI OS 企业人工智能操作系统
+# Industrial AI OS
 
-这是在现有 Personal AI OS 项目基础上的升级版，不推倒重做，保留了原有 UI、HTML、CSS、JavaScript 和模块结构，并把核心链路升级为：
+面向制造业与企业办公场景的可运行 AI 操作系统。项目以生产计划、Excel 数据处理和文档智能为核心，通过统一 AI Gateway 连接真实模型，同时保留 Mock 模式，便于离线演示、面试展示和渐进式开发。
 
-- 前端：可部署到 GitHub Pages 的纯静态网页
-- 后端：可部署到 Vercel 的 HTTPS API
-- AI：统一通过后端 `POST /api/chat` 调用 DeepSeek OpenAI-compatible API
-- 登录：GitHub Pages 可用的演示登录
-- 本地开发：仍支持 `http://127.0.0.1:3000`
+当前版本：`v1.0 Resume Demo Version`
 
-## 1. 普通用户怎么使用
+项目状态：Demo 可演示版
+推荐演示入口：[GitHub Pages](https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/)
 
-前端网址部署后直接打开：
+数据处理模式：
 
-- [https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/](https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/)
+- `Local Only`：默认本地演示，数据只保存在当前浏览器
+- `Hybrid`：本地数据 + 可选远程 AI
+- `Remote AI`：仅在配置后端时启用，输入会发往第三方 AI 接口
 
-默认演示账号：
+安全提示：
 
-- 邮箱：`admin@personal-ai-os.local`
-- 密码：`123456`
-- 企业名称：`Personal AI OS Demo Enterprise`
-- 姓名：`企业管理员`
-- 角色：`企业管理员`
+- 演示项目请勿上传企业机密文件
+- 请勿填写企业生产 API Key
+- API Key 仅保存在当前浏览器 `localStorage`
+- 清除浏览器缓存会导致本地数据丢失
+- GitHub Pages 静态演示不适合存放真实企业数据
 
-特点：
+## 项目定位
 
-- 登录状态保存在浏览器 `localStorage`
-- 刷新页面不掉登录
-- 支持退出登录
-- 如果账号密码错误，会提示：
-  - `账号或密码错误，请使用演示账号 admin@personal-ai-os.local / 123456`
+Industrial AI OS 不是单一聊天机器人或静态展示页，而是一套浏览器内可操作的工业 AI 工作台。系统保留传统企业软件的菜单、工作区、文件处理和数据管理能力，并通过 AI Gateway 为生产计划、Excel、PDF、OCR、PPT、SQL、Agent 等模块提供智能分析。
 
-## 2. 当前真运行能力
+适用场景：
 
-当前已接成真实可操作的模块：
+- 制造业生产计划、PMC、仓库、采购、销售和质量管理
+- Excel 发货单、订单、库存和业务数据分析
+- Word、PDF、OCR、PPT 等企业文档处理
+- AI 应用开发、工业数字化、MES/ERP 作品展示
+- 求职面试、项目演示和后续企业化原型验证
 
-- AI Chat：输入问题 → 调用后端 `/api/chat` → 显示真实回复 / loading / 错误
-- AI 写作：日报、周报、月报、合同、产品介绍、邮件等
-- AI SQL 助手：生成 SQL、解释 SQL、优化 SQL
-- AI PDF / Word：提取文本后调用 AI 总结
-- AI Excel：前端解析表格、预览、统计、再把摘要发给 AI
-- 企业 AI 助手中心：用自然语言调度订单、库存、计划、邮件、知识
-- Agentic RL 学习中心：任务拆解、逐步调用 AI、汇总结果、保存反馈
-- AI 芯片助理：Verilog / RTL / Testbench / FPGA / ASIC / RISC-V 问答
+## 核心功能
 
-说明：
+- 工业驾驶舱：订单、生产计划、风险、设备台账、Agent 和系统状态指标
+- AI 生产计划助手：粘贴订单或导入 CSV，结合设备台账分析交期、负载、物料风险并生成日报
+- Excel 助手：读取 Excel/CSV、识别产品明细、统计数量金额、查重分类和业务分析
+- PDF 助手：上传 PDF、读取文字层、AI 总结、问答、拆分、合并和转 Word
+- OCR 助手：图片上传、浏览器本地 OCR、结构化字段恢复、TXT/Word/Excel 导出
+- PPT 助手：输入主题、行业、页数和用途，通过 AI Gateway 生成逐页大纲
+- Word 与 AI 写作：总结、润色、改写、纠错、格式化和文档导出
+- SQL 助手：支持 MySQL、SQL Server、Oracle、SQLite、PostgreSQL 的生成、解释和优化
+- AI Chat、AI Agent、Agentic RL：自然语言入口、任务拆解、执行记录和反馈学习
+- 文件中心、知识库、邮件助手、系统状态中心和系统验收中心
+- 设备台账：内置 CNC 加工中心、数控车床、锯床、铣床、锻压机、轧辊机、淬火炉、时效炉
+- 数据脱敏：手机号、邮箱、身份证、客户名称、金额和地址简单脱敏
+- AI 调用历史与成本统计：查看最近调用、Mock/真实 API 比例、Token 统计和估算费用
 
-- 前端不保存 `DEEPSEEK_API_KEY`
-- 后端不可用时不会假装成功
-- 会显示真实错误，例如：
-  - `后端未配置 DEEPSEEK_API_KEY`
-  - `AI 后端连接失败`
-  - `模型返回为空`
+## AI Mode
 
-## 3. 项目结构
+系统支持以下运行模式：
+
+| 模式 | 用途 | 说明 |
+| --- | --- | --- |
+| Mock | 离线演示 | 无 API Key 也能演示主要流程，结果会明确标记 Mock/演示兜底 |
+| API | 真实 AI | 前端通过 HTTPS 调用后端 `/api/chat`，密钥不进入前端 |
+| Hybrid | 混合运行 | 优先调用 AI Gateway，异常时按模块提供可识别的兜底结果 |
+| Local Model | 预留 | 为后续本地模型和私有化部署保留配置入口 |
+
+真实 AI 推荐使用 DeepSeek OpenAI-compatible API。所有业务模块应通过 AI Gateway 调用模型，不在前端硬编码 API Key。
+
+## 技术栈
+
+- 前端：HTML5、CSS3、原生 JavaScript、响应式布局
+- 后端：Node.js、Express、REST API
+- 数据：SQLite、localStorage、IndexedDB
+- AI：统一 AI Gateway、DeepSeek OpenAI-compatible API、Mock fallback
+- 文件处理：SheetJS、ExcelJS、PDF.js、pdf-lib、Mammoth、Tesseract.js
+- 安全：JWT、bcrypt、Helmet、CORS、输入校验
+- 构建与部署：Node.js 构建脚本、GitHub Pages、Vercel、Docker
+
+## 演示账号
 
 ```text
-project/
-├── api/                  # Vercel serverless API
-├── agents/
-├── assets/
-├── backups/
-├── config/
-├── controllers/
-├── core.js
-├── app.js
-├── ui.js
-├── styles.css
-├── config.js
-├── database/
-├── dist/
-├── index.html
-├── knowledge/
-├── logs/
-├── mail/
-├── mcp/
-├── middleware/
-├── models/
-├── ocr/
-├── plugins/
-├── public/
-├── rag/
-├── reports/
-├── rl/
-├── routes/
-├── scripts/
-├── server.js
-├── services/
-├── uploads/
-├── utils/
-├── vendor/
-├── vercel.json
-├── Dockerfile
-├── docker-compose.yml
-└── nginx.conf
+邮箱：admin@personal-ai-os.local
+密码：123456
+企业：Personal AI OS Demo Enterprise
+姓名：企业管理员
+角色：企业管理员
 ```
 
-## 4. 本地开发运行（Mac / Windows / Linux）
+演示登录状态保存在浏览器 localStorage，刷新页面不会自动退出。
 
-### 4.1 前端静态测试
+## 模块列表
 
-先构建：
+- 智能办公：AI聊天、Word助手、Excel助手、PDF助手、OCR识别、AI写作、邮件助手、翻译助手、PPT助手、模板中心等
+- 企业办公：订单中心、生产计划助手、设备台账、库存中心、采购、销售、质量、ERP、MES、SQL、BOM 等
+- 数据管理：文件中心、知识库、图片助手、数据分析、数据校验、版本管理、备份恢复等
+- AI 自动化：AI Agent、Agentic RL、工作流、自动报表、日程待办、工作日志等
+- 企业协作：项目、任务、会议、CRM、供应商、审批、权限和操作日志等
+- 系统中心：AI 状态、系统验收、模型/API 管理、设置、日志、用户角色和系统更新
+
+部分扩展模块保留入口并显示路线图状态；当前演示重点是生产计划、Excel、PDF、OCR、PPT、AI Gateway 和验收闭环。
+
+## 本地构建
+
+要求：Node.js 18+。
 
 ```bash
 npm install
 npm run build
 ```
 
-然后静态打开 `dist`：
+构建完成后生成 `dist/`，可用于 GitHub Pages、Vercel 静态前端、Render 静态资源或其他静态托管。
+
+如果你只是做本地开发调试，也可以运行：
 
 ```bash
-python3 -m http.server 8080 -d dist
+npm start
 ```
 
-访问：
+浏览器访问：
 
-- [http://127.0.0.1:8080](http://127.0.0.1:8080)
-
-### 4.2 本地全栈运行
-
-```bash
-npm install
-npm run dev
+```text
+http://127.0.0.1:3000
 ```
 
-访问：
+开发模式与生产模式共享同一后端入口，前端只需要配置公网 API 地址即可。
 
-- [http://127.0.0.1:3000](http://127.0.0.1:3000)
-
-本地默认管理员账号：
-
-- 邮箱：`admin@personal-ai-os.local`
-- 密码：`123456`
-
-## 5. 手机用户怎么使用
-
-适用于：
-
-- iPhone Safari
-- 安卓 Chrome
-- iPad 浏览器
-
-使用方式：
-
-1. 直接打开 GitHub Pages 前端网址
-2. 输入演示账号登录
-3. 在设置里填写或确认后端 API 地址
-4. 即可使用 AI Chat、AI 写作、AI SQL、邮件助手、Agentic RL 等模块
-
-手机端已保留响应式布局：
-
-- 按钮可点
-- 输入框可编辑
-- 文件上传可用
-- AI 回复区可滚动
-
-## 6. GitHub Pages 部署
-
-前端是纯静态网页，部署到 GitHub Pages。
-
-### 6.1 构建
+## 构建静态版本
 
 ```bash
 npm install
 npm run build
 ```
 
-### 6.2 上传内容
+构建完成后生成 `dist/`，其中包含可部署的 `index.html`、JavaScript、CSS、资源和 vendor 依赖。
 
-把 `dist/` 目录中的文件部署到 GitHub Pages。
+可选静态检查：
 
-需要包含：
+```bash
+node --check app.js
+node --check core.js
+node --check ui.js
+```
 
-- `index.html`
-- `config.js`
-- `core.js`
-- `app.js`
-- `ui.js`
-- `styles.css`
-- `assets/`
-- `vendor/`
-- `404.html`
+## 配置真实 AI
 
-### 6.3 前端地址
+后端环境变量参考 `.env.example`：
 
-建议地址：
+```env
+DEEPSEEK_API_KEY=你的DeepSeekKey
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+```
 
-- [https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/](https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/)
-
-### 6.4 注意
-
-部署前请修改 [config.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/config.js) 中的：
+前端 `config.js` 配置后端地址：
 
 ```js
 window.PERSONAL_AI_OS_CONFIG = {
-  API_BASE_URL: "https://你的-vercel-后端地址.vercel.app"
-}
+  API_BASE_URL: "https://your-api.vercel.app"
+};
 ```
 
-## 7. Vercel 后端部署
+核心接口：
 
-后端 API 部署到 Vercel。
+- `GET /api/health`：服务健康检查
+- `POST /api/chat`：统一 AI 对话入口
 
-当前已提供：
+## 部署
 
-- [api/health.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/api/health.js)
-- [api/chat.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/api/chat.js)
-- [vercel.json](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/vercel.json)
+### GitHub Pages
 
-### 7.1 创建 Vercel 项目
+1. 执行 `npm run build`。
+2. 将 `dist/` 内容发布到 GitHub Pages。
+3. 通过仓库内的 GitHub Actions 自动发布到 Pages（见 `.github/workflows/deploy-pages.yml`）。
+4. `config.js` 会自动在 GitHub Pages 场景下采用远程后端地址；如需切换，可在浏览器本地存储或前端配置中覆盖。
+4. 页面使用 Hash 路由，刷新不会进入不存在的服务器路径。
+5. 该方式适合演示，不建议存放真实企业数据。
 
-把当前仓库连接到 Vercel。
+### Vercel
 
-### 7.2 配置环境变量
+1. 将仓库连接到 Vercel。
+2. 添加 `DEEPSEEK_API_KEY` 和 `DEEPSEEK_BASE_URL`。
+3. 部署后测试 `/api/health`。
+4. 将 Vercel 地址写入前端 `config.js` 后重新构建前端。
 
-在 Vercel 后台添加：
+### Render / Railway / 云服务器
 
-```bash
-DEEPSEEK_API_KEY=你的DeepSeek密钥
-DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-```
+1. 以 Node.js 服务方式部署仓库。
+2. 设置环境变量：
+   - `DEEPSEEK_API_KEY`
+   - `DEEPSEEK_BASE_URL`
+   - `DEEPSEEK_MODEL`
+   - `PORT`
+   - `HOST=0.0.0.0`
+3. 启动命令使用 `npm start`。
+4. 部署成功后，前端通过公网 HTTPS 地址访问，AI 请求统一打到后端 `/api/chat`。
+5. 如果前后端分离，前端 `config.js` 中的 `API_BASE_URL` 必须填写公网后端地址。
 
-### 7.3 部署完成后
+### GitHub Pages + Render 双部署
 
-你会得到类似地址：
+- 前端：GitHub Pages 托管 `dist/`
+- 后端：Render 托管 Express 服务
+- DeepSeek Key：只放在 Render 环境变量中
+- 前端 API 地址：由 `config.js` 自动根据环境选择，GitHub Pages 下默认使用 Render 后端地址
+- 如需临时切换后端，可在浏览器本地缓存里保存新的 `personal_ai_os_api_base_url`
 
-- `https://personal-ai-os-api.vercel.app`
+## 项目文档
 
-### 7.4 测试接口
+- [面试演示指南](docs/DEMO_GUIDE.md)
+- [简历项目描述](docs/RESUME_PROJECT.md)
+- [后续路线图](docs/ROADMAP.md)
 
-健康检查：
+## 数据与安全说明
 
-```bash
-GET /api/health
-```
+- 不要上传企业涉密文件或真实敏感数据到公共演示环境。
+- API Key 只应保存在服务端环境变量中，前端只做本地演示保存。
+- GitHub Pages 演示版主要使用浏览器本地数据；跨设备实时同步需要正式后端账号和数据库部署。
+- GitHub Pages 仅适用于演示，不适合上传真实企业数据；默认使用 localStorage 保存本地工作区。
+- API Key 仅保存在当前浏览器，不会自动上传后端。
+- AI 输出默认作为建议，生产计划、合同、报价等关键数据需要人工确认。
+- 远程 AI 启用时，页面会提示不要输入企业机密、客户隐私、财务数据或未脱敏文件内容。
+- 用户可在设置页一键清空本地工作区数据。
 
-返回：
+## 安全与部署文件
 
-```json
-{ "ok": true, "service": "personal-ai-os-api" }
-```
-
-聊天接口：
-
-```bash
-POST /api/chat
-```
-
-请求：
-
-```json
-{
-  "messages": [
-    { "role": "user", "content": "你好" }
-  ],
-  "module": "ai-chat"
-}
-```
-
-返回：
-
-```json
-{
-  "ok": true,
-  "reply": "AI回复内容"
-}
-```
-
-## 8. 更新前端后端地址
-
-部署好 Vercel 后，把 [config.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/config.js) 中的 `API_BASE_URL` 改成真实地址，然后重新执行：
-
-```bash
-npm run build
-```
-
-再把新的 `dist/` 发布到 GitHub Pages。
-
-## 9. 开发者提交流程
-
-```bash
-git add .
-git commit -m "Upgrade Personal AI OS to real AI version"
-git push
-```
-
-## 10. 错误处理策略
-
-系统当前明确区分这几类错误：
-
-- 后端未配置密钥：
-  - `后端未配置 DEEPSEEK_API_KEY`
-- 后端不可达：
-  - `AI 后端连接失败`
-- 模型异常：
-  - `模型返回为空`
-- 登录错误：
-  - `账号或密码错误，请使用演示账号 admin@personal-ai-os.local / 123456`
-
-不会静默失败，也不会伪造 AI 成功结果。
-
-## 11. 已同步的重要文件
-
-本次升级重点同步了这些文件：
-
-- [index.html](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/index.html)
-- [config.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/config.js)
-- [app.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/app.js)
-- [core.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/core.js)
-- [ui.js](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/ui.js)
-- [styles.css](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/styles.css)
-- [public](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/public)
-- [dist](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/dist)
-- [api](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/api)
-- [vercel.json](/Users/shirunjie/Documents/Codex/2026-06-27/personal-ai-os-ai-ai-erp/vercel.json)
-
-## 12. 说明
-
-这是“真运行版”的第一阶段升级：
-
-- 不删原模块
-- 不改原风格
-- 不推倒重建
-- 只把原来的静态演示页升级成可部署、可登录、可调 AI、可报错、可在全设备浏览器运行的版本
+- [安全策略](SECURITY.md)
+- [企业内网部署安全指南](docs/DEPLOYMENT_SECURITY.md)
+- [部署说明](DEPLOY.md)

@@ -1,6 +1,17 @@
 .env
 .env.local
+.env.*
+!.env.example
 node_modules/
 .DS_Store
 __pycache__/
 *.pyc
+*.key
+*.pem
+secrets.json
+uploads/
+private/
+local-data/
+backup/
+*.sqlite
+*.db

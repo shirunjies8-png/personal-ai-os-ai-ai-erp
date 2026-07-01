@@ -15,9 +15,30 @@ function getSystemPrompt(moduleName = 'default') {
   return MODULE_SYSTEM_PROMPTS[moduleName] || MODULE_SYSTEM_PROMPTS.default;
 }
 
-async function completeChat({ messages, moduleName = 'default', model = 'deepseek-chat', temperature = 0.2 }) {
-  if (!env.deepseekApiKey) {
-    const error = new Error('当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。');
+function resolveChatEndpoint(baseUrl = '') {
+  const normalized = String(baseUrl || '').trim().replace(/\/$/, '');
+  if (!normalized) return '';
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  if (/\/v1$/i.test(normalized)) return `${normalized}/chat/completions`;
+  return `${normalized}/v1/chat/completions`;
+}
+
+function friendlyDeepSeekError(error = {}) {
+  const text = String(error.message || error || '');
+  if (/DEEPSEEK_API_KEY|未配置.*API Key|missing api key/i.test(text)) return '当前未配置 DeepSeek API Key，无法调用真实 AI。';
+  if (/401|unauthorized|invalid api key|authentication/i.test(text)) return 'DeepSeek API Key 无效或无权限，请检查配置。';
+  if (/402|balance|insufficient|credit/i.test(text)) return 'DeepSeek 余额不足或额度已用完。';
+  if (/404|model|not found|unsupported/i.test(text)) return '当前模型不可用，请检查 DEEPSEEK_MODEL。';
+  if (/AbortError|timeout|超时/i.test(text)) return 'DeepSeek 请求超时，请稍后重试。';
+  if (/fetch|network|ENOTFOUND|ECONN/i.test(text)) return 'DeepSeek 网络错误，请检查网络或 Base URL。';
+  return text || 'DeepSeek 调用失败';
+}
+
+async function completeChat({ messages, moduleName = 'default', model = env.deepseekModel || 'deepseek-v4-flash', temperature = 0.2, maxTokens = 2048, timeout = 30000, apiKey, baseUrl }) {
+  const effectiveKey = apiKey || env.deepseekApiKey;
+  const effectiveBaseUrl = String(baseUrl || env.deepseekBaseUrl || '').replace(/\/$/, '');
+  if (!effectiveKey) {
+    const error = new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
     error.status = 503;
     throw error;
   }
@@ -27,6 +48,7 @@ async function completeChat({ messages, moduleName = 'default', model = 'deepsee
   const payload = {
     model,
     temperature,
+    max_tokens: maxTokens,
     messages: [
       { role: 'system', content: getSystemPrompt(moduleName) },
       ...normalizedMessages
@@ -34,27 +56,44 @@ async function completeChat({ messages, moduleName = 'default', model = 'deepsee
   };
   let response;
   try {
-    response = await fetch(`${env.deepseekBaseUrl.replace(/\/$/, '')}/chat/completions`, {
+    if (!/^https:\/\//i.test(effectiveBaseUrl) && !/^http:\/\/127\.0\.0\.1(?::\d+)?/i.test(effectiveBaseUrl)) {
+      const invalid = new Error('Base URL 必须使用 HTTPS');
+      invalid.status = 400;
+      throw invalid;
+    }
+    response = await fetch(resolveChatEndpoint(effectiveBaseUrl), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${env.deepseekApiKey}`
+        Authorization: `Bearer ${effectiveKey}`
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(Math.max(1000, Number(timeout || 30000)))
     });
   } catch (error) {
-    const wrapped = new Error(`AI 后端连接失败：${error.message}`);
+    const wrapped = new Error(error?.name === 'TimeoutError' ? 'AI 请求超时' : `AI 后端连接失败：${error.message}`);
     wrapped.status = 502;
     throw wrapped;
   }
-  let data = null;
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
+  const readResponse = async res => {
+    const contentType = String(res.headers?.get?.('content-type') || '').toLowerCase();
+    const text = await res.text();
+    if (contentType.includes('application/json')) {
+      try {
+        return { raw: text, json: JSON.parse(text) };
+      } catch {
+        return { raw: text, json: null };
+      }
+    }
+    try {
+      return { raw: text, json: JSON.parse(text) };
+    } catch {
+      return { raw: text, json: null };
+    }
+  };
+  const { raw, json: data } = await readResponse(response);
   if (!response.ok) {
-    const message = data?.error?.message || data?.message || `DeepSeek HTTP ${response.status}`;
+    const message = friendlyDeepSeekError(data?.error?.message || data?.message || raw || `DeepSeek HTTP ${response.status}`);
     const error = new Error(message);
     error.status = response.status >= 500 ? 502 : response.status;
     throw error;
@@ -73,5 +112,7 @@ async function completeChat({ messages, moduleName = 'default', model = 'deepsee
 
 module.exports = {
   completeChat,
-  getSystemPrompt
+  getSystemPrompt,
+  friendlyDeepSeekError,
+  resolveChatEndpoint
 };

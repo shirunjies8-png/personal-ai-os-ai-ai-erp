@@ -9,6 +9,7 @@
     "build": "node scripts/build-static.mjs",
     "start": "node server.js",
     "dev": "node server.js",
+    "preview": "python3 -m http.server 4173 -d dist",
     "db:init": "node scripts/init-db.mjs"
   },
   "dependencies": {
