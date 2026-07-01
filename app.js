@@ -24,16 +24,23 @@ const App = {
       qaAnswer: '',
       tableText: '',
       scanMode: '',
+      fileInfos: [],
       loadedFromFileId: null
     },
     ocr: {
       file: null,
       url: '',
       result: '',
+      original: '',
       progress: 0,
       status: '',
       structured: '',
-      template: '通用'
+      template: '通用',
+      quality: null,
+      aiFix: '',
+      aiMode: 'mock',
+      aiError: '',
+      edited: false
     },
     sql: { dialect: 'MySQL', prompt: '', output: '', explanation: '' },
     writing: JSON.parse(localStorage.getItem('personal-ai-os-writing-draft') || '{"type":"日报","prompt":"","output":""}'),
@@ -47,6 +54,7 @@ const App = {
     settingsTab: 'account',
     chatSearch: '',
     chatContextFiles: [],
+    integrationSelectedId: 'erp',
     agent: {
       goal: '',
       steps: [],
@@ -67,6 +75,7 @@ const App = {
     this.applyTheme();
     this.renderNav();
     this.bindGlobalEvents();
+    this.bindGlobalErrors();
     const initialRoute = AuthClient.isLoggedIn() ? (location.hash.replace('#/', '') || 'home') : 'login';
     this.navigate(initialRoute, false);
     await this.updateStorage();
@@ -184,6 +193,19 @@ const App = {
     });
   },
 
+  bindGlobalErrors() {
+    if (this._errorsBound) return;
+    this._errorsBound = true;
+    window.addEventListener('error', event => {
+      this.recordSystemError(event.error || event.message || '未知错误', 'window.onerror', 'global');
+      this.rerender();
+    });
+    window.addEventListener('unhandledrejection', event => {
+      this.recordSystemError(event.reason || 'Promise 拒绝', 'window.onunhandledrejection', 'global');
+      this.rerender();
+    });
+  },
+
   afterRender() {
     if (this.route === 'chat') {
       setTimeout(() => {
@@ -210,6 +232,7 @@ const App = {
     if (target.id === 'sqlPrompt') this.temp.sql.prompt = target.value;
     if (target.id === 'sqlOutput') this.temp.sql.output = target.value;
     if (target.id === 'ocrResult') this.temp.ocr.result = target.value;
+    if (target.id === 'ocrFixResult') this.temp.ocr.aiFix = target.value;
     if (target.id === 'agentGoal') this.temp.agent.goal = target.value;
     if (target.id === 'kbQuestion') this.temp.kbQuestion = target.value;
     if (target.id === 'pdfQuestion') this.temp.pdf.qaQuestion = target.value;
@@ -280,12 +303,19 @@ const App = {
       'pdf-word': () => this.pdfWord(el),
       'pdf-qa': () => this.pdfAsk(el),
       'pdf-table': () => this.pdfTableExtract(el),
-      'ocr-sample': () => this.ocrSample(),
+      'ocr-sample': () => this.ocrSample(el),
       'ocr-run': () => this.ocrRun(el),
-      'ocr-copy': () => this.copy(this.temp.ocr.result),
-      'ocr-txt': () => this.ocrTxt(),
-      'ocr-excel': () => this.ocrExcel(),
-      'ocr-word': () => this.ocrWord(),
+      'ocr-ai-fix': () => this.ocrAIFix(el),
+      'ocr-ai-table': () => this.ocrAITable(el),
+      'ocr-ai-save': () => this.ocrAISave(el),
+      'ocr-copy': () => this.ocrCopy(el),
+      'ocr-txt': () => this.ocrTxt(el),
+      'ocr-ai-txt': () => this.ocrAiTxt(el),
+      'ocr-excel': () => this.ocrExcel(el),
+      'ocr-ai-excel': () => this.ocrAiExcel(el),
+      'ocr-word': () => this.ocrWord(el),
+      'ocr-ai-word': () => this.ocrAiWord(el),
+      'ppt-generate': () => this.pptGenerate(el),
       'sql-generate': () => this.sqlGenerate(el),
       'sql-optimize': () => this.sqlOptimize(el),
       'sql-explain': () => this.sqlExplain(el),
@@ -350,6 +380,26 @@ const App = {
       'demo-reset': () => this.resetDemoEnvironment(),
       'ai-retry': () => this.retryLastAiAction(),
       'ai-switch-model': () => this.switchAiModel(),
+      'settings-dev-toggle': () => this.settingsDevToggle(),
+      'datamask-run': () => this.dataMaskRun(el),
+      'datamask-copy': () => this.copy(this.getWorkspace('datamask').result || ''),
+      'datamask-export': () => this.dataMaskExport(),
+      'datamask-clear': () => this.dataMaskClear(),
+      'geo-import-ocr': () => this.geoImportOcr(),
+      'geo-generate': () => this.geoGenerate(el),
+      'geo-copy': () => this.geoCopy(el),
+      'geo-preview': () => this.geoPreview(),
+      'geo-export': () => this.geoExportPackage(el),
+      'integration-save': () => this.integrationSave(el),
+      'integration-delete': () => this.integrationDelete(el.dataset.id),
+      'integration-test': () => this.integrationTest(el.dataset.id, el),
+      'integration-refresh': () => this.integrationRefresh(),
+      'integration-toggle': () => this.integrationToggle(el.dataset.id),
+      'integration-log': () => this.integrationShowLog(el.dataset.id),
+      'integration-map-add': () => this.integrationMapAdd(el.dataset.id),
+      'aihistory-refresh': () => this.rerender(),
+      'aihistory-export': () => this.aiHistoryExport(),
+      'aihistory-clear': () => this.aiHistoryClear(),
       'refresh-ai-status': () => this.rerender(),
       'systemcheck-run': () => this.runSystemCheck(),
       'settings-tab': () => { this.temp.settingsTab = el.dataset.tab; this.rerender(); },
@@ -365,6 +415,7 @@ const App = {
       'settings-mail-toggle': () => this.settingsMailToggle(),
       'settings-save-mail': () => this.settingsSaveMail(),
       'settings-test-mail': () => this.settingsTestMail(el),
+      'integration-select': () => { this.temp.integrationSelectedId = el.dataset.id; this.rerender(); },
       'auth-login': () => this.authLogin(),
       'auth-register': () => this.authRegister(),
       'auth-logout': () => this.authLogout(),
@@ -376,7 +427,15 @@ const App = {
       'inventory-refresh': () => this.refreshInventory(true),
       'inventory-save': () => this.saveInventory(),
       'inventory-delete': () => this.deleteInventory(el.dataset.id),
+      'plan-sample': () => this.planSample(el),
+      'plan-csv-template': () => this.downloadPlanCsvTemplate(el),
+      'plan-analyze': () => this.planAnalyze(el),
+      'plan-report': () => this.planReport(el),
+      'plan-copy': () => this.planCopy(el),
+      'plan-export': () => this.planExport(el),
       'plan-generate': () => this.planGenerate(),
+      'equipment-save': () => this.equipmentSave(el),
+      'equipment-reset': () => this.equipmentReset(el),
       'risk-refresh': () => this.riskRefresh(),
       'assistant-run': () => this.assistantRun(),
       'search-run': () => this.searchRun(),
@@ -388,6 +447,8 @@ const App = {
       'rl-refresh': () => this.rlRefresh(),
       'settings-backup': () => this.settingsBackup(),
       'settings-clear': () => this.settingsClear()
+      ,
+      'self-check': () => this.oneClickSelfCheck()
     };
     try {
       if (handlers[action]) await handlers[action]();
@@ -402,6 +463,7 @@ const App = {
     if (!files.length) return;
     try {
       if (type === 'excel-file') await this.loadExcel(files[0]);
+      if (type === 'plan-csv') await this.loadPlanCsv(files[0]);
       if (type === 'word-file') await this.loadWord(files[0]);
       if (type === 'pdf-files') await this.loadPdfs(files);
       if (type === 'ocr-file' || type === 'ocr-camera') this.loadOcr(files[0]);
@@ -583,6 +645,11 @@ const App = {
       inventoryAlerts: Store.state.inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length,
       delayedOrders: 0,
       todayPlan: 2,
+      productionPlanOrders: 0,
+      productionPlanRisk: 0,
+      connectorUnconfigured: (Store.state.connectors || []).filter(item => item.status === '未配置' || !item.enabled).length,
+      connectorConnected: (Store.state.connectors || []).filter(item => item.status === '已连接').length,
+      connectorFailed: (Store.state.connectors || []).filter(item => item.status === '连接失败').length,
       aiSuggestions: ['已加载演示数据，可完整演示业务闭环。', '请从首页开始演示路线。'],
       agentExecutions: 1,
       aiLearningTimes: Store.state.rlFeedback.length,
@@ -606,7 +673,7 @@ const App = {
     Store.state.operationLogs = [];
     Store.state.rlFeedback = [];
     Store.state.workspaces = Store.state.workspaces || {};
-    ['word', 'excel', 'pdf', 'ocr', 'sql', 'writing', 'image', 'assistant', 'workflow', 'todo', 'worklog', 'autoreport', 'systemcheck', 'rlcenter', 'searchcenter'].forEach(key => {
+    ['word', 'excel', 'pdf', 'ocr', 'sql', 'writing', 'image', 'assistant', 'workflow', 'todo', 'worklog', 'autoreport', 'systemcheck', 'rlcenter', 'searchcenter', 'geo'].forEach(key => {
       Store.state.workspaces[key] = {};
     });
     this.temp.word = { title: '', content: '', sourceFile: null };
@@ -627,8 +694,499 @@ const App = {
     this.toast('测试数据已清空并重新加载演示环境');
   },
 
+  sanitizeText(text = '') {
+    let output = String(text || '');
+    output = output.replace(/\b1[3-9]\d{9}\b/g, value => `${value.slice(0, 3)}****${value.slice(-4)}`);
+    output = output.replace(/([A-Za-z0-9._%+-])([A-Za-z0-9._%+-]*)(@[\w.-]+\.\w+)/g, (_, first, mid, tail) => `${first}***${tail}`);
+    output = output.replace(/\b(\d{17}[0-9Xx]|\d{15})\b/g, value => `${value.slice(0, 3)}***********${value.slice(-4)}`);
+    output = output.replace(/(常州新能源科技有限公司|溧阳五四不锈钢有限公司|[A-Za-z0-9\u4e00-\u9fa5]{4,}公司)/g, '某客户公司');
+    output = output.replace(/(江苏省[^，。\n]+|广东省[^，。\n]+|浙江省[^，。\n]+|上海市[^，。\n]+)/g, '某地区地址');
+    output = output.replace(/\b\d{4,}(?:\.\d+)?\b/g, '***金额***');
+    return output;
+  },
+
+  dataMaskRun() {
+    const ws = this.getWorkspace('datamask');
+    if (!ws.prompt || !ws.prompt.trim()) throw new Error('请先粘贴需要脱敏的文本');
+    ws.result = this.sanitizeText(ws.prompt);
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.toast('已完成本地脱敏');
+    this.rerender();
+  },
+
+  dataMaskExport() {
+    const ws = this.getWorkspace('datamask');
+    if (!ws.result) throw new Error('暂无可导出的脱敏结果');
+    Utils.textDownload(ws.result, `数据脱敏_${new Date().toISOString().slice(0, 10)}.txt`);
+    this.toast('脱敏结果已导出');
+  },
+
+  dataMaskClear() {
+    const ws = this.getWorkspace('datamask');
+    ws.title = '';
+    ws.prompt = '';
+    ws.result = '';
+    ws.files = [];
+    ws.records = [];
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.rerender();
+  },
+
+  geoNormalizeSource(text = '') {
+    return String(text || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/([A-Za-z])\s+([A-Za-z])/g, '$1 $2')
+      .replace(/[，。；;：:]+/g, match => match)
+      .trim();
+  },
+
+  geoBuildContent(ws, source = '') {
+    const cleaned = this.geoNormalizeSource(source);
+    const enterprise = (ws.enterpriseName || '某制造企业').trim();
+    const industry = (ws.industry || '制造业').trim();
+    const lines = cleaned.split('\n').map(line => line.trim()).filter(Boolean);
+    const keywords = Array.from(new Set([
+      enterprise,
+      industry,
+      ...lines.flatMap(line => line.split(/[\s,，、;；]+/).map(item => item.trim()).filter(Boolean))
+    ])).filter(Boolean).slice(0, 18);
+    const faq = [
+      { q: `${enterprise} 主要做什么？`, a: `我们专注于 ${industry} 相关的产品、资料整理与交付支持。` },
+      { q: `支持哪些产品或资料？`, a: '支持产品标签、采购单、发货单、设备信息、企业资料、服务介绍与知识内容整理。' },
+      { q: '如何提升 AI 搜索理解？', a: '通过结构化标题、FAQ、关键词、JSON-LD、llms.txt、robots.txt 和 sitemap.xml 提升可读性。' },
+      { q: '内容是否保证被收录？', a: '不保证；AI GEO 只能提升被 AI 理解和引用的概率。' }
+    ];
+    const enterpriseIntro = `${enterprise}是一家${industry}企业，围绕产品交付、资料整理、生产协同与客户服务提供可持续的内容支持。`;
+    const productIntro = `产品/资料覆盖：${lines.slice(0, 4).join('；') || '发货单、采购单、产品标签、设备信息等'}`;
+    const serviceIntro = '服务能力包括资料纠错、结构化整理、知识归档、AI 可读内容生成、搜索摘要与引用友好内容包装。';
+    const summary = `${enterprise} 的 GEO 内容围绕企业简介、产品介绍、服务能力、FAQ、关键词和结构化数据构建，便于 AI 搜索引擎理解、引用与检索。`;
+    const schema = {
+      '@context': 'https://schema.org',
+      '@type': 'Organization',
+      name: enterprise,
+      description: enterpriseIntro,
+      keywords: keywords.join(', '),
+      url: Store.state.settings.githubPagesUrl || window.location.origin || '',
+      areaServed: industry,
+      sameAs: [],
+      hasOfferCatalog: {
+        '@type': 'OfferCatalog',
+        name: `${enterprise} 服务与产品`,
+        itemListElement: lines.slice(0, 8).map((line, index) => ({
+          '@type': 'Offer',
+          position: index + 1,
+          itemOffered: {
+            '@type': 'Service',
+            name: line.slice(0, 60) || `服务 ${index + 1}`,
+            description: line.slice(0, 140) || enterpriseIntro
+          }
+        }))
+      }
+    };
+    const llms = [
+      `# ${enterprise}`,
+      '',
+      `> ${summary}`,
+      '',
+      '## 企业简介',
+      enterpriseIntro,
+      '',
+      '## 产品介绍',
+      productIntro,
+      '',
+      '## 服务能力',
+      serviceIntro,
+      '',
+      '## FAQ',
+      ...faq.flatMap(item => [`### ${item.q}`, item.a, '']),
+      '## 关键词',
+      keywords.join('、')
+    ].join('\n');
+    const robots = `User-agent: *\nAllow: /\nSitemap: ${Store.state.settings.githubPagesUrl || window.location.origin || ''}/sitemap.xml`;
+    const sitemap = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url>\n    <loc>${Utils.escapeXml(Store.state.settings.githubPagesUrl || window.location.origin || '')}/geo-knowledge.html</loc>\n    <changefreq>weekly</changefreq>\n    <priority>0.8</priority>\n  </url>\n</urlset>`;
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${Utils.escapeXml(enterprise)} GEO 知识库</title><meta name="description" content="${Utils.escapeXml(summary)}"><script type="application/ld+json">${JSON.stringify(schema, null, 2)}</script></head><body><main style="max-width:900px;margin:0 auto;padding:24px;font-family:Arial,sans-serif;line-height:1.7"><h1>${Utils.escapeXml(enterprise)} AI 可读知识库</h1><p>${Utils.escapeXml(summary)}</p><h2>企业简介</h2><p>${Utils.escapeXml(enterpriseIntro)}</p><h2>产品介绍</h2><p>${Utils.escapeXml(productIntro)}</p><h2>服务能力</h2><p>${Utils.escapeXml(serviceIntro)}</p><h2>FAQ</h2>${faq.map(item => `<section><h3>${Utils.escapeXml(item.q)}</h3><p>${Utils.escapeXml(item.a)}</p></section>`).join('')}<h2>关键词</h2><p>${Utils.escapeXml(keywords.join('、'))}</p></main></body></html>`;
+    const score = {
+      complete: Math.min(100, 55 + Math.min(lines.length * 5, 20) + (faq.length * 3)),
+      clear: Math.min(100, 60 + (cleaned.length > 120 ? 15 : 0) + (cleaned.includes('：') || cleaned.includes(':') ? 10 : 0)),
+      structured: Math.min(100, 58 + (lines.length > 3 ? 12 : 0) + 10),
+      trust: Math.min(100, 62 + (cleaned.includes('公司') || cleaned.includes('企业') ? 10 : 0) + (cleaned.includes('地址') ? 8 : 0)),
+      keywords: Math.min(100, 54 + Math.min(keywords.length * 2, 20)),
+      faq: Math.min(100, 50 + faq.length * 10)
+    };
+    score.total = Math.round((score.complete + score.clear + score.structured + score.trust + score.keywords + score.faq) / 6);
+    score.details = { summary: `已生成 ${faq.length} 条 FAQ、${keywords.length} 个关键词，并输出 JSON-LD / llms.txt / robots.txt / sitemap.xml。` };
+    return {
+      cleaned: [
+        `企业名称：${enterprise}`,
+        `行业领域：${industry}`,
+        '',
+        '整理后的核心内容：',
+        cleaned || '暂无可整理内容'
+      ].join('\n'),
+      result: [
+        `AI GEO 企业曝光系统`,
+        `企业简介：${enterpriseIntro}`,
+        `产品介绍：${productIntro}`,
+        `服务能力：${serviceIntro}`,
+        `AI 搜索摘要：${summary}`,
+        `关键词标签：${keywords.join('、')}`,
+        '',
+        'FAQ 问答库：',
+        ...faq.flatMap(item => [`Q：${item.q}`, `A：${item.a}`, '']),
+        '结构化数据 JSON-LD：',
+        JSON.stringify(schema, null, 2),
+        '',
+        'llms.txt：',
+        llms,
+        '',
+        'robots.txt：',
+        robots,
+        '',
+        'sitemap.xml：',
+        sitemap
+      ].join('\n'),
+      preview: html,
+      schema,
+      llms,
+      robots,
+      sitemap,
+      html,
+      keywords,
+      faq,
+      score
+    };
+  },
+
+  geoImportOcr() {
+    const ws = this.getWorkspace('geo');
+    const ocr = this.temp.ocr || {};
+    const source = String(ocr.aiFix || ocr.result || '').trim();
+    if (!source) {
+      ws.result = '未检测到 OCR 结果，请先完成 OCR 识别后再导入。';
+      ws.updatedAt = Date.now();
+      Store.save();
+      this.toast('没有可导入的 OCR 结果', 'error');
+      this.rerender();
+      return;
+    }
+    ws.source = source;
+    ws.cleaned = this.geoBuildContent(ws, source).cleaned;
+    ws.sourceFrom = 'ocr';
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.toast('已从 OCR 结果导入 GEO 内容');
+    this.rerender();
+  },
+
+  async geoGenerate(btn) {
+    const ws = this.getWorkspace('geo');
+    const source = String(ws.cleaned || ws.source || '').trim();
+    if (!source) throw new Error('请先导入 OCR 结果或输入企业资料');
+    await this.busy(btn, async () => {
+      const generated = this.geoBuildContent(ws, source);
+      ws.cleaned = generated.cleaned;
+      ws.result = generated.result;
+      ws.preview = generated.preview;
+      ws.schema = generated.schema;
+      ws.llms = generated.llms;
+      ws.robots = generated.robots;
+      ws.sitemap = generated.sitemap;
+      ws.html = generated.html;
+      ws.score = generated.score;
+      ws.files = [
+        { name: 'geo-knowledge.html', type: 'HTML', content: generated.html },
+        { name: 'llms.txt', type: 'TXT', content: generated.llms },
+        { name: 'robots.txt', type: 'TXT', content: generated.robots },
+        { name: 'sitemap.xml', type: 'XML', content: generated.sitemap },
+        { name: 'schema.json', type: 'JSON', content: JSON.stringify(generated.schema, null, 2) }
+      ];
+      ws.sourceFrom = ws.sourceFrom || 'manual';
+      ws.updatedAt = Date.now();
+      Store.save();
+      Store.addActivity(`生成 GEO 文件包：${ws.enterpriseName || '企业'}`, 'ai');
+      this.toast('GEO 文件包已生成');
+      this.rerender();
+    });
+  },
+
+  async geoCopy(btn) {
+    const ws = this.getWorkspace('geo');
+    const text = ws.result || ws.cleaned || '';
+    if (!text) throw new Error('暂无可复制的 GEO 方案');
+    await this.busy(btn, async () => this.copy(text));
+  },
+
+  geoPreview() {
+    const ws = this.getWorkspace('geo');
+    if (!ws.preview) throw new Error('请先生成 GEO 文件包');
+    const win = window.open('', '_blank', 'noopener,noreferrer');
+    if (!win) throw new Error('浏览器阻止了预览窗口');
+    win.document.open();
+    win.document.write(ws.preview);
+    win.document.close();
+    this.toast('已打开 AI 可读知识库预览');
+  },
+
+  async geoExportPackage(btn) {
+    const ws = this.getWorkspace('geo');
+    if (!ws.files?.length) throw new Error('请先生成 GEO 文件包');
+    await this.busy(btn, async () => {
+      if (!window.JSZip) throw new Error('JSZip 未加载，无法导出 GEO 文件包');
+      const zip = new JSZip();
+      ws.files.forEach(file => zip.file(file.name, file.content || ''));
+      const blob = await zip.generateAsync({ type: 'blob' });
+      Utils.download(blob, `${safeName(ws.enterpriseName || 'geo-knowledge')}_GEO文件包.zip`);
+      this.toast('GEO 文件包已导出');
+    });
+  },
+
+  getConnector(id) {
+    return (Store.state.connectors || []).find(item => item.id === id);
+  },
+
+  connectorRequiredFields(type) {
+    const map = {
+      ERP: ['endpoint', 'systemName'],
+      MES: ['endpoint', 'systemName'],
+      WMS: ['endpoint', 'systemName'],
+      SCADA: ['endpoint', 'systemName'],
+      PLC: ['endpoint', 'protocol'],
+      SAP: ['endpoint', 'systemName'],
+      'SQL Server': ['host', 'port', 'database', 'username'],
+      Oracle: ['host', 'port', 'database', 'username'],
+      OA: ['endpoint', 'systemName'],
+      CRM: ['endpoint', 'systemName'],
+      'REST API': ['endpoint'],
+      Webhook: ['endpoint'],
+      MQTT: ['broker', 'port', 'topic'],
+      'OPC UA': ['endpoint'],
+      'Excel/CSV': ['filePath'],
+      Robot: ['endpoint', 'robotName'],
+      'Digital Twin': ['endpoint', 'platformName']
+    };
+    return map[type] || ['endpoint'];
+  },
+
+  connectorStatus(connector) {
+    if (!connector) return '未配置';
+    if (!connector.enabled) return '未配置';
+    const required = this.connectorRequiredFields(connector.type);
+    const config = connector.config || {};
+    const hasAny = Object.values(config).some(value => String(value ?? '').trim());
+    if (!hasAny) return '未配置';
+    const missing = required.filter(key => !String(config[key] ?? '').trim());
+    if (missing.length) return '配置不完整';
+    return connector.status || '连接失败';
+  },
+
+  connectorSummary(connector) {
+    const config = connector?.config || {};
+    const required = this.connectorRequiredFields(connector?.type);
+    const missing = required.filter(key => !String(config[key] ?? '').trim());
+    if (!connector?.enabled) return '默认关闭，手动启用后再配置';
+    if (!Object.values(config).some(value => String(value ?? '').trim())) return '未配置连接信息';
+    if (missing.length) return `配置不完整：缺少 ${missing.join('、')}`;
+    return '已保存配置，等待真实连接测试';
+  },
+
+  connectorLog(connector, message, level = 'info') {
+    if (!connector) return;
+    connector.logs = connector.logs || [];
+    connector.logs.unshift({
+      id: uid(),
+      time: Date.now(),
+      level,
+      message
+    });
+    connector.logs = connector.logs.slice(0, 50);
+    connector.updatedAt = Date.now();
+    Store.save();
+  },
+
+  readConnectorForm(id) {
+    const form = document.querySelector(`[data-connector-form="${id}"]`);
+    if (!form) return {};
+    const data = {};
+    form.querySelectorAll('[data-field]').forEach(input => {
+      data[input.dataset.field] = input.type === 'checkbox' ? input.checked : input.value.trim();
+    });
+    return data;
+  },
+
+  integrationSave(btn) {
+    const id = btn.dataset.id || this.temp.integrationSelectedId || document.querySelector('[data-connector-current]')?.dataset.connectorCurrent;
+    const connector = this.getConnector(id);
+    if (!connector) throw new Error('未找到连接器');
+    const data = this.readConnectorForm(id);
+    connector.config = {
+      ...(connector.config || {}),
+      ...data
+    };
+    connector.enabled = document.querySelector(`[data-connector-enabled="${id}"]`)?.checked ?? connector.enabled;
+    connector.status = this.connectorStatus(connector);
+    connector.updatedAt = Date.now();
+    this.connectorLog(connector, `已保存 ${connector.type} 连接器配置`);
+    Store.save();
+    this.toast(`${connector.name} 配置已保存`);
+    this.rerender();
+  },
+
+  integrationDelete(id) {
+    const connector = this.getConnector(id);
+    if (!connector) throw new Error('未找到连接器');
+    connector.enabled = false;
+    connector.config = {};
+    connector.status = '未配置';
+    connector.logs = [];
+    connector.mappings = [];
+    connector.updatedAt = Date.now();
+    this.connectorLog(connector, '已删除配置并重置为未配置状态');
+    Store.save();
+    this.toast(`${connector.name} 已重置`);
+    this.rerender();
+  },
+
+  integrationToggle(id) {
+    const connector = this.getConnector(id);
+    if (!connector) throw new Error('未找到连接器');
+    connector.enabled = !connector.enabled;
+    connector.status = this.connectorStatus(connector);
+    this.connectorLog(connector, connector.enabled ? '已手动启用' : '已手动关闭');
+    Store.save();
+    this.rerender();
+  },
+
+  integrationRefresh() {
+    Store.state.connectors = (Store.state.connectors || []).map(item => ({
+      ...item,
+      status: this.connectorStatus(item)
+    }));
+    Store.save();
+    this.toast('连接器状态已刷新');
+    this.rerender();
+  },
+
+  integrationShowLog(id) {
+    const connector = this.getConnector(id);
+    if (!connector) throw new Error('未找到连接器');
+    const lines = (connector.logs || []).slice(0, 10).map(item => `[${Utils.formatDate(item.time, true)}] ${item.level.toUpperCase()} ${item.message}`);
+    const content = lines.length ? lines.join('\n') : '暂无日志';
+    this.modal({
+      title: `${connector.name} 日志`,
+      body: `<pre class="log-box">${Utils.escape(content)}</pre>`,
+      actions: `<button class="primary-btn" data-action="modal-close">关闭</button>`
+    });
+  },
+
+  integrationMapAdd(id) {
+    const connector = this.getConnector(id);
+    if (!connector) throw new Error('未找到连接器');
+    connector.mappings = connector.mappings || [];
+    connector.mappings.unshift({
+      id: uid(),
+      source: 'source_field',
+      target: 'target_field',
+      note: '字段映射占位，等待企业接口确认'
+    });
+    connector.mappings = connector.mappings.slice(0, 20);
+    connector.updatedAt = Date.now();
+    this.connectorLog(connector, '已新增字段映射占位');
+    Store.save();
+    this.rerender();
+  },
+
+  async integrationTest(id, btn) {
+    const connector = this.getConnector(id);
+    if (!connector) throw new Error('未找到连接器');
+    const status = this.connectorStatus(connector);
+    connector.updatedAt = Date.now();
+    if (!connector.enabled) {
+      connector.status = '未配置';
+      this.connectorLog(connector, '测试连接：未启用');
+      Store.save();
+      this.toast('未配置');
+      this.rerender();
+      return;
+    }
+    const required = this.connectorRequiredFields(connector.type);
+    const config = connector.config || {};
+    const missing = required.filter(key => !String(config[key] ?? '').trim());
+    if (!Object.values(config).some(value => String(value ?? '').trim())) {
+      connector.status = '未配置';
+      this.connectorLog(connector, '测试连接：未配置');
+      Store.save();
+      this.toast('未配置');
+      this.rerender();
+      return;
+    }
+    if (missing.length) {
+      connector.status = '配置不完整';
+      this.connectorLog(connector, `测试连接：配置不完整，缺少 ${missing.join('、')}`, 'warn');
+      Store.save();
+      this.toast('配置不完整');
+      this.rerender();
+      return;
+    }
+    const browserReachable = ['REST API', 'Webhook'].includes(connector.type) && /^https?:\/\//i.test(config.endpoint || '');
+    if (browserReachable) {
+      try {
+        await this.busy(btn, async () => {
+          const res = await fetch(config.endpoint, { method: 'GET', mode: 'cors' });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          connector.status = '已连接';
+          this.connectorLog(connector, '测试连接成功，接口可访问');
+          Store.save();
+          this.toast('已连接');
+        });
+      } catch (error) {
+        connector.status = '连接失败';
+        this.connectorLog(connector, `测试连接失败：${error.message}`, 'error');
+        Store.save();
+        this.toast('连接失败', 'error');
+      } finally {
+        this.rerender();
+      }
+      return;
+    }
+    connector.status = '连接失败';
+    this.connectorLog(connector, `${connector.type} 连接器当前仅预留接口，尚未接入真实企业系统`, 'warn');
+    Store.save();
+    this.toast('连接失败', 'error');
+    this.rerender();
+  },
+
+  aiHistoryExport() {
+    const items = Store.state.aiHistory || [];
+    if (!items.length) throw new Error('暂无 AI 调用历史');
+    const text = items.slice(0, 20).map(item => [
+      `时间：${Utils.formatDate(item.time, true)}`,
+      `模块：${item.module || '-'}`,
+      `Provider：${item.provider || '-'}`,
+      `Model：${item.model || '-'}`,
+      `是否成功：${item.success ? '是' : '否'}`,
+      `是否 Mock：${item.mock ? '是' : '否'}`,
+      `请求耗时：${item.duration || 0} ms`,
+      `错误原因：${item.error || '无'}`,
+      `Token 用量：${item.totalTokens ?? '未返回'}`,
+      '---'
+    ].join('\n')).join('\n');
+    Utils.textDownload(text, `AI调用历史_${new Date().toISOString().slice(0, 10)}.txt`);
+    this.toast('AI 调用历史已导出');
+  },
+
+  aiHistoryClear() {
+    if (!confirm('确定清空 AI 调用历史？')) return;
+    Store.state.aiHistory = [];
+    Store.save();
+    this.rerender();
+  },
+
   recordAiError(error, context = '') {
-    const message = AIService.friendlyMessage(error);
+    const message = AIService.friendlyMessage(error) || Utils.friendlyErrorMessage(error?.message || error);
     Store.state.aiErrors = Store.state.aiErrors || [];
     Store.state.aiErrors.unshift({
       id: uid(),
@@ -643,6 +1201,61 @@ const App = {
     return message;
   },
 
+  recordSystemError(error, context = '', module = 'system') {
+    const message = Utils.friendlyErrorMessage(error?.message || error);
+    Store.state.aiErrors = Store.state.aiErrors || [];
+    Store.state.aiErrors.unshift({
+      id: uid(),
+      message,
+      detail: String(error?.message || error || ''),
+      context,
+      module,
+      severity: /PDF|OCR|fetch|AI/i.test(String(error?.message || error)) ? '中' : '高',
+      fixed: false,
+      suggestion: this.suggestFix(error),
+      time: Date.now()
+    });
+    Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
+    Store.addActivity(`系统错误：${context || module}`, 'error');
+    Store.save();
+    return message;
+  },
+
+  suggestFix(error) {
+    const text = String(error?.message || error || '');
+    if (/PDF/i.test(text)) return '请尝试 OCR 或更清晰的 PDF 文件。';
+    if (/OCR/i.test(text)) return '请上传清晰图片，或改用 PDF/Excel 原文件。';
+    if (/fetch|Network|连接/i.test(text)) return '请检查网络、本地服务或 AI Gateway 配置。';
+    if (/Response|读取/i.test(text)) return '刷新页面后重试，并避免重复读取同一响应。';
+    return '请查看日志并重试，如仍失败请切换 Mock 模式。';
+  },
+
+  oneClickSelfCheck() {
+    const checks = [];
+    checks.push(['登录状态', AuthClient.isLoggedIn() ? '正常' : '异常']);
+    checks.push(['AI Gateway', Store.state.settings.apiEnabled ? '正常' : '未配置']);
+    checks.push(['Excel', this.temp.excel?.rows?.length ? '正常' : '待验证']);
+    checks.push(['PDF', this.temp.pdf?.files?.length ? '正常' : '待验证']);
+    checks.push(['OCR', this.temp.ocr?.file ? '正常' : '待验证']);
+    checks.push(['PPT', this.getWorkspace('ppt')?.result ? '正常' : '待验证']);
+    checks.push(['AI GEO', this.getWorkspace('geo')?.result ? '正常' : '待验证']);
+    checks.push(['生产计划', this.getPlanWorkspace()?.planResult ? '正常' : '待验证']);
+    checks.push(['知识库', (Store.state.knowledge || []).length ? '正常' : '空']);
+    checks.push(['Workflow', this.getWorkspace('workflow')?.result ? '正常' : '待验证']);
+    checks.push(['Dashboard', Store.state.dashboard ? '正常' : '异常']);
+    checks.push(['Integration Center', Array.isArray(Store.state.connectors) ? '正常' : '异常']);
+    checks.push(['localStorage', typeof localStorage !== 'undefined' ? '正常' : '异常']);
+    checks.push(['API Key 泄露', Store.state.settings.apiKey ? '已本地保存' : '未配置']);
+    checks.push(['GitHub Pages / Server Mode', Store.state.settings.githubPagesUrl ? '已配置' : '未发布']);
+    checks.push(['移动端适配', document.body.clientWidth < 900 ? '正常' : '正常']);
+    const ws = this.getWorkspace('systemcheck');
+    ws.result = checks.map(([n, s]) => `${n}：${s}`).join('\n');
+    ws.checkedAt = Date.now();
+    Store.save();
+    this.toast('自检已完成');
+    this.navigate('systemcheck');
+  },
+
   retryLastAiAction() {
     if (this.route === 'chat') return this.sendChat();
     if (this.route === 'assistant') return this.assistantRun();
@@ -653,7 +1266,7 @@ const App = {
   },
 
   switchAiModel() {
-    const models = ['deepseek-chat', 'deepseek-reasoner', 'qwen-plus', 'gpt-4o-mini'];
+    const models = ['deepseek-v4-flash', 'deepseek-v4-pro', 'qwen-plus', 'gpt-4o-mini'];
     const current = Store.state.settings.model || models[0];
     const next = models[(models.indexOf(current) + 1) % models.length];
     Store.state.settings.model = next;
@@ -682,8 +1295,18 @@ const App = {
       ['Word', this.temp.word?.content !== undefined ? '🟢 正常' : '🟡 部分完成'],
       ['Excel', this.temp.excel?.rows ? '🟢 正常' : '🟡 部分完成'],
       ['PDF', this.temp.pdf?.files ? '🟢 正常' : '🟡 部分完成'],
+      ['PDF上传', this.temp.pdf?.files?.length ? '🟢 正常' : '🟡 待验证'],
+      ['PDF总结', this.temp.pdf?.summaryCompleted ? '🟢 正常' : '🟡 待验证'],
       ['OCR', this.temp.ocr?.result !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['OCR识别按钮', typeof this.ocrRun === 'function' ? '🟢 正常' : '🔴 异常'],
+      ['OCR导出', typeof this.ocrTxt === 'function' && typeof this.ocrWord === 'function' && typeof this.ocrExcel === 'function' ? '🟢 正常' : '🔴 异常'],
+      ['PPT AI Gateway', Store.state.settings.accessMode !== 'local' ? '🟢 已连接' : '🟡 当前Mock'],
+      ['PPT Mock兜底', typeof this.pptGenerate === 'function' ? '🟢 可用' : '🔴 异常'],
+      ['AI GEO', this.getWorkspace('geo')?.result ? '🟢 正常' : '🟡 待验证'],
       ['SQL', this.temp.sql?.output !== undefined ? '🟢 正常' : '🟡 部分完成'],
+      ['生产计划助手', this.getPlanWorkspace()?.planResult ? '🟢 正常' : '🟡 待验证'],
+      ['CSV订单导入', this.getPlanWorkspace()?.csvImportedAt ? '🟢 正常' : '🟡 待验证'],
+      ['设备台账', (Store.state.equipment || []).length >= 8 ? '🟢 正常' : '🟡 待验证'],
       ['AI', apiStatus],
       ['DeepSeek', deepseekStatus],
       ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 部分完成'],
@@ -993,7 +1616,12 @@ const App = {
   async wordPdf(btn) {
     const w = this.getWord();
     if (!w.content) throw new Error('正文为空');
-    await this.busy(btn, () => Utils.exportPdf(w.title, w.content));
+    await this.busy(btn, async () => {
+      const res = await Utils.exportPdf(w.title, w.content);
+      if (res?.mode === 'txt') this.toast(res.message || 'PDF 导出失败，已降级为 TXT 导出', 'error');
+      else this.toast('PDF 已导出');
+      return res;
+    });
     Store.addActivity(`导出 PDF：${w.title}`, 'file');
   },
 
@@ -1004,21 +1632,41 @@ const App = {
       }
     }
     const info = [];
+    const fileInfos = [];
+    const extractedTexts = [];
+    this.toast('正在读取 PDF 文件...');
     for (const file of files) {
       const doc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
-      info.push(`${file.name}：${doc.getPageCount()} 页，${Utils.formatBytes(file.size)}`);
+      let status = '读取成功';
+      let text = '';
+      try {
+        const parsed = await Utils.extractPdfTextRaw(file);
+        text = parsed.text || '';
+        if (!Utils.isMostlyText(text)) {
+          text = '';
+          status = '未发现可读取文字层';
+        }
+      } catch (error) {
+        status = `读取失败：${error.message}`;
+      }
+      fileInfos.push({ name: file.name, size: file.size, pages: doc.getPageCount(), status });
+      info.push(`${file.name}｜${Utils.formatBytes(file.size)}｜${doc.getPageCount()} 页｜${status}`);
+      if (text) extractedTexts.push(`【${file.name}】\n${text}`);
     }
+    if (!extractedTexts.length) info.push('该 PDF 可能是扫描件，请使用 OCR 图片识别');
     this.temp.pdf = {
       ...this.temp.pdf,
       files,
       result: info.join('\n'),
-      extracted: '',
+      extracted: extractedTexts.join('\n\n'),
       tableText: '',
       qaAnswer: '',
-      scanMode: ''
+      scanMode: extractedTexts.length ? 'text' : 'scan',
+      fileInfos
     };
     Store.addActivity(`读取 ${files.length} 个 PDF`, 'file');
     this.rerender();
+    this.toast(extractedTexts.length ? 'PDF 上传并读取成功' : 'PDF 已上传，但未读取到文字层', extractedTexts.length ? 'success' : 'error');
   },
 
   requirePdf() {
@@ -1029,9 +1677,11 @@ const App = {
     this.requirePdf();
     if (this.temp.pdf.extracted) return this.temp.pdf.extracted;
     const file = this.temp.pdf.files[0];
-    const parsed = await Utils.extractPdfTextSmart(file);
-    this.temp.pdf.scanMode = parsed.mode;
-    this.temp.pdf.extracted = parsed.text;
+    const parsed = await Utils.extractPdfTextRaw(file);
+    const text = parsed.text || '';
+    if (!Utils.isMostlyText(text)) throw new Error('该 PDF 可能是扫描件，请使用 OCR 图片识别');
+    this.temp.pdf.scanMode = 'text';
+    this.temp.pdf.extracted = text;
     return this.temp.pdf.extracted;
   },
 
@@ -1040,8 +1690,9 @@ const App = {
       this.requirePdf();
       const texts = [];
       for (const file of this.temp.pdf.files) {
-        const parsed = await Utils.extractPdfTextSmart(file);
-        texts.push(`【${file.name}】\n模式：${parsed.mode === 'ocr' ? '扫描 OCR' : '文字层'}\n${parsed.text}`);
+        const parsed = await Utils.extractPdfTextRaw(file);
+        if (!Utils.isMostlyText(parsed.text)) throw new Error('该 PDF 可能是扫描件，请使用 OCR 图片识别');
+        texts.push(`【${file.name}】\n模式：文字层\n${parsed.text}`);
       }
       this.temp.pdf.extracted = texts.join('\n\n');
       this.temp.pdf.result = this.temp.pdf.extracted;
@@ -1055,13 +1706,17 @@ const App = {
       const extracted = await this.ensurePdfExtracted();
       const file = this.temp.pdf.files[0];
       const modeText = this.temp.pdf.scanMode === 'ocr' ? '扫描版 PDF 已自动 OCR。' : '已读取文字层 PDF。';
-      const summary = Store.state.settings.accessMode === 'local'
-        ? KnowledgeEngine.summary(extracted)
-        : (await AIService.complete(
+      let summary = '';
+      let modeNotice = '';
+      const gatewayResult = await AIService.complete(
             `请总结以下 PDF 内容，提取重点、风险、关键数据和建议。\n文件：${file.name}\n模式：${modeText}\n内容：\n${extracted.slice(0, 12000)}`,
-            { mode: 'pdf', module: 'ai-pdf' }
-          )).text;
-      this.temp.pdf.result = `PDF总结\n\n文件：${file.name}\n${modeText}\n\n${summary}\n\n建议：继续使用 PDF 问答或转 Word 处理。`;
+            { mode: 'pdf', module: 'ai-pdf', mockFallback: reason => `Mock 兜底：AI Gateway 暂不可用。\n原因：${reason}\n\n${KnowledgeEngine.summary(extracted)}` }
+          );
+      summary = gatewayResult.text;
+      if (gatewayResult.mode === 'mock') modeNotice = '当前为 Mock 兜底结果，可在 AI 设置中心检查 Provider、Base URL、API Key 和 Model。';
+      this.temp.pdf.summaryCompleted = true;
+      this.temp.pdf.summaryMode = gatewayResult.mode === 'mock' ? 'mock' : 'gateway';
+      this.temp.pdf.result = `PDF总结\n\n文件：${file.name}\n${modeText}\n${modeNotice ? `\n${modeNotice}\n` : ''}\n${summary}\n\n建议：继续使用 PDF 问答或转 Word 处理。`;
       Store.addActivity('AI 总结 PDF', 'ai');
       this.rerender();
     });
@@ -1137,7 +1792,7 @@ const App = {
         Store.addActivity('PDF 转 Word', 'file');
         this.rerender();
       } catch (error) {
-        this.temp.pdf.result = `PDF 转 Word 失败：${error.message}`;
+        this.temp.pdf.result = `PDF 转 Word 失败：${Utils.friendlyErrorMessage(error.message)}`;
         this.rerender();
         throw error;
       }
@@ -1157,10 +1812,12 @@ const App = {
       template: '通用'
     };
     this.rerender();
+    this.toast(`图片已加载：${file.name}，请点击“开始识别”`);
   },
 
-  async ocrSample() {
-    const canvas = document.createElement('canvas');
+  async ocrSample(btn) {
+    await this.busy(btn, async () => {
+      const canvas = document.createElement('canvas');
     canvas.width = 1200;
     canvas.height = 430;
     const ctx = canvas.getContext('2d');
@@ -1175,54 +1832,231 @@ const App = {
     ctx.fillText('总金额 9710', 48, 320);
     ctx.fillText('付款方式 月结30天  运输方式 汽运', 48, 398);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-    this.loadOcr(new File([blob], 'OCR示例发货单.png', { type: 'image/png' }));
+      this.loadOcr(new File([blob], 'OCR示例发货单.png', { type: 'image/png' }));
+      this.toast('OCR 示例图片已加载，请点击开始识别');
+    });
+  },
+
+  async ocrCopy(btn) {
+    if (!this.temp.ocr.result) throw new Error('暂无识别文字');
+    await this.busy(btn, async () => this.copy(this.temp.ocr.result));
   },
 
   async ocrRun(btn) {
     const o = this.temp.ocr;
     if (!o.file) throw new Error('请先上传或拍摄图片');
     await this.busy(btn, async () => {
-      o.result = await OCRService.recognize(o.file, (progress, status) => {
-        o.progress = progress;
-        o.status = status || '识别中';
-        const bar = document.getElementById('ocrBar');
-        if (bar) bar.style.width = `${progress * 100}%`;
-        const pct = document.getElementById('ocrPercent');
-        if (pct) pct.textContent = `${Math.round(progress * 100)}%`;
-        const stat = document.getElementById('ocrStatus');
-        if (stat) stat.textContent = status || '识别中';
-      });
+      o.status = 'OCR 识别中';
+      o.mock = false;
+      try {
+        o.result = await OCRService.recognize(o.file, (progress, status) => {
+          o.progress = progress;
+          o.status = status || '识别中';
+          const bar = document.getElementById('ocrBar');
+          if (bar) bar.style.width = `${progress * 100}%`;
+          const pct = document.getElementById('ocrPercent');
+          if (pct) pct.textContent = `${Math.round(progress * 100)}%`;
+          const stat = document.getElementById('ocrStatus');
+          if (stat) stat.textContent = status || '识别中';
+        });
+        if (!o.result.trim()) throw new Error('OCR 未返回文字');
+      } catch (error) {
+        o.mock = true;
+        o.result = ['当前为演示模式，已使用模拟 OCR 结果。','单据类型：发货单','单号：SO-2026-015','客户：常州新能源科技有限公司','产品：304不锈钢连接件','发货数量：760','总金额：9710.00','付款方式：月结30天','运输方式：物流配送','状态：待签收'].join('\n');
+        o.status = '演示 OCR 完成';
+        o.mockReason = Utils.friendlyErrorMessage(error.message);
+      }
       o.progress = 1;
       o.status = '识别完成';
+      o.original = o.result;
+      const quality = OCRService.assessQuality(o.result);
+      o.quality = quality;
       const structured = OCRService.structure(o.result);
       o.template = structured.template;
       o.structured = structured.pairs.length
         ? structured.pairs.map(([key, value]) => `${key}\t${value}`).join('\n')
         : structured.lines.join('\n');
+      o.aiFix = '';
+      o.aiMode = 'mock';
+      o.aiError = '';
+      o.edited = false;
       Store.addActivity(`OCR 识别：${o.file.name}`, 'ai');
       this.rerender();
+      this.toast(o.mock ? 'OCR 演示识别成功' : quality.low ? quality.summary : 'OCR 识别成功');
     });
   },
 
-  ocrTxt() {
-    if (!this.temp.ocr.result) throw new Error('暂无识别文字');
-    Utils.textDownload(this.temp.ocr.result, 'OCR识别结果.txt');
+  async ocrAIFix(btn) {
+    const o = this.temp.ocr;
+    const source = String(o.result || '').trim();
+    if (!source) throw new Error('暂无可纠错的 OCR 结果');
+    const quality = o.quality || OCRService.assessQuality(source);
+    const confirmText = '当前 OCR 内容将发送至第三方 AI 进行纠错，请确认不包含企业机密或已完成脱敏。';
+    if (Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled) {
+      if (!confirm(confirmText)) return;
+    }
+    const prompt = `你是 OCR 纠错助手。请只基于原文进行修复，不要编造缺失内容。若无法确认，请输出“无法确认”。\n\n要求：\n1. 输出两栏：OCR 原文、AI 修复结果。\n2. AI 修复结果必须包含提示：AI 修复内容仅供参考，请人工核对后使用。\n3. 优先修复字段：发货单号、客户名称、发货日期、联系人、电话、产品编码、产品名称、规格型号、数量、单价、金额。\n4. 如果字段缺失或不确定，必须标注“无法确认”。\n5. 如果原文是表格，尽量按行列还原，但不要乱编。\n\nOCR 原文：\n${source}\n\n质量提示：${quality?.summary || '正常'}`;
+    const buildMock = reason => {
+      return [
+        'OCR 原文：',
+        source,
+        '',
+        'AI 修复结果：',
+        'AI 修复内容仅供参考，请人工核对后使用。',
+        '发货单号：SO-2026-015',
+        '客户名称：常州新能源科技有限公司',
+        '发货日期：无法确认',
+        '联系人：无法确认',
+        '电话：无法确认',
+        '产品编码：无法确认',
+        '产品名称：304不锈钢连接件',
+        '规格型号：无法确认',
+        '数量：760',
+        '单价：无法确认',
+        '金额：9710.00',
+        '',
+        `Mock 说明：${reason}`
+      ].join('\n');
+    };
+    await this.busy(btn, async () => {
+      try {
+        const ai = await AIService.complete(prompt, {
+          mode: 'ocr-correct',
+          module: 'ocr-ai-fix',
+          temperature: 0.1,
+          mockFallback: buildMock
+        });
+        o.aiFix = ai.text || buildMock('AI 返回为空');
+        o.aiMode = ai.mode || 'mock';
+        o.aiError = ai.error || '';
+      } catch (error) {
+        o.aiFix = buildMock(AIService.friendlyMessage?.(error) || error.message);
+        o.aiMode = 'mock';
+        o.aiError = Utils.friendlyErrorMessage(AIService.friendlyMessage?.(error) || error.message);
+      }
+      o.edited = false;
+      o.status = 'AI 纠错完成';
+      Store.addActivity(`OCR AI 纠错：${o.file?.name || '图片'}`, 'ai');
+      this.rerender();
+      this.toast(o.aiMode === 'api' ? 'AI 纠错完成' : 'AI Mock 纠错完成');
+    });
   },
 
-  ocrExcel() {
-    if (!this.temp.ocr.result) throw new Error('暂无识别文字');
-    const structured = OCRService.structure(this.temp.ocr.result);
-    const rows = structured.pairs.length
-      ? [['字段', '值'], ...structured.pairs]
-      : [['序号', '识别文字'], ...structured.lines.map((line, index) => [index + 1, line])];
-    const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'OCR结果');
-    XLSX.writeFile(book, 'OCR识别结果.xlsx');
+  async ocrAITable(btn) {
+    const o = this.temp.ocr;
+    const source = String(o.aiFix || o.result || '').trim();
+    if (!source) throw new Error('暂无可还原的 OCR 结果');
+    await this.busy(btn, async () => {
+      const structured = OCRService.structure(source);
+      const lines = structured.pairs.length ? structured.pairs.map(([key, value]) => `${key}\t${value}`) : structured.lines;
+      o.aiFix = ['AI 修复内容仅供参考，请人工核对后使用。', ...lines].join('\n');
+      o.edited = true;
+      o.status = '表格还原完成';
+      this.rerender();
+      this.toast('AI 表格还原完成');
+    });
   },
 
-  async ocrWord() {
-    if (!this.temp.ocr.result) throw new Error('暂无识别文字');
-    await Utils.exportDocx('OCR识别结果', this.temp.ocr.result, 'OCR识别结果');
+  async ocrAISave(btn) {
+    const o = this.temp.ocr;
+    const text = String(o.aiFix || '').trim();
+    if (!text) throw new Error('暂无可保存的 AI 修复结果');
+    await this.busy(btn, async () => {
+      o.result = text;
+      o.edited = true;
+      Store.save();
+      this.rerender();
+      this.toast('已保存人工确认后的 OCR 结果');
+    });
+  },
+
+  async ocrTxt(btn) {
+    const text = this.temp.ocr.result;
+    if (!text) throw new Error('暂无识别文字');
+    await this.busy(btn, async () => { Utils.textDownload(text, 'OCR识别结果.txt'); this.toast('OCR TXT 已导出'); });
+  },
+
+  async ocrAiTxt(btn) {
+    const text = this.temp.ocr.aiFix || '';
+    if (!text) throw new Error('暂无 AI 修复结果');
+    await this.busy(btn, async () => { Utils.textDownload(text, 'OCR AI修复结果.txt'); this.toast('AI 修复 TXT 已导出'); });
+  },
+
+  async ocrExcel(btn) {
+    const text = this.temp.ocr.result;
+    if (!text) throw new Error('暂无识别文字');
+    await this.busy(btn, async () => {
+      const structured = OCRService.structure(text);
+      const rows = structured.pairs.length ? [['字段', '值'], ...structured.pairs] : [['序号', '识别文字'], ...structured.lines.map((line, index) => [index + 1, line])];
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'OCR结果');
+      XLSX.writeFile(book, 'OCR识别结果.xlsx');
+      this.toast('OCR Excel 已导出');
+    });
+  },
+
+  async ocrAiExcel(btn) {
+    const text = this.temp.ocr.aiFix || '';
+    if (!text) throw new Error('暂无 AI 修复结果');
+    await this.busy(btn, async () => {
+      const structured = OCRService.structure(text);
+      const rows = structured.pairs.length ? [['字段', '值'], ...structured.pairs] : [['序号', '识别文字'], ...structured.lines.map((line, index) => [index + 1, line])];
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'AI修复结果');
+      XLSX.writeFile(book, 'OCR AI修复结果.xlsx');
+      this.toast('AI 修复 Excel 已导出');
+    });
+  },
+
+  async ocrWord(btn) {
+    const text = this.temp.ocr.result;
+    if (!text) throw new Error('暂无识别文字');
+    await this.busy(btn, async () => { await Utils.exportDocx('OCR识别结果', text, 'OCR识别结果'); this.toast('OCR Word 已导出'); });
+  },
+
+  async ocrAiWord(btn) {
+    const text = this.temp.ocr.aiFix || '';
+    if (!text) throw new Error('暂无 AI 修复结果');
+    await this.busy(btn, async () => { await Utils.exportDocx('OCR AI修复结果', text, 'OCR AI修复结果'); this.toast('AI 修复 Word 已导出'); });
+  },
+
+  async pptGenerate(btn) {
+    const ws = this.getWorkspace('ppt');
+    const topic = String(ws.topic || '').trim();
+    const industry = String(ws.industry || '').trim();
+    const pages = Math.max(3, Math.min(30, Number(ws.pages) || 8));
+    const purpose = ws.purpose || '工作汇报';
+    if (!topic) throw new Error('请输入 PPT 主题');
+    if (!industry) throw new Error('请输入所属行业');
+    await this.busy(btn, async () => {
+      const prompt = `你是企业 PPT 策划助手。请生成一份可直接制作的 PPT 逐页大纲。\n主题：${topic}\n行业：${industry}\n页数：${pages}\n用途：${purpose}\n补充要求：${ws.prompt || '无'}\n\n严格输出 ${pages} 页，每页必须包含“第N页｜标题”“页面内容”“建议图表/视觉”，内容要符合行业和用途，不能只给通用摘要。`;
+      const buildMock = reason => {
+        const pagePlans = [
+          ['封面', `${topic}；${industry} ${purpose}`], ['项目背景', '行业现状、业务痛点、建设必要性'],
+          ['目标与范围', '项目目标、适用场景、实施边界'], ['总体方案', '业务架构、数据架构、AI Gateway能力'],
+          ['核心功能', '生产计划、文件处理、智能分析、风险预警'], ['实施路径', '准备、试点、推广、持续优化'],
+          ['价值指标', '效率、质量、交期、成本和可追溯性'], ['总结与下一步', '关键结论、行动计划、责任分工']
+        ];
+        while (pagePlans.length < pages) pagePlans.splice(pagePlans.length - 1, 0, [`业务专题${pagePlans.length - 5}`, '结合实际数据说明流程、风险与改进建议']);
+        return [`Mock PPT 大纲｜${topic}`, `行业：${industry}｜用途：${purpose}｜页数：${pages}`, `AI Gateway 已自动降级 Mock。原因：${reason}`, '', ...pagePlans.slice(0, pages).map((item, index) => `第${index + 1}页｜${item[0]}\n页面内容：${item[1]}\n建议图表/视觉：${index < 2 ? '行业场景图与关键数字卡片' : '流程图、对比图或数据图表'}`)].join('\n\n');
+      };
+      try {
+        const response = await AIService.complete(prompt, { mode: 'ppt-outline', module: 'ai-ppt', temperature: 0.3, mockFallback: buildMock });
+        if (!response.text?.trim()) throw new Error('AI Gateway 返回内容为空');
+        ws.result = response.text;
+        ws.pptMode = response.mode === 'mock' ? 'mock' : 'gateway';
+        ws.pptError = response.error || '';
+      } catch (error) {
+        ws.result = buildMock(AIService.friendlyMessage?.(error) || error.message);
+        ws.pptMode = 'mock';
+        ws.pptError = Utils.friendlyErrorMessage(AIService.friendlyMessage?.(error) || error.message);
+      }
+      ws.updatedAt = Date.now();
+      Store.save();
+      Store.addActivity(`生成 PPT 大纲：${topic}`, 'ai');
+      this.rerender();
+      this.toast(ws.pptMode === 'gateway' ? 'PPT 大纲生成成功' : 'PPT Mock 大纲生成成功');
+    });
   },
 
   async sqlGenerate(btn) {
@@ -1702,13 +2536,13 @@ const App = {
       clearTimeout(this.agentTimer);
       agent.running = false;
       agent.status = error.message === '任务已取消' ? '取消' : '失败';
-      agent.result = error.message;
+      agent.result = Utils.friendlyErrorMessage(error.message);
       const current = agent.steps.find(step => step.status === '执行中');
       if (current) {
         current.status = agent.status;
-        current.error = error.message;
+        current.error = Utils.friendlyErrorMessage(error.message);
       }
-      this.agentLog(`失败：${error.message}`, 'error');
+      this.agentLog(`失败：${Utils.friendlyErrorMessage(error.message)}`, 'error');
       this.rerender();
       throw error;
     } finally {
@@ -2221,13 +3055,16 @@ const App = {
             attachments: (ws.attachments || []).map(item => ({ name: item.name, size: item.size, type: item.type }))
           })
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+          const { raw, json } = await Utils.safeReadResponse(response);
+          throw new Error(json?.message || json?.detail || raw || `HTTP ${response.status}`);
+        }
         status = '已发送';
         mailSettings.sentToday = Number(mailSettings.sentToday || 0) + 1;
       }
     } catch (error) {
       status = mailSettings.enabled ? '失败' : '演示模式';
-      failureReason = error.message || '发送失败';
+      failureReason = Utils.friendlyErrorMessage(error.message || '发送失败');
     }
     if (!mailSettings.enabled || !mailSettings.apiUrl || !mailSettings.apiKey) {
       status = '演示模式';
@@ -2584,13 +3421,13 @@ const App = {
 
   applyProviderPreset(provider) {
     const presets = {
-      '本地模式': ['', 'deepseek-chat'],
-      'DeepSeek OpenAI-compatible API': [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
-      OpenAI: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
-      DeepSeek: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
-      Claude: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
-      Gemini: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
-      Qwen: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-chat'],
+      '本地模式': ['', 'deepseek-v4-flash'],
+      'DeepSeek OpenAI-compatible API': ['https://api.deepseek.com', 'deepseek-v4-flash'],
+      OpenAI: ['https://api.openai.com/v1', 'gpt-4o-mini'],
+      DeepSeek: ['https://api.deepseek.com', 'deepseek-v4-flash'],
+      Claude: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
+      Gemini: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
+      Qwen: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
       '自定义': ['', '']
     };
     if (!presets[provider]) return;
@@ -2607,8 +3444,14 @@ const App = {
     const syncMode = document.getElementById('syncMode')?.value || 'local';
     const provider = document.getElementById('apiProvider')?.value || '自定义';
     const apiUrl = document.getElementById('apiUrl')?.value.trim();
+    const apiKey = document.getElementById('apiKey')?.value.trim() || Store.state.settings.apiKey || '';
     const model = document.getElementById('apiModel')?.value.trim();
-    if (accessMode !== 'local' && (!apiUrl || !model)) throw new Error('API 模式或云端模式下请填写接口地址和模型名称');
+    const githubPagesUrl = document.getElementById('githubPagesUrl')?.value.trim();
+    const temperature = Number(document.getElementById('apiTemperature')?.value || 0.2);
+    const topP = Number(document.getElementById('apiTopP')?.value || 1);
+    const maxTokens = Number(document.getElementById('apiMaxTokens')?.value || 2048);
+    const timeout = Number(document.getElementById('apiTimeout')?.value || 30000);
+    if (accessMode !== 'local' && (!apiUrl || !apiKey || !model)) throw new Error('真实 AI 模式下请填写 Base URL、API Key 和模型名称');
     Store.state.settings = {
       ...Store.state.settings,
       accessMode,
@@ -2616,21 +3459,33 @@ const App = {
       provider,
       apiEnabled: accessMode !== 'local',
       apiUrl: accessMode === 'local' ? '' : apiUrl,
-      apiKey: '',
-      model
+      apiKey,
+      model,
+      githubPagesUrl,
+      temperature,
+      topP,
+      maxTokens,
+      timeout
     };
     Store.save();
     this.updateApiState();
-    this.toast('访问模式与 AI 配置已保存到本地');
+    this.toast('AI Gateway 配置已保存到当前浏览器 localStorage');
+  },
+
+  settingsDevToggle() {
+    Store.state.settings.developerMode = !Store.state.settings.developerMode;
+    Store.save();
+    this.toast(Store.state.settings.developerMode ? 'Developer Mode 已开启' : 'Developer Mode 已关闭');
+    this.rerender();
   },
 
   async settingsTestAI(btn) {
     this.settingsSaveAI();
-    if (Store.state.settings.accessMode === 'local') throw new Error('当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。');
+    if (Store.state.settings.accessMode === 'local') throw new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
     await this.busy(btn, async () => {
-      const res = await APIClient.health(Store.state.settings.apiUrl);
-      if (res.ok) this.toast(`AI 后端连接成功：${Store.state.settings.apiUrl}`);
-      else throw new Error(res.message || 'AI 后端连接失败');
+      const res = await AIService.complete('请仅回复：连接成功', { module: 'gateway-test', mode: 'gateway-test' });
+      if (res.mode === 'api') this.toast(`DeepSeek 已连接：${res.model || Store.state.settings.model || 'deepseek-v4-flash'}`);
+      else throw new Error(res.error || 'AI Gateway 测试失败');
     });
   },
 
@@ -2665,12 +3520,15 @@ const App = {
         const response = await fetch(`${config.apiUrl.replace(/\/$/, '')}/health`, {
           headers: { Authorization: `Bearer ${config.apiKey}` }
         });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+          const { raw, json } = await Utils.safeReadResponse(response);
+          throw new Error(json?.message || json?.detail || raw || `HTTP ${response.status}`);
+        }
         config.enabled = true;
         Store.save();
         this.toast('Agent Mail 连接成功');
       } catch (error) {
-        this.toast(`当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。${error.message ? `（${error.message}）` : ''}`, 'error');
+        this.toast(`当前未配置 DeepSeek API Key，无法调用真实 AI。${error.message ? `（${error.message}）` : ''}`, 'error');
       }
       this.rerender();
     });
@@ -2957,15 +3815,340 @@ const App = {
     this.toast('库存已删除');
   },
 
-  planGenerate() {
+  getPlanWorkspace() {
     Store.state.workspaces.productionplan = Store.state.workspaces.productionplan || {};
-    Store.state.workspaces.productionplan.result = (Store.state.orders || [])
-      .slice()
-      .sort((a, b) => String(a.delivery_date || '').localeCompare(String(b.delivery_date || '')))
-      .map((item, index) => `${index + 1}. ${item.order_no} / ${item.customer} / ${item.product} / 数量 ${item.quantity} / 交期 ${item.delivery_date}`)
-      .join('\n');
+    return Store.state.workspaces.productionplan;
+  },
+
+  parseCsvRows(text = '') {
+    const rows = [];
+    let row = [], field = '', quoted = false;
+    const source = String(text || '').replace(/^\uFEFF/, '');
+    for (let index = 0; index < source.length; index += 1) {
+      const char = source[index];
+      if (char === '"' && quoted && source[index + 1] === '"') { field += '"'; index += 1; }
+      else if (char === '"') quoted = !quoted;
+      else if (char === ',' && !quoted) { row.push(field.trim()); field = ''; }
+      else if ((char === '\n' || char === '\r') && !quoted) {
+        if (char === '\r' && source[index + 1] === '\n') index += 1;
+        row.push(field.trim());
+        if (row.some(Boolean)) rows.push(row);
+        row = []; field = '';
+      } else field += char;
+    }
+    row.push(field.trim());
+    if (row.some(Boolean)) rows.push(row);
+    return rows;
+  },
+
+  async loadPlanCsv(file) {
+    if (!file || !/\.csv$/i.test(file.name || '')) throw new Error('请选择 CSV 文件');
+    this.toast('正在读取 CSV 订单...', 'success');
+    const text = await file.text();
+    const rows = this.parseCsvRows(text);
+    if (rows.length < 2) throw new Error('CSV 没有可导入的订单数据');
+    const headers = rows[0].map(value => String(value).trim());
+    const aliases = {
+      order_no: ['订单号','单号','order_no','order'], customer: ['客户','客户名称','customer'],
+      product: ['产品','产品名称','product'], quantity: ['数量','订单数量','quantity'],
+      delivery_date: ['交期','交货日期','delivery_date'], process: ['工艺','加工工艺','process'],
+      machine: ['设备需求','设备','machine','equipment'], priority: ['优先级','priority'], status: ['状态','status']
+    };
+    const indexOf = key => headers.findIndex(header => aliases[key].some(alias => header.toLowerCase() === alias.toLowerCase()));
+    for (const required of ['customer','product','quantity','delivery_date']) {
+      if (indexOf(required) < 0) throw new Error(`CSV 缺少必需字段：${aliases[required][0]}`);
+    }
+    const imported = rows.slice(1).filter(row => row.some(Boolean)).map((row, index) => ({
+      order_no: row[indexOf('order_no')] || `CSV-${String(index + 1).padStart(3, '0')}`,
+      customer: row[indexOf('customer')] || '', product: row[indexOf('product')] || '',
+      quantity: Number(String(row[indexOf('quantity')] || 0).replace(/[^\d.-]/g, '')) || 0,
+      delivery_date: row[indexOf('delivery_date')] || '', process: row[indexOf('process')] || '',
+      machine: row[indexOf('machine')] || '', priority: row[indexOf('priority')] || '中',
+      status: row[indexOf('status')] || '待处理'
+    })).filter(item => item.customer && item.product);
+    if (!imported.length) throw new Error('CSV 中没有客户和产品完整的有效订单');
+    const ws = this.getPlanWorkspace();
+    ws.prompt = imported.map(item => [item.order_no,item.customer,item.product,item.quantity,item.delivery_date,item.process,item.machine,item.priority,item.status].join(',')).join('\n');
+    ws.parsedOrders = imported;
+    ws.csvImportedAt = Date.now();
+    ws.csvStatus = `已成功导入 ${file.name}，共 ${imported.length} 条有效订单。`;
+    ws.metrics = { ...(ws.metrics || {}), totalOrders: imported.length, totalQuantity: imported.reduce((sum, item) => sum + item.quantity, 0) };
     Store.save();
     this.rerender();
+    this.toast(`CSV 导入成功：${imported.length} 条订单`);
+  },
+
+  async downloadPlanCsvTemplate(button) {
+    await this.busy(button, async () => {
+      const csv = '\uFEFF订单号,客户,产品,数量,交期,工艺,设备需求,优先级,状态\nSO-2026-001,常州新能源科技有限公司,304不锈钢连接件,760,2026-07-05,CNC加工,CNC加工中心,高,待处理';
+      Utils.textDownload(csv, '生产计划订单导入模板.csv');
+      this.toast('CSV 示例模板已下载');
+    });
+  },
+
+  async equipmentSave(button) {
+    await this.busy(button, async () => {
+      const rows = [...document.querySelectorAll('[data-equipment-row]')];
+      if (!rows.length) throw new Error('暂无设备数据，请先重置示例设备');
+      const items = rows.map(row => {
+        const value = field => row.querySelector(`[data-equipment-field="${field}"]`)?.value.trim() || '';
+        return { id: value('id'), name: value('name'), status: value('status'), load: Math.max(0, Math.min(100, Number(value('load')) || 0)), processes: value('processes'), maintenance: value('maintenance') };
+      });
+      if (items.some(item => !item.id || !item.name)) throw new Error('设备编号和设备名称不能为空');
+      Store.state.equipment = items;
+      Store.addActivity(`保存设备台账：${items.length} 台`, 'file');
+      Store.save();
+      this.rerender();
+      this.toast(`设备台账保存成功：${items.length} 台`);
+    });
+  },
+
+  async equipmentReset(button) {
+    await this.busy(button, async () => {
+      Store.state.equipment = structuredClone(DefaultState.equipment);
+      Store.save();
+      this.rerender();
+      this.toast('已重置 8 台示例设备');
+    });
+  },
+
+  async planSample(button) {
+    await this.busy(button, async () => {
+      const ws = this.getPlanWorkspace();
+      ws.prompt = [
+      'SO-2026-001,常州新能源科技有限公司,304不锈钢连接件,760,2026-07-05,CNC加工,CNC加工中心,高,待处理',
+      'SO-2026-002,苏州精工机械有限公司,支架组件,180,2026-07-04,铣削,铣床,中,待处理',
+      'SO-2026-003,无锡智造科技有限公司,销轴件,320,2026-07-03,车削,数控车床,高,生产中',
+      'SO-2026-004,上海工业贸易有限公司,锻压件,90,2026-07-08,锻造,锻压机,低,待处理',
+      'SO-2026-005,南京制造中心,热处理板件,250,2026-07-02,淬火,淬火炉,高,待处理'
+      ].join('\n');
+      ws.planResult = '';
+      ws.riskResult = '';
+      ws.dailySchedule = '';
+      ws.dailyReport = '';
+      ws.parsedOrders = [];
+      ws.metrics = {};
+      ws.updatedAt = Date.now();
+      Store.save();
+      this.rerender();
+      this.toast('已填充制造业示例订单');
+    });
+  },
+
+  parsePlanOrders(text = '') {
+    const source = String(text || '').trim();
+    if (!source) return [];
+    if (source.startsWith('[')) {
+      try {
+        const json = JSON.parse(source);
+        if (Array.isArray(json)) return json;
+      } catch {}
+    }
+    const rows = source.split(/\n+/).map(line => line.trim()).filter(Boolean);
+    const orders = [];
+    for (const line of rows) {
+      if (/^#|^备注|^说明/.test(line)) continue;
+      if (/订单号|客户|产品|数量|交期/.test(line) && !/\d{4}-\d{2}-\d{2}/.test(line) && !/\d/.test(line.replace(/[^\d]/g, ''))) continue;
+      const parts = line.split(/[,，\t|]/).map(part => part.trim()).filter(Boolean);
+      const fromParts = parts.length >= 5 ? {
+        order_no: parts[0],
+        customer: parts[1],
+        product: parts[2],
+        quantity: parts[3],
+        delivery_date: parts[4],
+        process: parts[5] || '',
+        machine: parts[6] || '',
+        priority: parts[7] || '中',
+        status: parts[8] || '待处理'
+      } : {};
+      const pick = (label, fallback = '') => {
+        const reg = new RegExp(`${label}[:：]\\s*([^,，\\n]+)`);
+        return (line.match(reg) || [])[1] || fallback;
+      };
+      const order = {
+        order_no: fromParts.order_no || pick('订单号') || pick('单号') || line.slice(0, 20),
+        customer: fromParts.customer || pick('客户'),
+        product: fromParts.product || pick('产品'),
+        quantity: Number(String(fromParts.quantity || pick('数量') || 0).replace(/[^\d.-]/g, '')) || 0,
+        delivery_date: fromParts.delivery_date || pick('交期') || pick('截止时间'),
+        process: fromParts.process || pick('工艺'),
+        status: fromParts.status || pick('状态') || '待处理',
+        priority: fromParts.priority || pick('优先级') || '中',
+        machine: fromParts.machine || pick('设备') || pick('机台') || ''
+      };
+      if (order.order_no || order.customer || order.product) orders.push(order);
+    }
+    return orders;
+  },
+
+  buildPlanAnalysis(orders = []) {
+    const sorted = [...orders].filter(item => item.order_no || item.customer || item.product).sort((a, b) => String(a.delivery_date || '').localeCompare(String(b.delivery_date || '')));
+    const urgent = sorted.filter(item => /高/.test(String(item.priority || '')) || (item.delivery_date && new Date(item.delivery_date) <= new Date(Date.now() + 1000 * 60 * 60 * 24 * 2)));
+    const totalQuantity = sorted.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    const deliveryRisk = sorted.filter(item => item.delivery_date && new Date(item.delivery_date) < new Date()).length;
+    const equipment = Store.state.equipment || [];
+    const machineGroups = sorted.reduce((map, item) => {
+      const key = item.machine || '未指定设备';
+      map[key] = map[key] || [];
+      map[key].push(item);
+      return map;
+    }, {});
+    const machineLoad = Object.entries(machineGroups).map(([machine, list]) => {
+      const ledger = equipment.find(item => item.name === machine || item.id === machine || (item.processes || '').includes(list[0]?.process || '___'));
+      const ledgerText = ledger ? `台账负载 ${ledger.load}% / ${ledger.status} / 维护 ${ledger.maintenance}` : '台账未匹配';
+      return `${machine}：${list.length} 单 / ${list.reduce((sum, item) => sum + Number(item.quantity || 0), 0)} 件 / ${ledgerText}`;
+    }).join('\n');
+    const equipmentRisks = sorted.map(order => {
+      const ledger = equipment.find(item => item.name === order.machine || item.id === order.machine || (item.processes || '').includes(order.process || '___'));
+      if (!ledger) return `${order.order_no}：未匹配设备台账`;
+      if (ledger.status === '维护' || ledger.status === '停机' || ledger.maintenance === '维护中') return `${order.order_no}：${ledger.name}当前不可排产`;
+      if (Number(ledger.load) >= 80) return `${order.order_no}：${ledger.name}负载${ledger.load}%，建议分流`;
+      return '';
+    }).filter(Boolean);
+    const materialRisk = sorted.filter(item => /铝|不锈钢|钢|板|轴|件/.test(`${item.product}${item.customer}`)).length ? '中' : '低';
+    const planLines = sorted.map((item, index) => `${index + 1}. ${item.order_no} / ${item.customer} / ${item.product} / 数量 ${item.quantity} / 交期 ${item.delivery_date} / 优先级 ${item.priority} / 设备 ${item.machine || '未指定'}`).join('\n');
+    const riskLines = [
+      `交期风险：${deliveryRisk} 单`,
+      `紧急订单：${urgent.length} 单`,
+      `设备风险：${equipmentRisks.length} 项`,
+      `物料风险：${materialRisk}`,
+      `总数量：${totalQuantity}`
+    ].join('\n');
+    const dailySchedule = sorted.slice(0, 10).map((item, index) => `${index + 1}. ${item.delivery_date || '待确认'} · ${item.order_no} · ${item.customer} · ${item.product} · ${item.quantity} 件 · ${item.machine || '未指定设备'}`).join('\n');
+    return {
+      sorted,
+      urgent,
+      totalQuantity,
+      deliveryRisk,
+      equipmentRisks,
+      materialRisk,
+      machineLoad,
+      planLines,
+      riskLines,
+      dailySchedule
+    };
+  },
+
+  async planAnalyze(btn) {
+    const ws = this.getPlanWorkspace();
+    const input = document.getElementById('planInput')?.value ?? ws.prompt ?? '';
+    ws.prompt = input;
+    const orders = this.parsePlanOrders(input);
+    if (!orders.length) throw new Error('请先填写或粘贴订单数据');
+    await this.busy(btn, async () => {
+      let analysis = this.buildPlanAnalysis(orders);
+      let result = '';
+      let riskResult = '';
+      let schedule = '';
+      const buildPlanMock = reason => [
+        'AI Gateway 已自动降级 Mock。',
+        `原因：${reason}`,
+        '', '生产计划：', analysis.planLines,
+        '', '交期风险：', analysis.riskLines,
+        '', '设备负载建议：', analysis.machineLoad || '未发现可计算设备负载',
+        '', '每日安排：', analysis.dailySchedule || '暂无安排'
+      ].join('\n');
+      try {
+        const equipmentContext = (Store.state.equipment || []).map(item => `${item.id} | ${item.name} | ${item.status} | 负载${item.load}% | ${item.processes} | ${item.maintenance}`).join('\n');
+        const ai = await AIService.complete(
+          `你是 AI 生产计划助手。请结合订单和设备台账输出：1.生产计划 2.交期风险 3.设备负载建议 4.物料风险 5.每日安排。不得把维护或停机设备安排生产。\n\n订单数据：\n${orders.map(item => `${item.order_no} | ${item.customer} | ${item.product} | ${item.quantity} | ${item.delivery_date} | 工艺${item.process || '未指定'} | ${item.priority} | ${item.machine || '未指定'}`).join('\n')}\n\n设备台账：\n${equipmentContext || '暂无设备台账'}`,
+          { module: 'production-plan', mode: 'production-plan', temperature: 0.2, mockFallback: buildPlanMock }
+        );
+        result = ai.text;
+        ws.aiMode = ai.mode;
+        ws.aiError = ai.error || '';
+      } catch (error) {
+        this.recordAiError(error, 'productionplan-analyze');
+        result = buildPlanMock(AIService.friendlyMessage?.(error) || error.message);
+        ws.aiMode = 'mock';
+        ws.aiError = AIService.friendlyMessage?.(error) || error.message;
+      }
+      riskResult = [
+        `交期风险：${analysis.deliveryRisk} 单`,
+        `设备负载建议：`,
+        analysis.machineLoad || '未指定设备，建议先补齐机台字段。',
+        analysis.equipmentRisks.length ? `设备异常：\n${analysis.equipmentRisks.join('\n')}` : '设备异常：无',
+        `物料风险：${analysis.materialRisk}`,
+        `紧急订单：${analysis.urgent.length} 单`
+      ].join('\n');
+      schedule = analysis.dailySchedule || '';
+      ws.parsedOrders = analysis.sorted;
+      ws.planResult = result;
+      ws.result = result;
+      ws.riskResult = riskResult;
+      ws.dailySchedule = schedule;
+      ws.metrics = {
+        totalOrders: analysis.sorted.length,
+        totalQuantity: analysis.totalQuantity,
+        urgentOrders: analysis.urgent.length,
+        materialRisk: analysis.materialRisk
+        ,equipmentRisk: analysis.equipmentRisks.length ? `${analysis.equipmentRisks.length} 项` : '正常'
+      };
+      ws.updatedAt = Date.now();
+      Store.state.dashboard = {
+        ...Store.state.dashboard,
+        todayPlan: analysis.sorted.length,
+        productionPlanOrders: analysis.sorted.length,
+        productionPlanRisk: analysis.deliveryRisk,
+        aiSuggestions: [
+          `订单 ${analysis.sorted.length} 单，建议按交期优先排产。`,
+          analysis.deliveryRisk ? `发现 ${analysis.deliveryRisk} 单延期风险。` : '当前未发现延期风险。'
+        ]
+      };
+      Store.save();
+      this.rerender();
+    });
+  },
+
+  planGenerate() {
+    return this.planAnalyze();
+  },
+
+  async planReport(btn) {
+    const ws = this.getPlanWorkspace();
+    const orders = ws.parsedOrders || this.parsePlanOrders(ws.prompt || '');
+    if (!orders.length) throw new Error('请先填写订单数据并完成分析');
+    await this.busy(btn, async () => {
+      const analysis = this.buildPlanAnalysis(orders);
+      ws.dailyReport = [
+      '生产日报',
+      `日期：${new Date().toLocaleDateString('zh-CN')}`,
+      `订单总数：${analysis.sorted.length}`,
+      `总数量：${analysis.totalQuantity}`,
+      `紧急订单：${analysis.urgent.length}`,
+      `交期风险：${analysis.deliveryRisk}`,
+      `物料风险：${analysis.materialRisk}`,
+      `设备风险：${analysis.equipmentRisks.length} 项`,
+      '',
+      '今日安排：',
+      analysis.dailySchedule || '暂无',
+      '',
+      '建议：按交期优先推进紧急订单，优先释放高负载设备。'
+      ].join('\n');
+      ws.result = ws.dailyReport;
+      ws.updatedAt = Date.now();
+      Store.save();
+      this.rerender();
+      this.toast('生产日报已生成');
+    });
+  },
+
+  async planCopy(button) {
+    const ws = this.getPlanWorkspace();
+    const text = [ws.planResult, ws.dailyReport, ws.riskResult].filter(Boolean).join('\n\n');
+    if (!text) throw new Error('暂无可复制内容');
+    await this.busy(button, async () => this.copy(text));
+  },
+
+  async planExport(button) {
+    const ws = this.getPlanWorkspace();
+    const text = [ws.planResult, ws.dailyReport, ws.riskResult].filter(Boolean).join('\n\n');
+    if (!text) throw new Error('暂无可导出的内容');
+    await this.busy(button, async () => {
+      Utils.textDownload(text, `生产计划报告_${new Date().toISOString().slice(0, 10)}.txt`);
+      Store.addActivity('导出生产计划TXT', 'file');
+      this.toast('生产计划 TXT 已导出');
+    });
   },
 
   riskRefresh() {
@@ -3001,7 +4184,8 @@ const App = {
     }
     if (/计划/.test(prompt)) {
       await this.planGenerate();
-      result += `今日生产计划：\n${Store.state.workspaces.productionplan?.result || '暂无计划'}\n\n`;
+      const planWs = this.getPlanWorkspace();
+      result += `今日生产计划：\n${planWs.planResult || planWs.dailyReport || '暂无计划'}\n\n`;
     }
     if (/日报/.test(prompt)) {
       result += `日报建议：\n订单 ${orders.length} 条；低库存 ${inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length} 条；请人工确认后导出。\n\n`;
@@ -3212,6 +4396,12 @@ const App = {
 
   async refreshDashboard() {
     if (!AuthClient.isLoggedIn()) return;
+    const connectors = Store.state.connectors || [];
+    const connectorSummary = {
+      unconfigured: connectors.filter(item => item.status === '未配置' || !item.enabled).length,
+      connected: connectors.filter(item => item.status === '已连接').length,
+      failed: connectors.filter(item => item.status === '连接失败').length
+    };
     if (AuthClient.isDemo()) {
       const delayedOrders = (Store.state.orders || []).filter(item => item.delivery_date && new Date(item.delivery_date) < new Date() && item.status !== '已完成');
       const inventoryAlerts = (Store.state.inventory || []).filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length;
@@ -3220,6 +4410,11 @@ const App = {
         inventoryAlerts,
         delayedOrders: delayedOrders.length,
         todayPlan: Math.min((Store.state.orders || []).length, 8),
+        productionPlanOrders: App.getWorkspace('productionplan')?.parsedOrders?.length || 0,
+        productionPlanRisk: App.getWorkspace('productionplan')?.riskCount || 0,
+        connectorUnconfigured: connectorSummary.unconfigured,
+        connectorConnected: connectorSummary.connected,
+        connectorFailed: connectorSummary.failed,
         aiSuggestions: [
           inventoryAlerts ? `发现 ${inventoryAlerts} 条低库存，请优先补料。` : '暂无低库存风险。',
           delayedOrders.length ? `发现 ${delayedOrders.length} 条延期订单，请优先排产。` : '当前未发现延期订单。'
@@ -3233,7 +4428,12 @@ const App = {
     }
     try {
       const res = await APIClient.request('/api/dashboard');
-      Store.state.dashboard = res.data.dashboard || Store.state.dashboard;
+      Store.state.dashboard = {
+        ...(res.data.dashboard || Store.state.dashboard),
+        connectorUnconfigured: connectorSummary.unconfigured,
+        connectorConnected: connectorSummary.connected,
+        connectorFailed: connectorSummary.failed
+      };
       Store.save();
     } catch (error) {
       console.warn('Dashboard refresh failed:', error.message);
@@ -3311,9 +4511,10 @@ const App = {
   },
 
   toast(message, type = 'success') {
+    const text = type === 'error' ? Utils.friendlyErrorMessage(message) : String(message);
     const t = document.createElement('div');
     t.className = `toast ${type}`;
-    t.innerHTML = `${icon(type === 'error' ? 'x' : 'check')}<span>${Utils.escape(message)}</span>`;
+    t.innerHTML = `${icon(type === 'error' ? 'x' : 'check')}<span>${Utils.escape(text)}</span>`;
     document.getElementById('toastStack').appendChild(t);
     setTimeout(() => {
       t.style.opacity = '0';

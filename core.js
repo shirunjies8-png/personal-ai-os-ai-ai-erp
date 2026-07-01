@@ -18,8 +18,14 @@ const DefaultState = {
     apiEnabled: Boolean(RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY),
     apiUrl: RuntimeConfig.API_BASE_URL || '',
     apiKey: '',
-    model: 'deepseek-chat',
-    backupModels: ['deepseek-reasoner', 'qwen-plus'],
+    model: 'deepseek-v4-flash',
+    backupModels: ['deepseek-v4-pro', 'qwen-plus'],
+    temperature: 0.2,
+    topP: 1,
+    maxTokens: 2048,
+    timeout: 30000,
+    developerMode: false,
+    githubPagesUrl: '',
     provider: RuntimeConfig.API_BASE_URL ? 'DeepSeek OpenAI-compatible API' : '本地模式',
     syncMode: 'local',
     dark: false,
@@ -56,16 +62,50 @@ const DefaultState = {
   ],
   operationLogs: [],
   aiErrors: [],
+  aiHistory: [],
+  aiGatewayStatus: { state: 'mock', message: '等待配置 AI Gateway', provider: '本地模式', model: 'deepseek-v4-flash', updatedAt: 0 },
+  connectors: [
+    { id: 'erp', type: 'ERP', name: 'ERP Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'mes', type: 'MES', name: 'MES Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'wms', type: 'WMS', name: 'WMS Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'scada', type: 'SCADA', name: 'SCADA Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'plc', type: 'PLC', name: 'PLC Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'sap', type: 'SAP', name: 'SAP Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'sqlserver', type: 'SQL Server', name: 'SQL Server Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'oracle', type: 'Oracle', name: 'Oracle Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'oa', type: 'OA', name: 'OA Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'crm', type: 'CRM', name: 'CRM Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'restapi', type: 'REST API', name: 'REST API Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'webhook', type: 'Webhook', name: 'Webhook Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'mqtt', type: 'MQTT', name: 'MQTT Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'opcua', type: 'OPC UA', name: 'OPC UA Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'excelcsv', type: 'Excel/CSV', name: 'Excel/CSV Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'robot', type: 'Robot', name: 'Robot Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
+    { id: 'digitaltwin', type: 'Digital Twin', name: 'Digital Twin Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 }
+  ],
   mailDrafts: [],
   mailRecords: [],
   rlFeedback: [],
   orders: [],
   inventory: [],
+  equipment: [
+    { id: 'EQ-CNC-01', name: 'CNC加工中心', status: '运行', load: 78, processes: 'CNC加工、钻孔、精铣', maintenance: '正常' },
+    { id: 'EQ-LATHE-01', name: '数控车床', status: '运行', load: 65, processes: '车削、螺纹、销轴加工', maintenance: '正常' },
+    { id: 'EQ-SAW-01', name: '锯床', status: '空闲', load: 20, processes: '下料、锯切', maintenance: '正常' },
+    { id: 'EQ-MILL-01', name: '铣床', status: '运行', load: 55, processes: '铣削、开槽', maintenance: '正常' },
+    { id: 'EQ-FORGE-01', name: '锻压机', status: '运行', load: 70, processes: '锻造、压制', maintenance: '待点检' },
+    { id: 'EQ-ROLL-01', name: '轧辊机', status: '空闲', load: 30, processes: '轧制、整形', maintenance: '正常' },
+    { id: 'EQ-QUENCH-01', name: '淬火炉', status: '运行', load: 82, processes: '淬火、热处理', maintenance: '正常' },
+    { id: 'EQ-AGE-01', name: '时效炉', status: '维护', load: 0, processes: '时效处理、去应力', maintenance: '维护中' }
+  ],
   dashboard: {
     todayOrders: 0,
     inventoryAlerts: 0,
     delayedOrders: 0,
     todayPlan: 0,
+    connectorUnconfigured: 0,
+    connectorConnected: 0,
+    connectorFailed: 0,
     aiSuggestions: [],
     agentExecutions: 0,
     aiLearningTimes: 0,
@@ -128,11 +168,34 @@ const AuthClient = {
 };
 
 const APIClient = {
+  async safeReadResponse(response) {
+    const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
+    const text = await response.text();
+    if (contentType.includes('application/json')) {
+      try {
+        return { raw: text, json: JSON.parse(text) };
+      } catch {
+        return { raw: text, json: null };
+      }
+    }
+    try {
+      return { raw: text, json: JSON.parse(text) };
+    } catch {
+      return { raw: text, json: null };
+    }
+  },
   resolveUrl(path, baseUrl = '') {
     if (/^https?:\/\//.test(path)) return path;
     const base = String(baseUrl || '').replace(/\/$/, '');
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     return base ? `${base}${normalizedPath}` : normalizedPath;
+  },
+  resolveOpenAIEndpoint(baseUrl = '') {
+    const normalized = String(baseUrl || '').trim().replace(/\/$/, '');
+    if (!normalized) return '';
+    if (/\/chat\/completions$/i.test(normalized)) return normalized;
+    if (/\/v1$/i.test(normalized)) return `${normalized}/chat/completions`;
+    return `${normalized}/v1/chat/completions`;
   },
   async request(path, options = {}, meta = {}) {
     const headers = {
@@ -140,21 +203,24 @@ const APIClient = {
       ...(options.headers || {})
     };
     if (AuthClient.token) headers.Authorization = `Bearer ${AuthClient.token}`;
-    const response = await fetch(this.resolveUrl(path, meta.baseUrl), {
-      ...options,
-      headers
-    });
-    if (!response.ok) {
-      let detail = '';
-      try {
-        const payload = await response.json();
-        detail = payload.message || payload.detail || JSON.stringify(payload);
-      } catch {
-        detail = await response.text();
+    const controller = meta.timeout ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), meta.timeout) : null;
+    try {
+      const response = await fetch(this.resolveUrl(path, meta.baseUrl), {
+        ...options,
+        headers,
+        signal: controller?.signal
+      });
+      if (!response.ok) {
+        const { raw, json } = await this.safeReadResponse(response);
+        const detail = json?.message || json?.detail || raw;
+        throw new Error(detail || `HTTP ${response.status}`);
       }
-      throw new Error(detail || `HTTP ${response.status}`);
+      const { json, raw } = await this.safeReadResponse(response);
+      return json ?? { ok: true, data: raw };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    return response.json();
   },
   async chat(messages, module = 'ai-chat', extra = {}) {
     const baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '';
@@ -169,12 +235,67 @@ const APIClient = {
           module,
           ...extra
         })
-      }, { baseUrl });
+      }, { baseUrl, timeout: Store.state.settings.timeout || 30000 });
     } catch (error) {
       if (/Failed to fetch|Load failed|NetworkError|fetch/i.test(error.message)) {
         throw new Error('AI 后端连接失败');
       }
       throw error;
+    }
+  },
+  async openAICompatible(messages, extra = {}) {
+    const settings = Store.state.settings;
+    const baseUrl = String(settings.apiUrl || '').trim().replace(/\/$/, '');
+    const apiKey = String(settings.apiKey || '').trim();
+    if (!baseUrl) throw new Error('请填写 OpenAI-compatible Base URL');
+    if (!apiKey) throw new Error('请填写 API Key');
+    const timeout = Math.max(1000, Number(settings.timeout || 30000));
+    const localGateway = typeof location !== 'undefined' && /^https?:$/.test(location.protocol) && !/github\.io$/i.test(location.hostname)
+      ? location.origin
+      : '';
+    const gatewayBase = String(RuntimeConfig.API_BASE_URL || localGateway || '').replace(/\/$/, '');
+    if (gatewayBase && gatewayBase !== baseUrl) {
+      return this.request('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages,
+          module: extra.module || 'general',
+          model: extra.model || settings.model,
+          temperature: extra.temperature ?? settings.temperature ?? 0.2,
+          max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
+          timeout,
+          apiKey,
+          providerBaseUrl: baseUrl
+        })
+      }, { baseUrl: gatewayBase, timeout: timeout + 1000 });
+    }
+    const url = this.resolveOpenAIEndpoint(baseUrl);
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: extra.model || settings.model,
+          messages,
+          temperature: extra.temperature ?? settings.temperature ?? 0.2,
+          max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
+          ...(extra.top_p == null ? {} : { top_p: extra.top_p })
+        }),
+        signal: controller?.signal
+      });
+      const { json: payload, raw } = await this.safeReadResponse(response);
+      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || raw || `HTTP ${response.status}`);
+      const reply = payload?.choices?.[0]?.message?.content?.trim();
+      if (!reply) throw new Error('模型返回为空');
+      return { ok: true, reply, raw: payload };
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('AI 请求超时');
+      if (/Failed to fetch|Load failed|NetworkError/i.test(error.message || '')) throw new Error('AI 后端连接失败');
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   },
   async health(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
@@ -207,9 +328,13 @@ const Store = {
       if (!Array.isArray(this.state.roles)) this.state.roles = structuredClone(DefaultState.roles);
       if (!Array.isArray(this.state.operationLogs)) this.state.operationLogs = [];
       if (!Array.isArray(this.state.aiErrors)) this.state.aiErrors = [];
+      if (!Array.isArray(this.state.aiHistory)) this.state.aiHistory = [];
+      if (!this.state.aiGatewayStatus || typeof this.state.aiGatewayStatus !== 'object') this.state.aiGatewayStatus = structuredClone(DefaultState.aiGatewayStatus);
+      if (!Array.isArray(this.state.connectors) || !this.state.connectors.length) this.state.connectors = structuredClone(DefaultState.connectors);
       if (!this.state.settings.accessMode) this.state.settings.accessMode = this.state.settings.apiEnabled ? 'api' : 'local';
-      if (!this.state.settings.syncMode) this.state.settings.syncMode = 'local';
-      if (!this.state.settings.provider) this.state.settings.provider = this.state.settings.accessMode === 'local' ? '本地模式' : '自定义';
+    if (!this.state.settings.syncMode) this.state.settings.syncMode = 'local';
+    if (!this.state.settings.provider) this.state.settings.provider = this.state.settings.accessMode === 'local' ? '本地模式' : '自定义';
+      if (typeof this.state.settings.developerMode !== 'boolean') this.state.settings.developerMode = false;
       this.state.settings.agentMail = {
         ...structuredClone(DefaultState.settings.agentMail),
         ...(this.state.settings.agentMail || {})
@@ -219,6 +344,7 @@ const Store = {
       if (!Array.isArray(this.state.rlFeedback)) this.state.rlFeedback = [];
       if (!Array.isArray(this.state.orders)) this.state.orders = [];
       if (!Array.isArray(this.state.inventory)) this.state.inventory = [];
+      if (!Array.isArray(this.state.equipment) || !this.state.equipment.length) this.state.equipment = structuredClone(DefaultState.equipment);
       if (!this.state.dashboard || typeof this.state.dashboard !== 'object') this.state.dashboard = structuredClone(DefaultState.dashboard);
       if (!Array.isArray(this.state.mailInbox) || !this.state.mailInbox.length) this.state.mailInbox = structuredClone(DefaultState.mailInbox);
       if (!this.state.settings.apiUrl && RuntimeConfig.API_BASE_URL) this.state.settings.apiUrl = RuntimeConfig.API_BASE_URL;
@@ -259,8 +385,44 @@ const Store = {
     const clone = structuredClone(this.state);
     clone.settings.apiKey = '';
     if (clone.settings.agentMail) clone.settings.agentMail.apiKey = '';
+    if (Array.isArray(clone.connectors)) {
+      clone.connectors = clone.connectors.map(item => ({
+        ...item,
+        config: this.stripSecrets(item.config || {})
+      }));
+    }
     clone.backupAt = new Date().toISOString();
     return clone;
+  },
+  stripSecrets(value) {
+    const clone = structuredClone(value || {});
+    if (clone && typeof clone === 'object') {
+      for (const key of ['apiKey', 'password', 'token', 'secret', 'clientSecret']) {
+        if (key in clone) clone[key] = '';
+      }
+    }
+    return clone;
+  },
+  logAiHistory(entry) {
+    this.state.aiHistory = this.state.aiHistory || [];
+    this.state.aiHistory.unshift({
+      id: uid(),
+      time: Date.now(),
+      module: entry.module || '',
+      provider: entry.provider || '',
+      model: entry.model || '',
+      success: !!entry.success,
+      mock: !!entry.mock,
+      duration: Number(entry.duration || 0),
+      error: entry.error || '',
+      inputTokens: entry.inputTokens ?? null,
+      outputTokens: entry.outputTokens ?? null,
+      totalTokens: entry.totalTokens ?? null,
+      estimatedCost: entry.estimatedCost ?? null,
+      httpStatus: entry.httpStatus ?? null
+    });
+    this.state.aiHistory = this.state.aiHistory.slice(0, 200);
+    this.save();
   },
   restore(data) {
     if (!data || typeof data !== 'object' || !data.settings) throw new Error('备份文件格式不正确');
@@ -297,12 +459,14 @@ const Store = {
         APIClient.request('/api/logs?limit=100')
       ]);
       if (stateRes.data?.state) {
+        const localApiKey = this.state.settings.apiKey || '';
         this.state = {
           ...this.state,
           ...stateRes.data.state,
           settings: {
             ...this.state.settings,
-            ...(stateRes.data.state.settings || {})
+            ...(stateRes.data.state.settings || {}),
+            apiKey: localApiKey
           }
         };
       }
@@ -331,9 +495,18 @@ const Store = {
     if (!AuthClient.isLoggedIn() || AuthClient.isDemo() || this.syncing) return;
     this.syncing = true;
     try {
+      const syncState = structuredClone(this.state);
+      if (syncState.settings) syncState.settings.apiKey = '';
+      if (syncState.settings?.agentMail) syncState.settings.agentMail.apiKey = '';
+      if (Array.isArray(syncState.connectors)) {
+        syncState.connectors = syncState.connectors.map(item => ({
+          ...item,
+          config: this.stripSecrets(item.config || {})
+        }));
+      }
       await APIClient.request('/api/state', {
         method: 'PUT',
-        body: JSON.stringify({ state: this.state })
+        body: JSON.stringify({ state: syncState })
       });
     } catch (error) {
       console.warn('State sync failed:', error.message);
@@ -376,6 +549,24 @@ const FileDB = {
 };
 
 const Utils = {
+  async safeReadResponse(response) {
+    const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
+    const text = await response.text();
+    if (contentType.includes('application/json')) {
+      try { return { raw: text, json: JSON.parse(text) }; } catch { return { raw: text, json: null }; }
+    }
+    try { return { raw: text, json: JSON.parse(text) }; } catch { return { raw: text, json: null }; }
+  },
+  friendlyErrorMessage(message = '') {
+    const text = String(message || '');
+    if (/Selected model is at capacity|Rate limit exceeded|429|503|Timeout|Network Error/i.test(text)) return '当前 AI 模型繁忙，请稍后重试。';
+    if (/Failed to execute 'text' on 'Response'|body used already|already been read|response.*used/i.test(text)) return '接口返回解析失败，请刷新后重试。';
+    if (/API Key|api key|KEY/i.test(text) && /missing|not configured|未配置|缺失/i.test(text)) return '未配置 API Key，已切换 Mock 模式。';
+    if (/PDF/i.test(text) && /fail|error|missing|parse/i.test(text)) return 'PDF 无法提取文字，请尝试 OCR。';
+    if (/File too large|too large|超过/i.test(text)) return '文件过大，请压缩或拆分后上传。';
+    if (/Failed to fetch|Load failed|NetworkError/i.test(text)) return '网络连接失败，请检查本地服务或网络状态。';
+    return text || '操作失败，请稍后重试。';
+  },
   formatBytes(bytes = 0) {
     if (!bytes) return '0 B';
     const units = ['B', 'KB', 'MB', 'GB'];
@@ -599,28 +790,38 @@ const Utils = {
     return blob;
   },
   async exportPdf(title, content) {
-    const { PDFDocument } = PDFLib;
-    const doc = await PDFDocument.create();
-    const lines = wrapText(`${title || '未命名文档'}\n\n${content || ''}`, 34);
-    const perPage = 38;
-    for (let start = 0; start < lines.length || start === 0; start += perPage) {
-      const canvas = document.createElement('canvas');
-      canvas.width = 1240;
-      canvas.height = 1754;
-      const ctx = canvas.getContext('2d');
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#1b1e24';
-      ctx.textBaseline = 'top';
-      lines.slice(start, start + perPage).forEach((line, index) => {
-        ctx.font = index === 0 && start === 0 ? 'bold 42px sans-serif' : '28px sans-serif';
-        ctx.fillText(line, 90, 90 + index * 40);
-      });
-      const image = await doc.embedPng(canvas.toDataURL('image/png'));
-      const page = doc.addPage([595.28, 841.89]);
-      page.drawImage(image, { x: 0, y: 0, width: 595.28, height: 841.89 });
+    try {
+      const { PDFDocument } = PDFLib;
+      if (!PDFDocument) throw new Error('PDF 库未加载');
+      const doc = await PDFDocument.create();
+      const lines = wrapText(`${title || '未命名文档'}\n\n${content || ''}`, 34);
+      const perPage = 38;
+      for (let start = 0; start < lines.length || start === 0; start += perPage) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 1240;
+        canvas.height = 1754;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('当前浏览器不支持 Canvas');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#1b1e24';
+        ctx.textBaseline = 'top';
+        lines.slice(start, start + perPage).forEach((line, index) => {
+          ctx.font = index === 0 && start === 0 ? 'bold 42px sans-serif' : '28px sans-serif';
+          ctx.fillText(line, 90, 90 + index * 40);
+        });
+        const image = await doc.embedPng(canvas.toDataURL('image/png'));
+        const page = doc.addPage([595.28, 841.89]);
+        page.drawImage(image, { x: 0, y: 0, width: 595.28, height: 841.89 });
+      }
+      const blob = new Blob([await doc.save()], { type: 'application/pdf' });
+      this.download(blob, `${safeName(title || '未命名文档')}.pdf`);
+      return { ok: true, mode: 'pdf', message: 'PDF 已导出' };
+    } catch (error) {
+      const fallback = `${title || '未命名文档'}\n\n${content || ''}`;
+      this.textDownload(fallback, `${safeName(title || '未命名文档')}.txt`);
+      return { ok: false, mode: 'txt', message: 'PDF 导出失败，已降级为 TXT 导出', error: String(error?.message || error || '') };
     }
-    this.download(new Blob([await doc.save()], { type: 'application/pdf' }), `${safeName(title || '未命名文档')}.pdf`);
   },
   escapeXml(value = '') {
     return String(value)
@@ -843,6 +1044,31 @@ const OCRService = {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   },
+  assessQuality(text = '') {
+    const source = String(text || '');
+    const lines = source.split('\n').map(line => line.trim()).filter(Boolean);
+    const length = source.length || 1;
+    const junkChars = (source.match(/[^\u4e00-\u9fa5A-Za-z0-9。，、；：:,.%（）()\-_/&\s]/g) || []).length;
+    const brokenChinese = (source.match(/[\u4e00-\u9fa5][A-Za-z0-9][\u4e00-\u9fa5]|[\u4e00-\u9fa5]\s+[\u4e00-\u9fa5]/g) || []).length;
+    const digitAnomaly = (source.match(/\b\d{1,2}\s+\d{1,2}\b/g) || []).length + (source.match(/[^\d]\d{6,}[^\d]/g) || []).length;
+    const tableMisalign = lines.filter(line => (line.match(/\s{2,}|\t+/g) || []).length >= 2).length;
+    const keyMissing = ['发货单号', '客户', '日期', '联系人', '电话', '产品编码', '产品名称', '数量', '单价', '金额'].filter(key => !source.includes(key)).length;
+    const ratio = {
+      junk: junkChars / length,
+      broken: brokenChinese / Math.max(1, lines.length),
+      digit: digitAnomaly / Math.max(1, lines.length),
+      table: tableMisalign / Math.max(1, lines.length),
+      missing: keyMissing / 10
+    };
+    const low = ratio.junk > 0.18 || ratio.broken > 1.5 || ratio.digit > 1 || ratio.table > 0.35 || keyMissing >= 4 || source.length < 40;
+    return {
+      low,
+      ratio,
+      keyMissing,
+      lines,
+      summary: low ? '检测到 OCR 结果可能存在乱码，建议使用 AI 纠错。' : 'OCR 质量正常，可直接编辑或导出。'
+    };
+  },
   detectTemplate(text = '') {
     const source = String(text);
     if (/发货|送货|交期|客户/.test(source)) return '发货单';
@@ -857,7 +1083,7 @@ const OCRService = {
     const template = this.detectTemplate(text);
     const pairs = [];
     lines.forEach(line => {
-      const match = line.match(/^([^:：]{1,20})[:：]?\s+(.+)$/);
+      const match = line.match(/^([^:：]{1,20})(?:[:：]\s*|\s+)(.+)$/);
       if (match) pairs.push([match[1], match[2]]);
     });
     return { template, lines, pairs };
@@ -1285,42 +1511,126 @@ const AIService = {
   },
   friendlyMessage(error = {}) {
     const text = String(error.message || error || '');
-    if (/DEEPSEEK_API_KEY/.test(text)) return '当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。';
+    if (/DEEPSEEK_API_KEY/.test(text)) return '当前未配置 DeepSeek API Key，无法调用真实 AI。';
+    if (/401|unauthorized|invalid api key|authentication/i.test(text)) return 'DeepSeek API Key 无效或无权限，请检查配置。';
+    if (/403|forbidden/i.test(text)) return '当前 DeepSeek API Key 没有访问该模型的权限。';
+    if (/AbortError|请求超时|timeout/i.test(text)) return 'AI 请求超时，请稍后重试或增大 Timeout。';
     if (this.isRetryable(error)) return '当前 AI 模型繁忙，请稍后重试。';
     return text || 'AI 调用失败';
+  },
+  setStatus(state, message, model = Store.state.settings.model) {
+    Store.state.aiGatewayStatus = {
+      state,
+      message,
+      provider: Store.state.settings.provider || 'OpenAI-compatible',
+      model: model || '',
+      updatedAt: Date.now()
+    };
+    Store.save();
   },
   async complete(prompt, options = {}) {
     const settings = Store.state.settings;
     if (settings.apiEnabled && settings.apiUrl && settings.accessMode !== 'local') {
       const system = options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。';
-      const models = [settings.model || 'deepseek-chat', ...(settings.backupModels || [])].filter(Boolean);
+      const models = settings.apiKey
+        ? [settings.model || 'deepseek-v4-flash']
+        : [settings.model || 'deepseek-v4-flash', ...(settings.backupModels || [])].filter(Boolean);
       let lastError = null;
       for (let i = 0; i < models.length; i += 1) {
         const model = models[i];
         for (let attempt = 0; attempt < 2; attempt += 1) {
+          const startedAt = Date.now();
           try {
-            const payload = await APIClient.chat([
+            const messages = [
               { role: 'system', content: system },
               { role: 'user', content: prompt }
-            ], options.module || options.mode || 'general', {
+            ];
+            const requestOptions = {
               model,
-              temperature: options.temperature ?? 0.2
-            });
+              temperature: options.temperature ?? settings.temperature ?? 0.2,
+              top_p: options.topP ?? settings.topP ?? 1,
+              max_tokens: options.maxTokens ?? settings.maxTokens ?? 2048
+            };
+            const payload = settings.apiKey
+              ? await APIClient.openAICompatible(messages, { ...requestOptions, module: options.module || options.mode || 'general' })
+              : await APIClient.chat(messages, options.module || options.mode || 'general', requestOptions);
             const text = payload.reply || payload.data?.reply || payload.text;
             if (!text) throw new Error('模型返回为空');
+            const usage = payload.usage || payload.raw?.usage || payload.data?.usage || null;
+            const duration = Date.now() - startedAt;
+            const provider = settings.provider || 'OpenAI-compatible';
+            const inputTokens = usage?.prompt_tokens ?? usage?.input_tokens ?? null;
+            const outputTokens = usage?.completion_tokens ?? usage?.output_tokens ?? null;
+            const totalTokens = usage?.total_tokens ?? ((inputTokens ?? 0) + (outputTokens ?? 0) || null);
+            const estimatedCost = totalTokens ? Number((totalTokens * 0.00001).toFixed(6)) : null;
             this.lastMode = 'api';
+            this.setStatus('online', '真实 AI 调用成功', model);
             if (model !== settings.model) Store.state.settings.model = model;
-            return { text, mode: 'api', model };
+            Store.logAiHistory({
+              module: options.module || options.mode || 'general',
+              provider,
+              model,
+              success: true,
+              mock: false,
+              duration,
+              error: '',
+              inputTokens,
+              outputTokens,
+              totalTokens,
+              estimatedCost,
+              httpStatus: payload.status || 200
+            });
+            return { text, mode: 'api', model, usage };
           } catch (error) {
             lastError = error;
+            Store.logAiHistory({
+              module: options.module || options.mode || 'general',
+              provider: settings.provider || 'OpenAI-compatible',
+              model,
+              success: false,
+              mock: false,
+              duration: Date.now() - startedAt,
+              error: this.friendlyMessage(error),
+              httpStatus: error?.status || error?.response?.status || null
+            });
             if (!this.isRetryable(error) || attempt === 1) break;
             await wait(400);
           }
         }
       }
-      throw new Error(this.friendlyMessage(lastError));
+      const friendly = this.friendlyMessage(lastError);
+      this.setStatus('fallback', friendly, settings.model);
+      if (options.mockFallback != null) {
+        const fallback = typeof options.mockFallback === 'function' ? options.mockFallback(friendly) : options.mockFallback;
+        Store.logAiHistory({
+          module: options.module || options.mode || 'general',
+          provider: settings.provider || 'OpenAI-compatible',
+          model: settings.model,
+          success: true,
+          mock: true,
+          duration: 0,
+          error: friendly
+        });
+        return { text: String(fallback || ''), mode: 'mock', model: settings.model, error: friendly };
+      }
+      throw new Error(friendly);
     }
-    throw new Error('当前未连接 AI 后端，请部署 Vercel 并配置 DEEPSEEK_API_KEY。');
+    const message = 'AI Gateway 未启用，当前使用 Mock 兜底。';
+    this.setStatus('mock', message, settings.model);
+    if (options.mockFallback != null) {
+      const fallback = typeof options.mockFallback === 'function' ? options.mockFallback(message) : options.mockFallback;
+      Store.logAiHistory({
+        module: options.module || options.mode || 'general',
+        provider: settings.provider || 'OpenAI-compatible',
+        model: settings.model,
+        success: true,
+        mock: true,
+        duration: 0,
+        error: message
+      });
+      return { text: String(fallback || ''), mode: 'mock', model: settings.model, error: message };
+    }
+    throw new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
   }
 };
 
