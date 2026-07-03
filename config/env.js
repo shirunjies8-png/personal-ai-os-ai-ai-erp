@@ -5,11 +5,28 @@ dotenv.config({ path: path.join(process.cwd(), '.env') });
 dotenv.config({ path: path.join(process.cwd(), '.env.local'), override: true });
 
 function normalizeDeepSeekKey(value) {
-  const text = String(value || '').trim();
+  const text = String(value || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '');
   if (!text) return '';
   if (/^这里填写我的DeepSeekKey$/i.test(text)) return '';
   if (/^your[_\-\s]?key$/i.test(text)) return '';
   return text;
+}
+
+function normalizeEnvText(value, fallback = '') {
+  const text = String(value || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^['"]|['"]$/g, '');
+  return text || fallback;
+}
+
+function normalizeDeepSeekModel(value) {
+  const text = normalizeEnvText(value, 'deepseek-v4-flash');
+  if (/^deepseek-chat$/i.test(text) || /^deepseek-reasoner$/i.test(text)) return 'deepseek-v4-flash';
+  return text || 'deepseek-v4-flash';
 }
 
 module.exports = {
@@ -22,9 +39,9 @@ module.exports = {
   uploadsDir: process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'),
   logsDir: process.env.LOGS_DIR || path.join(process.cwd(), 'logs'),
   backupsDir: process.env.BACKUPS_DIR || path.join(process.cwd(), 'backups'),
-  deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+  deepseekBaseUrl: normalizeEnvText(process.env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com'),
   deepseekApiKey: normalizeDeepSeekKey(process.env.DEEPSEEK_API_KEY),
-  deepseekModel: process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash',
+  deepseekModel: normalizeDeepSeekModel(process.env.DEEPSEEK_MODEL),
   mailAgentBaseUrl: process.env.MAIL_AGENT_BASE_URL || '',
   mailAgentApiKey: process.env.MAIL_AGENT_API_KEY || '',
   defaultAdminEmail: process.env.DEFAULT_ADMIN_EMAIL || 'admin@personal-ai-os.local',

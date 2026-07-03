@@ -22,6 +22,7 @@ const App = {
       extracted: '',
       qaQuestion: '',
       qaAnswer: '',
+      analysis: '',
       tableText: '',
       scanMode: '',
       fileInfos: [],
@@ -40,7 +41,10 @@ const App = {
       aiFix: '',
       aiMode: 'mock',
       aiError: '',
-      edited: false
+      edited: false,
+      qaQuestion: '',
+      qaAnswer: '',
+      analysis: ''
     },
     sql: { dialect: 'MySQL', prompt: '', output: '', explanation: '' },
     writing: JSON.parse(localStorage.getItem('personal-ai-os-writing-draft') || '{"type":"日报","prompt":"","output":""}'),
@@ -53,7 +57,13 @@ const App = {
     kbAnswer: '',
     settingsTab: 'account',
     chatSearch: '',
+    chatSending: false,
     chatContextFiles: [],
+    downloadCache: {},
+    taskSelectedId: '',
+    downloadSelectedId: '',
+    approvalSelectedId: '',
+    toolSelectedName: '',
     integrationSelectedId: 'erp',
     agent: {
       goal: '',
@@ -84,6 +94,7 @@ const App = {
       await this.refreshDashboard();
       await this.refreshOrders();
       await this.refreshInventory();
+      await this.refreshAgentRuntime();
     }
   },
 
@@ -208,10 +219,28 @@ const App = {
 
   afterRender() {
     if (this.route === 'chat') {
-      setTimeout(() => {
-        const box = document.getElementById('chatMessages');
-        if (box) box.scrollTop = box.scrollHeight;
-      }, 0);
+      const active = Store.state.chats.find(chat => chat.id === Store.state.activeChatId);
+      const assistantMessages = (active?.messages || []).filter(message => message.role === 'assistant');
+      document.querySelectorAll('.message:not(.user) .message-content').forEach((node, index) => {
+        const message = assistantMessages[index];
+        if (message && message.mode !== 'loading') node.innerHTML = Utils.markdownToHtml(message.content);
+      });
+      const input = document.getElementById('chatInput');
+      const submit = document.querySelector('[data-form="chat"] button[type="submit"]');
+      if (input) input.disabled = this.temp.chatSending;
+      if (submit) {
+        submit.disabled = this.temp.chatSending;
+        submit.lastChild.textContent = this.temp.chatSending ? '生成中...' : '发送';
+      }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const box = document.getElementById('chatMessages');
+          if (box) {
+            box.scrollTop = box.scrollHeight;
+            box.scrollTo({ top: box.scrollHeight, behavior: 'auto' });
+          }
+        });
+      });
     }
   },
 
@@ -236,6 +265,7 @@ const App = {
     if (target.id === 'agentGoal') this.temp.agent.goal = target.value;
     if (target.id === 'kbQuestion') this.temp.kbQuestion = target.value;
     if (target.id === 'pdfQuestion') this.temp.pdf.qaQuestion = target.value;
+    if (target.id === 'ocrQuestion') this.temp.ocr.qaQuestion = target.value;
     if (target.id === 'chatSearch') {
       this.temp.chatSearch = target.value;
       clearTimeout(this.searchTimer);
@@ -297,14 +327,21 @@ const App = {
       'word-export': () => this.wordExport(),
       'word-pdf': () => this.wordPdf(el),
       'pdf-summary': () => this.pdfSummary(el),
+      'pdf-sample': () => this.pdfSample(el),
+      'pdf-ocr': () => this.pdfToOcr(el),
+      'pdf-translate': () => this.pdfTranslate(el),
       'pdf-extract': () => this.pdfExtract(el),
       'pdf-split': () => this.pdfSplit(el),
       'pdf-merge': () => this.pdfMerge(el),
       'pdf-word': () => this.pdfWord(el),
+      'pdf-export': () => this.pdfExport(el),
       'pdf-qa': () => this.pdfAsk(el),
       'pdf-table': () => this.pdfTableExtract(el),
       'ocr-sample': () => this.ocrSample(el),
       'ocr-run': () => this.ocrRun(el),
+      'ocr-summary': () => this.ocrSummary(el),
+      'ocr-translate': () => this.ocrTranslate(el),
+      'ocr-qa': () => this.ocrAsk(el),
       'ocr-ai-fix': () => this.ocrAIFix(el),
       'ocr-ai-table': () => this.ocrAITable(el),
       'ocr-ai-save': () => this.ocrAISave(el),
@@ -334,6 +371,21 @@ const App = {
       'file-download': () => this.fileDownload(el.dataset.id),
       'file-delete': () => this.fileDelete(el.dataset.id),
       'file-rename': () => this.fileRename(el.dataset.id),
+      'task-open': () => { this.temp.taskSelectedId = el.dataset.id; this.rerender(); },
+      'task-open-result': () => { this.temp.taskSelectedId = el.dataset.id; this.navigate(el.dataset.route || 'taskcenter'); },
+      'task-refresh': () => this.refreshAgentRuntime(true),
+      'task-cancel': () => this.runtimeTaskCancel(el.dataset.id),
+      'task-retry': () => this.runtimeTaskRetry(el.dataset.id),
+      'toolcenter-refresh': () => this.refreshAgentRuntime(true),
+      'toolcenter-select': () => { this.temp.toolSelectedName = el.dataset.id; this.rerender(); },
+      'toolcenter-run': () => this.toolCenterRun(el),
+      'approval-refresh': () => this.refreshAgentRuntime(true),
+      'approval-select': () => { this.temp.approvalSelectedId = el.dataset.id; this.rerender(); },
+      'approval-approve': () => this.runtimeApproval(el.dataset.id, true),
+      'approval-reject': () => this.runtimeApproval(el.dataset.id, false),
+      'download-open': () => { this.temp.downloadSelectedId = el.dataset.id; this.rerender(); },
+      'download-run': () => this.downloadCenterDownload(el.dataset.id),
+      'download-refresh': () => this.rerender(),
       'kb-add': () => this.kbAdd(),
       'kb-ask': () => this.kbAsk(el),
       'kb-delete': () => this.kbDelete(el.dataset.id),
@@ -347,6 +399,9 @@ const App = {
       'workspace-clear': () => this.workspaceClear(el.dataset.module),
       'workspace-export': () => this.workspaceExport(el.dataset.module),
       'validate-run': () => this.validateRun(el.dataset.mode, el),
+      'quality-check': () => this.qualityCheck(el),
+      'quality-fix': () => this.qualityFix(el),
+      'quality-export': () => this.qualityExport(el),
       'mail-generate': () => this.mailGenerate(el),
       'mail-polish': () => this.mailPolish(el),
       'mail-translate': () => this.mailTranslate(el),
@@ -401,6 +456,7 @@ const App = {
       'aihistory-export': () => this.aiHistoryExport(),
       'aihistory-clear': () => this.aiHistoryClear(),
       'refresh-ai-status': () => this.rerender(),
+      'monitor-refresh': () => this.refreshAgentRuntime(true),
       'systemcheck-run': () => this.runSystemCheck(),
       'settings-tab': () => { this.temp.settingsTab = el.dataset.tab; this.rerender(); },
       'settings-api-toggle': () => {
@@ -462,6 +518,10 @@ const App = {
   async handleFileInput(type, files) {
     if (!files.length) return;
     try {
+      const empty = files.find(file => file.size === 0);
+      if (empty) throw new Error(`文件“${empty.name}”为空，请选择包含内容的文件。`);
+      const oversized = files.find(file => file.size > 20 * 1024 * 1024);
+      if (oversized) throw new Error(`文件“${oversized.name}”超过 20MB，请压缩或拆分后上传。`);
       if (type === 'excel-file') await this.loadExcel(files[0]);
       if (type === 'plan-csv') await this.loadPlanCsv(files[0]);
       if (type === 'word-file') await this.loadWord(files[0]);
@@ -475,7 +535,7 @@ const App = {
       if (type === 'mail-attachments') await this.mailAddAttachments(files);
       if (type.startsWith('workspace-file:')) await this.addWorkspaceFiles(type.split(':')[1], files);
     } catch (error) {
-      this.toast(error.message || '文件读取失败', 'error');
+      this.toast(Utils.friendlyErrorMessage(error.message || '文件读取失败'), 'error');
     }
   },
 
@@ -507,16 +567,26 @@ const App = {
     return Store.state.workspaces[route];
   },
 
-  workspaceSave(route = this.route) {
+  syncWorkspaceFromDom(route = this.route) {
     const ws = this.getWorkspace(route);
+    document.querySelectorAll(`[data-ws-field][data-module="${route}"]`).forEach(field => {
+      if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement) {
+        ws[field.dataset.wsField] = field.value;
+      }
+    });
     ws.updatedAt = Date.now();
+    return ws;
+  },
+
+  workspaceSave(route = this.route) {
+    this.syncWorkspaceFromDom(route);
     Store.save();
     Store.addActivity(`保存工作区：${moduleById(route).name}`, 'file');
     this.toast('工作区草稿已保存');
   },
 
   async workspaceCopy(route = this.route) {
-    const ws = this.getWorkspace(route);
+    const ws = this.syncWorkspaceFromDom(route);
     if (!ws.result) throw new Error('暂无可复制结果');
     await this.copy(ws.result);
   },
@@ -534,7 +604,7 @@ const App = {
   },
 
   async workspaceExport(route = this.route) {
-    const ws = this.getWorkspace(route);
+    const ws = this.syncWorkspaceFromDom(route);
     const title = ws.title || moduleById(route).name;
     const content = ws.result || ws.prompt;
     if (!content) throw new Error('暂无可导出内容');
@@ -678,8 +748,8 @@ const App = {
     });
     this.temp.word = { title: '', content: '', sourceFile: null };
     this.temp.excel = { file: null, workbook: null, rows: [], records: [], summary: null, meta: {}, schema: {}, result: '', sheetName: '发货单' };
-    this.temp.pdf = { files: [], result: '', extracted: '', tableText: '', qaAnswer: '', scanMode: '' };
-    this.temp.ocr = { file: null, image: '', text: '', corrected: '', result: '', meta: {} };
+    this.temp.pdf = { files: [], result: '', extracted: '', tableText: '', qaAnswer: '', qaQuestion: '', analysis: '', scanMode: '' };
+    this.temp.ocr = { file: null, image: '', text: '', corrected: '', result: '', meta: {}, qaQuestion: '', qaAnswer: '', analysis: '' };
     this.temp.sql = { dialect: 'MySQL', prompt: '', output: '', explanation: '' };
     this.temp.writing = { type: '日报', prompt: '', output: '' };
     this.temp.agent = { goal: '', plan: [], result: '', runs: [], currentRun: null };
@@ -703,6 +773,37 @@ const App = {
     output = output.replace(/(江苏省[^，。\n]+|广东省[^，。\n]+|浙江省[^，。\n]+|上海市[^，。\n]+)/g, '某地区地址');
     output = output.replace(/\b\d{4,}(?:\.\d+)?\b/g, '***金额***');
     return output;
+  },
+
+  stripMarkdownForDocument(text = '') {
+    return String(text || '')
+      .replace(/```[\s\S]*?```/g, block => block.replace(/```/g, '').trim())
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^[ \t]*#{1,6}[ \t]*/gm, '')
+      .replace(/^[ \t]*>\s?/gm, '')
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/^[ \t]*[-*][ \t]+/gm, '- ')
+      .replace(/^[ \t]*\d+\.[ \t]+/gm, '')
+      .replace(/[ \t]{2,}\n/g, '\n')
+      .replace(/[“”]/g, '"')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  },
+
+  extractSqlPayload(text = '') {
+    const source = String(text || '').trim();
+    const sqlMatch = source.match(/```sql\s*([\s\S]*?)```/i) || source.match(/```\s*([\s\S]*?)```/);
+    const sql = this.stripMarkdownForDocument(sqlMatch?.[1] || source)
+      .replace(/^\s*sql\s*/i, '')
+      .trim();
+    const explanation = sqlMatch
+      ? this.stripMarkdownForDocument(source.replace(sqlMatch[0], '').trim())
+      : '';
+    return { sql, explanation };
   },
 
   dataMaskRun() {
@@ -1170,7 +1271,10 @@ const App = {
       `是否成功：${item.success ? '是' : '否'}`,
       `是否 Mock：${item.mock ? '是' : '否'}`,
       `请求耗时：${item.duration || 0} ms`,
+      `Prompt Tokens：${item.promptTokens ?? item.inputTokens ?? '未返回'}`,
+      `Completion Tokens：${item.completionTokens ?? item.outputTokens ?? '未返回'}`,
       `错误原因：${item.error || '无'}`,
+      `Raw Error：${item.rawError || '无'}`,
       `Token 用量：${item.totalTokens ?? '未返回'}`,
       '---'
     ].join('\n')).join('\n');
@@ -1193,12 +1297,31 @@ const App = {
       message,
       detail: String(error?.message || error || ''),
       context,
+      requestId: error?.requestId || '',
+      rawError: String(error?.rawError || error?.message || error || ''),
       time: Date.now()
     });
     Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
     Store.addActivity(`AI错误：${context || '未知任务'}`, 'error');
     Store.save();
     return message;
+  },
+
+  recordTask(entry = {}) {
+    if (!entry.type && !entry.fileName && !entry.summary) return;
+    Store.addTaskRecord(entry);
+    Store.addActivity(`任务：${entry.type || entry.fileName || '处理任务'}`, 'file');
+  },
+
+  recordDownload(entry = {}) {
+    if (!entry.filename) return;
+    const recordId = entry.id || uid();
+    if (entry.blob) {
+      this.temp.downloadCache = this.temp.downloadCache || {};
+      this.temp.downloadCache[recordId] = entry.blob;
+    }
+    Store.addDownloadRecord({ ...entry, id: recordId });
+    Store.addActivity(`下载：${entry.filename}`, 'file');
   },
 
   recordSystemError(error, context = '', module = 'system') {
@@ -1209,6 +1332,8 @@ const App = {
       message,
       detail: String(error?.message || error || ''),
       context,
+      requestId: error?.requestId || '',
+      rawError: String(error?.rawError || error?.message || error || ''),
       module,
       severity: /PDF|OCR|fetch|AI/i.test(String(error?.message || error)) ? '中' : '高',
       fixed: false,
@@ -1324,9 +1449,17 @@ const App = {
   },
 
   async sendChat() {
+    if (this.temp.chatSending) {
+      this.toast('AI 正在生成回复，请勿重复发送。', 'warning');
+      return;
+    }
     const input = document.getElementById('chatInput');
     const text = input?.value.trim();
-    if (!text) return;
+    if (!text) {
+      this.toast('请输入问题后再发送。', 'warning');
+      return;
+    }
+    this.temp.chatSending = true;
     let chat = Store.state.chats.find(c => c.id === Store.state.activeChatId) || this.createChat(false);
     const fileContext = (chat.files || []).map(item => `文件：${item.name}\n${item.content.slice(0, 2000)}`).join('\n\n');
     const history = chat.messages.slice(-8).map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.content}`).join('\n');
@@ -1340,10 +1473,26 @@ const App = {
     this.rerender();
     const prompt = `${commandHint}${fileContext ? `相关文件：\n${fileContext}\n\n` : ''}${history ? `历史上下文：\n${history}\n\n` : ''}当前问题：${text}`;
     try {
-      const res = await AIService.complete(prompt, { mode: 'chat', module: 'ai-chat' });
+      const res = await AIService.streamChat(prompt, {
+        mode: 'chat',
+        module: 'ai-chat',
+        onUpdate: (current, done, payload) => {
+          chat = Store.state.chats.find(c => c.id === chat.id);
+          const msg = chat.messages.find(item => item.id === loadingId);
+          if (msg) {
+            msg.content = current || '正在生成中...';
+            msg.mode = done ? (payload?.mode || 'assistant') : 'streaming';
+            msg.streaming = !done;
+          }
+          chat.updatedAt = Date.now();
+          Store.save();
+          if (done) this.renderNav();
+          this.rerender();
+        }
+      });
       chat = Store.state.chats.find(c => c.id === chat.id);
       chat.messages = chat.messages.filter(item => item.id !== loadingId);
-      chat.messages.push({ role: 'assistant', content: res.text, time: Date.now(), mode: res.mode });
+      chat.messages.push({ role: 'assistant', content: res.text, time: Date.now(), mode: res.mode, requestId: res.requestId || '' });
       chat.updatedAt = Date.now();
       Store.addActivity(`AI聊天：${chat.title}`, 'ai');
       if (input) input.value = '';
@@ -1358,6 +1507,9 @@ const App = {
       Store.save();
       this.toast(message, 'error');
       this.rerender();
+    } finally {
+      this.temp.chatSending = false;
+      if (this.route === 'chat') this.rerender();
     }
   },
 
@@ -1411,6 +1563,14 @@ const App = {
       meta: {},
       schema: {}
     };
+    this.recordTask({
+      type: 'Excel解析',
+      fileName: file.name,
+      module: 'excel',
+      status: '完成',
+      summary: `已读取 ${sheetName}，共 ${rows.length} 行`,
+      result: `已读取 ${sheetName}：${rows.length} 行。`
+    });
     Store.addActivity(`读取表格：${file.name}`, 'file');
     this.rerender();
   },
@@ -1440,6 +1600,13 @@ const App = {
       meta: {},
       schema: {}
     };
+    this.recordTask({
+      type: 'Excel示例',
+      fileName: '发货单示例.xlsx',
+      module: 'excel',
+      status: '完成',
+      summary: '已加载企业发货单示例'
+    });
     Store.addActivity('加载 Excel 示例');
     this.rerender();
   },
@@ -1471,6 +1638,14 @@ const App = {
       `客户：${summary.customer}`,
       `产品种类：${summary.productKinds}`
     ].join('\n');
+    this.recordTask({
+      type: 'Excel分类',
+      fileName: this.temp.excel.file?.name || 'Excel文件',
+      module: 'excel',
+      status: '完成',
+      summary: `客户 ${summary.customer}；产品种类 ${summary.productKinds}`,
+      result: this.temp.excel.result
+    });
     Store.addActivity('Excel 自动分类');
     this.rerender();
   },
@@ -1485,6 +1660,14 @@ const App = {
       `保留 ${kept.length} 行，移除 ${removed.length} 行。`,
       removed.length ? `重复项：${removed.map(item => `${item.code || '-'} ${item.name || '-'}`).join('；')}` : '未发现重复项。'
     ].join('\n');
+    this.recordTask({
+      type: 'Excel查重',
+      fileName: this.temp.excel.file?.name || 'Excel文件',
+      module: 'excel',
+      status: '完成',
+      summary: `保留 ${kept.length} 行，移除 ${removed.length} 行`,
+      result: this.temp.excel.result
+    });
     Store.addActivity('Excel 自动查重');
     this.rerender();
   },
@@ -1504,14 +1687,39 @@ const App = {
       '',
       '说明：已自动忽略标题、客户信息、备注、联系电话、日期、订单号等非产品明细内容。'
     ].join('\n');
+    this.recordTask({
+      type: 'Excel统计',
+      fileName: this.temp.excel.file?.name || 'Excel文件',
+      module: 'excel',
+      status: '完成',
+      summary: `总数量 ${stats.totalQuantity}，总金额 ${stats.totalAmount.toFixed(2)}`,
+      result: this.temp.excel.result
+    });
     Store.addActivity('Excel 自动统计');
     this.rerender();
   },
 
   async excelAnalyze(btn) {
     await this.busy(btn, async () => {
-      const { records } = this.getExcelAnalysis();
-      this.temp.excel.result = ExcelBusiness.report(records, this.temp.excel.meta);
+      const { records, summary } = this.getExcelAnalysis();
+      const localReport = ExcelBusiness.report(records, this.temp.excel.meta);
+      if (Store.state.settings.accessMode === 'local') {
+        this.temp.excel.result = localReport;
+      } else {
+        const ai = await AIService.complete(
+          `你是制造企业 Excel 业务分析助手。请基于以下发货/表格数据输出真实业务分析结果，必须包含：客户、数量、金额、付款方式、运输方式、异常、建议。不得输出空泛摘要。\n\n统计概览：\n${localReport}\n\n产品明细：\n${records.map(item => `${item.index}. ${item.code} | ${item.name} | ${item.spec} | 数量 ${item.quantity} | 单价 ${item.price} | 金额 ${item.amount}`).join('\n')}\n\n已识别字段：客户 ${summary.customer}；发货日期 ${summary.deliveryDate}；状态 ${summary.status}；付款方式 ${summary.payment}；运输方式 ${summary.transport}`,
+          { mode: 'excel-analyze', module: 'excel', mockFallback: () => localReport }
+        );
+        this.temp.excel.result = ai.text;
+      }
+      this.recordTask({
+        type: 'Excel业务分析',
+        fileName: this.temp.excel.file?.name || 'Excel文件',
+        module: 'excel',
+        status: '完成',
+        summary: (this.temp.excel.result || '').slice(0, 160),
+        result: this.temp.excel.result
+      });
       Store.addActivity('AI 分析 Excel', 'ai');
       this.rerender();
     });
@@ -1526,7 +1734,16 @@ const App = {
     });
     const book = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), this.temp.excel.sheetName || '处理结果');
-    XLSX.writeFile(book, `处理结果_${this.temp.excel.file?.name || '数据.xlsx'}`);
+    const filename = `处理结果_${this.temp.excel.file?.name || '数据.xlsx'}`;
+    XLSX.writeFile(book, filename);
+    this.recordDownload({
+      filename,
+      sourceModule: 'excel',
+      sourceName: this.temp.excel.file?.name || 'Excel文件',
+      fileType: 'xlsx',
+      status: '已生成',
+      summary: `来自 ${this.temp.excel.sheetName || '处理结果'} 的导出文件`
+    });
     Store.addActivity('导出 Excel', 'file');
     this.toast('Excel 已导出');
   },
@@ -1588,7 +1805,7 @@ const App = {
       let output = '';
       try {
         const r = await AIService.complete(w.content, { mode: map[mode] || 'polish' });
-        output = r.text;
+        output = this.stripMarkdownForDocument(r.text);
       } catch (error) {
         const message = this.recordAiError(error, `word-${mode}`);
         const lines = w.content.split('\n').map(line => line.trim()).filter(Boolean);
@@ -1635,25 +1852,24 @@ const App = {
     const fileInfos = [];
     const extractedTexts = [];
     this.toast('正在读取 PDF 文件...');
+    let detectedMode = 'text';
     for (const file of files) {
       const doc = await PDFLib.PDFDocument.load(await file.arrayBuffer(), { ignoreEncryption: true });
       let status = '读取成功';
       let text = '';
       try {
-        const parsed = await Utils.extractPdfTextRaw(file);
+        const parsed = await Utils.extractPdfTextSmart(file);
         text = parsed.text || '';
-        if (!Utils.isMostlyText(text)) {
-          text = '';
-          status = '未发现可读取文字层';
-        }
+        detectedMode = parsed.mode || detectedMode;
+        status = parsed.reason || (parsed.mode === 'ocr' ? '扫描件已自动 OCR' : '读取成功');
       } catch (error) {
-        status = `读取失败：${error.message}`;
+        status = Utils.friendlyErrorMessage(error.message);
       }
       fileInfos.push({ name: file.name, size: file.size, pages: doc.getPageCount(), status });
       info.push(`${file.name}｜${Utils.formatBytes(file.size)}｜${doc.getPageCount()} 页｜${status}`);
       if (text) extractedTexts.push(`【${file.name}】\n${text}`);
     }
-    if (!extractedTexts.length) info.push('该 PDF 可能是扫描件，请使用 OCR 图片识别');
+    if (!extractedTexts.length) info.push('该 PDF 可能是复杂矢量图、扫描质量较低或加密文件，请尝试上传截图、转换为图片，或手动粘贴文本。');
     this.temp.pdf = {
       ...this.temp.pdf,
       files,
@@ -1661,12 +1877,24 @@ const App = {
       extracted: extractedTexts.join('\n\n'),
       tableText: '',
       qaAnswer: '',
-      scanMode: extractedTexts.length ? 'text' : 'scan',
+      analysis: '',
+      qaQuestion: '',
+      scanMode: extractedTexts.length ? detectedMode : 'scan',
       fileInfos
     };
+    files.forEach((file, index) => {
+      this.recordTask({
+        type: 'PDF解析',
+        fileName: file.name,
+        module: 'pdf',
+        status: extractedTexts[index] ? '完成' : '失败',
+        summary: extractedTexts[index] ? `${file.name} 已解析${detectedMode === 'ocr' ? '（OCR）' : '（文字层）'}` : '未读取到可分析内容',
+        result: extractedTexts[index] || info[index] || ''
+      });
+    });
     Store.addActivity(`读取 ${files.length} 个 PDF`, 'file');
     this.rerender();
-    this.toast(extractedTexts.length ? 'PDF 上传并读取成功' : 'PDF 已上传，但未读取到文字层', extractedTexts.length ? 'success' : 'error');
+    this.toast(extractedTexts.length ? (detectedMode === 'ocr' ? 'PDF 已上传并自动 OCR' : 'PDF 上传并读取成功') : 'PDF 已上传，但未读取到可分析内容', extractedTexts.length ? 'success' : 'error');
   },
 
   requirePdf() {
@@ -1677,12 +1905,31 @@ const App = {
     this.requirePdf();
     if (this.temp.pdf.extracted) return this.temp.pdf.extracted;
     const file = this.temp.pdf.files[0];
-    const parsed = await Utils.extractPdfTextRaw(file);
+    const parsed = await Utils.extractPdfTextSmart(file);
     const text = parsed.text || '';
-    if (!Utils.isMostlyText(text)) throw new Error('该 PDF 可能是扫描件，请使用 OCR 图片识别');
-    this.temp.pdf.scanMode = 'text';
+    if (!text.trim()) throw new Error(parsed.reason || 'PDF 无法提取文字，请尝试 OCR');
+    this.temp.pdf.scanMode = parsed.mode || 'text';
     this.temp.pdf.extracted = text;
     return this.temp.pdf.extracted;
+  },
+
+  async pdfSample(btn) {
+    await this.busy(btn, async () => {
+      const pdf = await PDFLib.PDFDocument.create();
+      const page = pdf.addPage([720, 460]);
+      page.drawText('Delivery Note SO-2026-015', { x: 48, y: 390, size: 24 });
+      page.drawText('Customer: Changzhou New Energy Technology Co., Ltd.', { x: 48, y: 350, size: 16 });
+      page.drawText('Product: 304 stainless steel connectors', { x: 48, y: 320, size: 16 });
+      page.drawText('Quantity: 760', { x: 48, y: 290, size: 16 });
+      page.drawText('Total Amount: 9710.00', { x: 48, y: 260, size: 16 });
+      page.drawText('Payment Terms: Net 30', { x: 48, y: 230, size: 16 });
+      page.drawText('Shipping: Logistics Delivery', { x: 48, y: 200, size: 16 });
+      page.drawText('Status: Pending Receipt', { x: 48, y: 170, size: 16 });
+      const bytes = await pdf.save();
+      const file = new File([bytes], 'PDF示例发货单.pdf', { type: 'application/pdf' });
+      await this.loadPdfs([file]);
+      this.toast('PDF 示例文件已加载');
+    });
   },
 
   async pdfExtract(btn) {
@@ -1696,6 +1943,14 @@ const App = {
       }
       this.temp.pdf.extracted = texts.join('\n\n');
       this.temp.pdf.result = this.temp.pdf.extracted;
+      this.recordTask({
+        type: 'PDF提取文字',
+        fileName: this.temp.pdf.files[0]?.name || 'PDF文件',
+        module: 'pdf',
+        status: '完成',
+        summary: '已提取 PDF 文字层内容',
+        result: this.temp.pdf.result
+      });
       Store.addActivity('提取 PDF 文字');
       this.rerender();
     });
@@ -1716,8 +1971,66 @@ const App = {
       if (gatewayResult.mode === 'mock') modeNotice = '当前为 Mock 兜底结果，可在 AI 设置中心检查 Provider、Base URL、API Key 和 Model。';
       this.temp.pdf.summaryCompleted = true;
       this.temp.pdf.summaryMode = gatewayResult.mode === 'mock' ? 'mock' : 'gateway';
-      this.temp.pdf.result = `PDF总结\n\n文件：${file.name}\n${modeText}\n${modeNotice ? `\n${modeNotice}\n` : ''}\n${summary}\n\n建议：继续使用 PDF 问答或转 Word 处理。`;
+      this.temp.pdf.analysis = summary;
+      this.temp.pdf.result = `PDF总结\n\n文件：${file.name}\n${modeText}\n${modeNotice ? `\n${modeNotice}\n` : ''}\n${summary}\n\n建议：继续使用 PDF 问答、翻译或转 Word 处理。`;
+      this.recordTask({
+        type: 'PDF总结',
+        fileName: file.name,
+        module: 'pdf',
+        status: '完成',
+        summary: summary.slice(0, 160),
+        result: this.temp.pdf.result
+      });
       Store.addActivity('AI 总结 PDF', 'ai');
+      this.rerender();
+    });
+  },
+
+  async pdfToOcr(btn) {
+    await this.busy(btn, async () => {
+      if (!this.temp.pdf.files.length) throw new Error('请先上传 PDF 文件');
+      const file = this.temp.pdf.files[0];
+      const parsed = await Utils.extractPdfTextSmart(file);
+      this.temp.pdf.scanMode = parsed.mode || 'text';
+      this.temp.pdf.extracted = parsed.text || '';
+      this.temp.pdf.analysis = parsed.text || '';
+      this.temp.pdf.result = parsed.mode === 'ocr'
+        ? `已转入 OCR 识别。\n\n${parsed.reason || '检测为扫描版 PDF，已自动 OCR'}\n\n${parsed.text || ''}`
+        : `该 PDF 已有文字层，可直接总结、翻译或问答。\n\n${parsed.text || ''}`;
+      this.temp.pdf.summaryCompleted = false;
+      this.recordTask({
+        type: 'PDF转OCR',
+        fileName: file.name,
+        module: 'pdf',
+        status: '完成',
+        summary: parsed.mode === 'ocr' ? '扫描版已转入 OCR' : '文字层 PDF 无需 OCR',
+        result: this.temp.pdf.result
+      });
+      Store.addActivity(`PDF 转 OCR：${file.name}`, 'file');
+      this.rerender();
+      this.toast(parsed.mode === 'ocr' ? 'PDF 已转入 OCR 识别' : '该 PDF 已有文字层，无需转入 OCR');
+    });
+  },
+
+  async pdfTranslate(btn) {
+    await this.busy(btn, async () => {
+      const extracted = await this.ensurePdfExtracted();
+      const file = this.temp.pdf.files[0];
+      const res = await AIService.complete(
+        `请将以下 PDF 内容翻译成正式英文商务表达，保留客户、产品、数量、金额、付款方式、运输方式、状态等关键字段。\n文件：${file.name}\n内容：\n${extracted.slice(0, 12000)}`,
+        { mode: 'translate', module: 'ai-pdf', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(extracted)}` }
+      );
+      this.temp.pdf.result = `PDF翻译\n\n${res.text}`;
+      this.temp.pdf.analysis = res.text;
+      this.recordTask({
+        type: 'PDF翻译',
+        fileName: file.name,
+        module: 'pdf',
+        status: '完成',
+        summary: res.text.slice(0, 160),
+        result: this.temp.pdf.result
+      });
+      Store.addActivity('AI 翻译 PDF', 'ai');
       this.rerender();
     });
   },
@@ -1727,9 +2040,28 @@ const App = {
     if (!q) throw new Error('请输入 PDF 问题');
     await this.busy(btn, async () => {
       const extracted = await this.ensurePdfExtracted();
-      const answer = KnowledgeEngine.answer(q, [KnowledgeEngine.buildEntry({ title: this.temp.pdf.files[0].name, content: extracted, sourceType: 'pdf' })]);
-      this.temp.pdf.qaAnswer = answer.text;
-      this.temp.pdf.result = `${this.temp.pdf.result ? `${this.temp.pdf.result}\n\n` : ''}PDF问答\n问题：${q}\n回答：${answer.text}`;
+      this.temp.pdf.qaQuestion = q;
+      let answerText = '';
+      if (Store.state.settings.accessMode !== 'local') {
+        const ai = await AIService.complete(
+          `你是 PDF 问答助手。请仅根据以下 PDF 内容回答问题，不确定时明确说明无法确认。\n\n问题：${q}\n\nPDF内容：\n${extracted.slice(0, 12000)}`,
+          { mode: 'pdf-qa', module: 'ai-pdf', mockFallback: () => KnowledgeEngine.answer(q, [KnowledgeEngine.buildEntry({ title: this.temp.pdf.files[0].name, content: extracted, sourceType: 'pdf' })]).text }
+        );
+        answerText = ai.text;
+      } else {
+        const answer = KnowledgeEngine.answer(q, [KnowledgeEngine.buildEntry({ title: this.temp.pdf.files[0].name, content: extracted, sourceType: 'pdf' })]);
+        answerText = answer.text;
+      }
+      this.temp.pdf.qaAnswer = answerText;
+      this.temp.pdf.result = `PDF问答\n问题：${q}\n回答：${answerText}`;
+      this.recordTask({
+        type: 'PDF问答',
+        fileName: this.temp.pdf.files[0]?.name || 'PDF文件',
+        module: 'pdf',
+        status: '完成',
+        summary: q,
+        result: answerText
+      });
       Store.addActivity(`PDF问答：${q.slice(0, 20)}`, 'ai');
       this.rerender();
     });
@@ -1742,6 +2074,14 @@ const App = {
       const tableLines = lines.filter(line => /\d/.test(line) && /[A-Za-z\u4e00-\u9fa5]/.test(line));
       this.temp.pdf.tableText = tableLines.join('\n');
       this.temp.pdf.result = `表格提取结果\n\n${this.temp.pdf.tableText || '未提取到明显表格行，建议先 OCR 后核对版式。'}`;
+      this.recordTask({
+        type: 'PDF表格提取',
+        fileName: this.temp.pdf.files[0]?.name || 'PDF文件',
+        module: 'pdf',
+        status: '完成',
+        summary: '已提取表格或列表文本',
+        result: this.temp.pdf.result
+      });
       Store.addActivity('PDF 表格提取', 'ai');
       this.rerender();
     });
@@ -1760,6 +2100,14 @@ const App = {
         await wait(60);
       }
       this.temp.pdf.result = `已将 ${file.name} 拆分为 ${src.getPageCount()} 个 PDF 文件。`;
+      this.recordTask({
+        type: 'PDF拆分',
+        fileName: file.name,
+        module: 'pdf',
+        status: '完成',
+        summary: `拆分为 ${src.getPageCount()} 个文件`,
+        result: this.temp.pdf.result
+      });
       Store.addActivity('拆分 PDF', 'file');
       this.rerender();
     });
@@ -1776,6 +2124,14 @@ const App = {
       }
       Utils.download(new Blob([await out.save()], { type: 'application/pdf' }), '合并文档.pdf');
       this.temp.pdf.result = `已合并 ${this.temp.pdf.files.length} 个文件，共 ${out.getPageCount()} 页。`;
+      this.recordTask({
+        type: 'PDF合并',
+        fileName: this.temp.pdf.files.map(item => item.name).join('、'),
+        module: 'pdf',
+        status: '完成',
+        summary: `合并 ${this.temp.pdf.files.length} 个 PDF 文件`,
+        result: this.temp.pdf.result
+      });
       Store.addActivity('合并 PDF', 'file');
       this.rerender();
     });
@@ -1789,6 +2145,22 @@ const App = {
         if (!extracted.trim()) throw new Error('未提取到可转换文字');
         await Utils.exportDocx(this.temp.pdf.files[0].name.replace(/\.pdf$/i, ''), extracted, this.temp.pdf.files[0].name.replace(/\.pdf$/i, ''));
         this.temp.pdf.result = `已生成标准 DOCX，可使用 Pages、Word 或 WPS 打开。`;
+        this.recordTask({
+          type: 'PDF转Word',
+          fileName: this.temp.pdf.files[0]?.name || 'PDF文件',
+          module: 'pdf',
+          status: '完成',
+          summary: '已生成标准 DOCX',
+          result: this.temp.pdf.result
+        });
+        this.recordDownload({
+          filename: `${this.temp.pdf.files[0].name.replace(/\.pdf$/i, '')}.docx`,
+          sourceModule: 'pdf',
+          sourceName: this.temp.pdf.files[0].name,
+          fileType: 'docx',
+          status: '已生成',
+          summary: 'PDF 转 Word 输出文件'
+        });
         Store.addActivity('PDF 转 Word', 'file');
         this.rerender();
       } catch (error) {
@@ -1799,18 +2171,51 @@ const App = {
     });
   },
 
+  async pdfExport(btn) {
+    await this.busy(btn, async () => {
+      const content = this.temp.pdf.result || this.temp.pdf.qaAnswer || this.temp.pdf.analysis || this.temp.pdf.extracted;
+      if (!content) throw new Error('暂无可导出的 PDF 结果');
+      const blob = await Utils.exportDocx('PDF处理结果', content, 'PDF处理结果');
+      this.recordDownload({
+        filename: 'PDF处理结果.docx',
+        sourceModule: 'pdf',
+        sourceName: this.temp.pdf.files[0]?.name || 'PDF文件',
+        fileType: 'docx',
+        status: '已生成',
+        summary: 'PDF 处理结果导出文件',
+        blob
+      });
+      Store.addActivity('导出 PDF 处理结果', 'file');
+      this.toast('PDF 处理结果 Word 已导出');
+    });
+  },
+
   loadOcr(file) {
     if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
     if (this.temp.ocr.url) URL.revokeObjectURL(this.temp.ocr.url);
+    const engine = typeof OCRService.health === 'function' ? OCRService.health() : {};
     this.temp.ocr = {
       file,
       url: URL.createObjectURL(file),
       result: '',
       progress: 0,
-      status: '准备识别',
+      status: '未开始',
+      engineStatus: engine,
       structured: '',
-      template: '通用'
+      template: '通用',
+      analysis: '',
+      qaQuestion: '',
+      qaAnswer: '',
+      mock: false,
+      mockReason: ''
     };
+    this.recordTask({
+      type: 'OCR载入',
+      fileName: file.name,
+      module: 'ocr',
+      status: '完成',
+      summary: '已载入图片等待识别'
+    });
     this.rerender();
     this.toast(`图片已加载：${file.name}，请点击“开始识别”`);
   },
@@ -1846,28 +2251,35 @@ const App = {
     const o = this.temp.ocr;
     if (!o.file) throw new Error('请先上传或拍摄图片');
     await this.busy(btn, async () => {
-      o.status = 'OCR 识别中';
+      const health = typeof OCRService.health === 'function' ? OCRService.health() : {};
+      o.engineStatus = health;
+      o.status = health.hasTesseract ? '处理中（真实 OCR）' : '处理中（待降级）';
+      o.progress = 0.06;
       o.mock = false;
+      this.rerender();
+      await wait(80);
+      const attemptedReal = Boolean(health.hasTesseract);
       try {
         o.result = await OCRService.recognize(o.file, (progress, status) => {
           o.progress = progress;
-          o.status = status || '识别中';
+          o.status = status ? `处理中：${status}` : '处理中';
           const bar = document.getElementById('ocrBar');
           if (bar) bar.style.width = `${progress * 100}%`;
           const pct = document.getElementById('ocrPercent');
           if (pct) pct.textContent = `${Math.round(progress * 100)}%`;
           const stat = document.getElementById('ocrStatus');
-          if (stat) stat.textContent = status || '识别中';
+          if (stat) stat.textContent = o.status;
         });
         if (!o.result.trim()) throw new Error('OCR 未返回文字');
+        o.status = '真实 OCR 成功';
       } catch (error) {
         o.mock = true;
+        const friendly = Utils.friendlyErrorMessage(error?.message || error);
         o.result = ['当前为演示模式，已使用模拟 OCR 结果。','单据类型：发货单','单号：SO-2026-015','客户：常州新能源科技有限公司','产品：304不锈钢连接件','发货数量：760','总金额：9710.00','付款方式：月结30天','运输方式：物流配送','状态：待签收'].join('\n');
-        o.status = '演示 OCR 完成';
-        o.mockReason = Utils.friendlyErrorMessage(error.message);
+        o.status = '当前环境无法运行真实 OCR，已使用 Mock 兜底。';
+        o.mockReason = friendly || 'OCR 引擎暂不可用，已切换演示模式';
       }
       o.progress = 1;
-      o.status = '识别完成';
       o.original = o.result;
       const quality = OCRService.assessQuality(o.result);
       o.quality = quality;
@@ -1880,9 +2292,99 @@ const App = {
       o.aiMode = 'mock';
       o.aiError = '';
       o.edited = false;
+      o.analysis = '';
+      o.qaQuestion = '';
+      o.qaAnswer = '';
+      this.recordTask({
+        type: 'OCR识别',
+        fileName: o.file.name,
+        module: 'ocr',
+        status: '完成',
+        summary: o.mock ? (attemptedReal ? 'real_ocr_failed' : 'mock_ocr_used') : 'real_ocr_success',
+        result: o.result
+      });
       Store.addActivity(`OCR 识别：${o.file.name}`, 'ai');
       this.rerender();
-      this.toast(o.mock ? 'OCR 演示识别成功' : quality.low ? quality.summary : 'OCR 识别成功');
+      this.toast(o.mock ? '当前环境无法运行真实 OCR，已使用 Mock 兜底。' : quality.low ? quality.summary : '真实 OCR 成功');
+    });
+  },
+
+  async ocrSummary(btn) {
+    const o = this.temp.ocr;
+    const source = String(o.aiFix || o.result || '').trim();
+    if (!source) throw new Error('请先完成 OCR 识别');
+    await this.busy(btn, async () => {
+      const ai = await AIService.complete(
+        `请总结以下 OCR 识别内容，提取文件类型、关键字段、风险和建议。\n模板：${o.template || '通用'}\nOCR内容：\n${source.slice(0, 12000)}`,
+        { mode: 'ocr-summary', module: 'ocr', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(source)}` }
+      );
+      o.analysis = ai.text;
+      this.recordTask({
+        type: 'OCR总结',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: '完成',
+        summary: ai.text.slice(0, 160),
+        result: ai.text
+      });
+      Store.addActivity(`OCR AI总结：${o.file?.name || '图片'}`, 'ai');
+      this.rerender();
+    });
+  },
+
+  async ocrTranslate(btn) {
+    const o = this.temp.ocr;
+    const source = String(o.aiFix || o.result || '').trim();
+    if (!source) throw new Error('请先完成 OCR 识别');
+    await this.busy(btn, async () => {
+      const ai = await AIService.complete(
+        `请将以下 OCR 识别内容翻译成正式英文，保留单号、客户、产品、数量、金额、交期等关键字段。\n模板：${o.template || '通用'}\nOCR内容：\n${source.slice(0, 12000)}`,
+        { mode: 'ocr-translate', module: 'ocr', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(source)}` }
+      );
+      o.analysis = ai.text;
+      this.recordTask({
+        type: 'OCR翻译',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: '完成',
+        summary: ai.text.slice(0, 160),
+        result: ai.text
+      });
+      Store.addActivity(`OCR AI翻译：${o.file?.name || '图片'}`, 'ai');
+      this.rerender();
+    });
+  },
+
+  async ocrAsk(btn) {
+    const o = this.temp.ocr;
+    const source = String(o.aiFix || o.result || '').trim();
+    const question = document.getElementById('ocrQuestion')?.value.trim() || o.qaQuestion || '';
+    if (!source) throw new Error('请先完成 OCR 识别');
+    if (!question) throw new Error('请输入 OCR 问题');
+    await this.busy(btn, async () => {
+      o.qaQuestion = question;
+      let answerText = '';
+      if (Store.state.settings.accessMode !== 'local') {
+        const ai = await AIService.complete(
+          `你是 OCR 问答助手。请仅根据以下 OCR 内容回答问题，不确定时输出“无法确认”。\n\n问题：${question}\n\nOCR内容：\n${source.slice(0, 12000)}`,
+          { mode: 'ocr-qa', module: 'ocr', mockFallback: () => KnowledgeEngine.answer(question, [KnowledgeEngine.buildEntry({ title: o.file?.name || 'OCR文件', content: source, sourceType: 'ocr' })]).text }
+        );
+        answerText = ai.text;
+      } else {
+        answerText = KnowledgeEngine.answer(question, [KnowledgeEngine.buildEntry({ title: o.file?.name || 'OCR文件', content: source, sourceType: 'ocr' })]).text;
+      }
+      o.qaAnswer = answerText;
+      o.analysis = `OCR问答\n问题：${question}\n回答：${answerText}`;
+      this.recordTask({
+        type: 'OCR问答',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: '完成',
+        summary: question,
+        result: answerText
+      });
+      Store.addActivity(`OCR问答：${question.slice(0, 20)}`, 'ai');
+      this.rerender();
     });
   },
 
@@ -1891,11 +2393,6 @@ const App = {
     const source = String(o.result || '').trim();
     if (!source) throw new Error('暂无可纠错的 OCR 结果');
     const quality = o.quality || OCRService.assessQuality(source);
-    const confirmText = '当前 OCR 内容将发送至第三方 AI 进行纠错，请确认不包含企业机密或已完成脱敏。';
-    if (Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled) {
-      if (!confirm(confirmText)) return;
-    }
-    const prompt = `你是 OCR 纠错助手。请只基于原文进行修复，不要编造缺失内容。若无法确认，请输出“无法确认”。\n\n要求：\n1. 输出两栏：OCR 原文、AI 修复结果。\n2. AI 修复结果必须包含提示：AI 修复内容仅供参考，请人工核对后使用。\n3. 优先修复字段：发货单号、客户名称、发货日期、联系人、电话、产品编码、产品名称、规格型号、数量、单价、金额。\n4. 如果字段缺失或不确定，必须标注“无法确认”。\n5. 如果原文是表格，尽量按行列还原，但不要乱编。\n\nOCR 原文：\n${source}\n\n质量提示：${quality?.summary || '正常'}`;
     const buildMock = reason => {
       return [
         'OCR 原文：',
@@ -1918,6 +2415,30 @@ const App = {
         `Mock 说明：${reason}`
       ].join('\n');
     };
+    const confirmText = '当前 OCR 内容将发送至第三方 AI 进行纠错，请确认不包含企业机密或已完成脱敏。';
+    const remoteReady = Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled && Store.state.settings.apiUrl;
+    if (remoteReady) {
+      if (!confirm(confirmText)) {
+        await this.busy(btn, async () => {
+          o.aiMode = 'mock';
+          o.aiError = '用户未授权远程 AI';
+          o.aiFix = buildMock('用户未授权远程 AI');
+          o.status = '已使用 Mock 纠错';
+          this.recordTask({
+            type: 'OCR纠错',
+            fileName: o.file?.name || '图片',
+            module: 'ocr',
+            status: '完成',
+            summary: 'ocr_ai_fix_mock',
+            result: o.aiFix
+          });
+          this.rerender();
+          this.toast('用户未授权远程 AI，已使用 Mock 纠错。');
+        });
+        return;
+      }
+    }
+    const prompt = `你是 OCR 纠错助手。请只基于原文进行修复，不要编造缺失内容。若无法确认，请输出“无法确认”。\n\n要求：\n1. 输出两栏：OCR 原文、AI 修复结果。\n2. AI 修复结果必须包含提示：AI 修复内容仅供参考，请人工核对后使用。\n3. 优先修复字段：发货单号、客户名称、发货日期、联系人、电话、产品编码、产品名称、规格型号、数量、单价、金额。\n4. 如果字段缺失或不确定，必须标注“无法确认”。\n5. 如果原文是表格，尽量按行列还原，但不要乱编。\n\nOCR 原文：\n${source}\n\n质量提示：${quality?.summary || '正常'}`;
     await this.busy(btn, async () => {
       try {
         const ai = await AIService.complete(prompt, {
@@ -1936,6 +2457,14 @@ const App = {
       }
       o.edited = false;
       o.status = 'AI 纠错完成';
+      this.recordTask({
+        type: 'OCR纠错',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: '完成',
+        summary: o.aiMode === 'api' ? 'ocr_ai_fix_deepseek' : 'ocr_ai_fix_mock',
+        result: o.aiFix
+      });
       Store.addActivity(`OCR AI 纠错：${o.file?.name || '图片'}`, 'ai');
       this.rerender();
       this.toast(o.aiMode === 'api' ? 'AI 纠错完成' : 'AI Mock 纠错完成');
@@ -1952,6 +2481,14 @@ const App = {
       o.aiFix = ['AI 修复内容仅供参考，请人工核对后使用。', ...lines].join('\n');
       o.edited = true;
       o.status = '表格还原完成';
+      this.recordTask({
+        type: 'OCR表格还原',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: '完成',
+        summary: 'ocr_table_restore',
+        result: o.aiFix
+      });
       this.rerender();
       this.toast('AI 表格还原完成');
     });
@@ -1965,6 +2502,14 @@ const App = {
       o.result = text;
       o.edited = true;
       Store.save();
+      this.recordTask({
+        type: 'OCR人工保存',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: '完成',
+        summary: '人工确认后保存 OCR 结果',
+        result: text
+      });
       this.rerender();
       this.toast('已保存人工确认后的 OCR 结果');
     });
@@ -1973,13 +2518,39 @@ const App = {
   async ocrTxt(btn) {
     const text = this.temp.ocr.result;
     if (!text) throw new Error('暂无识别文字');
-    await this.busy(btn, async () => { Utils.textDownload(text, 'OCR识别结果.txt'); this.toast('OCR TXT 已导出'); });
+    await this.busy(btn, async () => {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      Utils.download(blob, 'OCR识别结果.txt');
+      this.recordDownload({
+        filename: 'OCR识别结果.txt',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'txt',
+        status: '已生成',
+        summary: 'OCR 原始文本导出',
+        blob
+      });
+      this.toast('OCR TXT 已导出');
+    });
   },
 
   async ocrAiTxt(btn) {
     const text = this.temp.ocr.aiFix || '';
     if (!text) throw new Error('暂无 AI 修复结果');
-    await this.busy(btn, async () => { Utils.textDownload(text, 'OCR AI修复结果.txt'); this.toast('AI 修复 TXT 已导出'); });
+    await this.busy(btn, async () => {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      Utils.download(blob, 'OCR AI修复结果.txt');
+      this.recordDownload({
+        filename: 'OCR AI修复结果.txt',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'txt',
+        status: '已生成',
+        summary: 'OCR AI 修复文本导出',
+        blob
+      });
+      this.toast('AI 修复 TXT 已导出');
+    });
   },
 
   async ocrExcel(btn) {
@@ -1991,6 +2562,14 @@ const App = {
       const book = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'OCR结果');
       XLSX.writeFile(book, 'OCR识别结果.xlsx');
+      this.recordDownload({
+        filename: 'OCR识别结果.xlsx',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'xlsx',
+        status: '已生成',
+        summary: 'OCR 原始结果导出'
+      });
       this.toast('OCR Excel 已导出');
     });
   },
@@ -2004,6 +2583,14 @@ const App = {
       const book = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), 'AI修复结果');
       XLSX.writeFile(book, 'OCR AI修复结果.xlsx');
+      this.recordDownload({
+        filename: 'OCR AI修复结果.xlsx',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'xlsx',
+        status: '已生成',
+        summary: 'OCR AI 修复结果导出'
+      });
       this.toast('AI 修复 Excel 已导出');
     });
   },
@@ -2011,13 +2598,37 @@ const App = {
   async ocrWord(btn) {
     const text = this.temp.ocr.result;
     if (!text) throw new Error('暂无识别文字');
-    await this.busy(btn, async () => { await Utils.exportDocx('OCR识别结果', text, 'OCR识别结果'); this.toast('OCR Word 已导出'); });
+    await this.busy(btn, async () => {
+      const blob = await Utils.exportDocx('OCR识别结果', text, 'OCR识别结果');
+      this.recordDownload({
+        filename: 'OCR识别结果.docx',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'docx',
+        status: '已生成',
+        summary: 'OCR 原始 Word 导出',
+        blob
+      });
+      this.toast('OCR Word 已导出');
+    });
   },
 
   async ocrAiWord(btn) {
     const text = this.temp.ocr.aiFix || '';
     if (!text) throw new Error('暂无 AI 修复结果');
-    await this.busy(btn, async () => { await Utils.exportDocx('OCR AI修复结果', text, 'OCR AI修复结果'); this.toast('AI 修复 Word 已导出'); });
+    await this.busy(btn, async () => {
+      const blob = await Utils.exportDocx('OCR AI修复结果', text, 'OCR AI修复结果');
+      this.recordDownload({
+        filename: 'OCR AI修复结果.docx',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'docx',
+        status: '已生成',
+        summary: 'OCR AI 修复 Word 导出',
+        blob
+      });
+      this.toast('AI 修复 Word 已导出');
+    });
   },
 
   async pptGenerate(btn) {
@@ -2072,9 +2683,13 @@ const App = {
           `请根据以下业务需求生成 ${dialect} SQL，并附带简短说明。要求尽量使用真实业务字段，例如 customer_name、delivery_quantity、amount、delivery_date、status。需求：${prompt}`,
           { mode: 'sql', module: 'ai-sql' }
         );
-        const sqlMatch = res.text.match(/```sql([\\s\\S]*?)```/i) || res.text.match(/```([\\s\\S]*?)```/);
-        const sql = (sqlMatch?.[1] || res.text).trim();
-        this.temp.sql = { dialect, prompt, output: sql, explanation: res.text };
+        const parsed = this.extractSqlPayload(res.text);
+        this.temp.sql = {
+          dialect,
+          prompt,
+          output: parsed.sql,
+          explanation: parsed.explanation || '已生成 SQL，可继续执行“解释SQL”或“优化SQL”查看说明。'
+        };
       }
       Store.addActivity('生成 SQL', 'ai');
       this.rerender();
@@ -2359,6 +2974,23 @@ const App = {
     this.rerender();
   },
 
+  async downloadCenterDownload(id) {
+    const record = (Store.state.downloadRecords || []).find(item => item.id === id);
+    if (!record) throw new Error('下载记录不存在');
+    const cache = this.temp.downloadCache || {};
+    if (cache[id]) {
+      Utils.download(cache[id], record.filename);
+      this.toast(`已下载 ${record.filename}`);
+      return;
+    }
+    const file = Store.state.files.find(item => item.name === record.filename || item.name === record.sourceName);
+    if (file) {
+      await this.fileDownload(file.id);
+      return;
+    }
+    throw new Error('当前下载记录无法重新下载，请重新导出');
+  },
+
   async fileRename(id) {
     const file = Store.state.files.find(item => item.id === id);
     if (!file) return;
@@ -2417,6 +3049,97 @@ const App = {
       Store.save();
       this.rerender();
     }
+  },
+
+  normalizeRuntimeTask(task = {}) {
+    const output = task.output_payload || {};
+    return {
+      id: task.id,
+      runtime: true,
+      time: new Date(task.updated_at || task.created_at || Date.now()).getTime(),
+      type: task.title || 'Agent 任务',
+      fileName: task.input_payload?.filename || '',
+      module: 'agent-runtime',
+      status: task.status || 'pending',
+      summary: output.summary || task.error_message || '',
+      result: output.result || task.error_message || '',
+      sourceId: task.id,
+      route: 'agent'
+    };
+  },
+
+  async refreshAgentRuntime(silent = false) {
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) return;
+    const [tasksRes, toolsRes, monitorRes, memoryRes] = await Promise.all([
+      APIClient.request('/api/agents/tasks'),
+      APIClient.request('/api/agents/tools'),
+      APIClient.request('/api/agents/monitor'),
+      APIClient.request('/api/agents/memory')
+    ]);
+    const tasks = tasksRes.data?.items || [];
+    const approvals = tasks.filter(item => item.approval).map(item => ({
+      id: item.approval.id,
+      taskId: item.id,
+      toolName: item.approval.tool_name,
+      actionLabel: item.approval.action_label,
+      status: item.approval.status,
+      reason: item.approval.reason,
+      createdAt: new Date(item.approval.created_at).getTime()
+    }));
+    const runtimeRecords = tasks.map(task => this.normalizeRuntimeTask(task));
+    const nonRuntime = (Store.state.taskRecords || []).filter(item => !item.runtime);
+    Store.state.taskRecords = [...runtimeRecords, ...nonRuntime].sort((a, b) => (b.time || 0) - (a.time || 0)).slice(0, 200);
+    Store.state.agentRuns = tasks.slice(0, 20).map(task => ({
+      id: task.id,
+      goal: task.goal,
+      result: task.output_payload?.summary || task.output_payload?.result || task.error_message || '',
+      status: task.status,
+      time: new Date(task.updated_at || task.created_at || Date.now()).getTime()
+    }));
+    Store.state.agentApprovals = approvals;
+    Store.state.toolCatalog = toolsRes.data?.items || [];
+    if (!this.temp.toolSelectedName && Store.state.toolCatalog[0]) this.temp.toolSelectedName = Store.state.toolCatalog[0].toolName;
+    Store.state.runtimeMonitor = monitorRes.data?.monitor || Store.state.runtimeMonitor;
+    Store.state.memoryEntries = memoryRes.data?.items || [];
+    Store.state.dashboard = {
+      ...Store.state.dashboard,
+      agentExecutions: tasks.length,
+      systemStatus: approvals.length ? '等待审批' : (tasks.some(item => item.status === 'failed') ? '存在失败任务' : Store.state.dashboard.systemStatus)
+    };
+    const latest = tasks[0];
+    if (latest) {
+      this.temp.agent.currentRunId = latest.id;
+      this.temp.agent.status = latest.status || this.temp.agent.status;
+      this.temp.agent.steps = (latest.input_payload?.plan || []).map((step, index) => ({
+        key: step.key || step.toolName || `step_${index + 1}`,
+        text: step.label || step.actionLabel || step.toolName || `步骤 ${index + 1}`,
+        status: index < Number(latest.current_step || 0)
+          ? '已完成'
+          : latest.status === 'waiting_human' && index === Number(latest.current_step || 0)
+            ? '等待审批'
+            : latest.status === 'running' && index === Number(latest.current_step || 0)
+              ? '执行中'
+              : latest.status === 'failed' && index === Number(latest.current_step || 0)
+                ? '失败'
+                : latest.status === 'timeout' && index === Number(latest.current_step || 0)
+                  ? '超时'
+                  : latest.status === 'cancelled' && index === Number(latest.current_step || 0)
+                    ? '已取消'
+                    : '等待中',
+        duration: 0,
+        error: index === Number(latest.current_step || 0) ? (latest.error_message || '') : ''
+      }));
+      this.temp.agent.logs = (latest.logs || []).map(log => ({
+        id: log.id,
+        time: new Date(log.created_at).toLocaleTimeString('zh-CN'),
+        text: `${log.tool_name || log.agent_name || 'agent'} · ${log.status}${log.error_message ? ` · ${log.error_message}` : ''}`,
+        status: log.status,
+        stepKey: log.tool_name || ''
+      }));
+      this.temp.agent.result = latest.output_payload?.result || latest.error_message || this.temp.agent.result;
+    }
+    Store.save();
+    if (!silent) this.rerender();
   },
 
   agentPlan() {
@@ -2485,6 +3208,40 @@ const App = {
   },
 
   async agentRun(btn) {
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) return this.agentRunLocal(btn);
+    const goal = document.getElementById('agentGoal')?.value.trim() || this.temp.agent.goal;
+    if (!goal) throw new Error('请输入任务目标');
+    this.temp.agent.goal = goal;
+    await this.busy(btn, async () => {
+      const input = {
+        goal,
+        prompt: goal,
+        text: [
+          this.temp.excel.result,
+          this.temp.pdf.extracted,
+          this.temp.ocr.result,
+          this.getWorkspace('productionplan').planResult
+        ].filter(Boolean).join('\n\n'),
+        rows: this.temp.excel.rows || [],
+        filename: this.temp.excel.file?.name || this.temp.pdf.files?.[0]?.name || this.temp.ocr.file?.name || '',
+        sql: this.temp.sql.prompt || '',
+        outputName: safeName(this.temp.word.title || 'agent-report.txt'),
+        outputText: this.temp.word.content || this.getWorkspace('writing').result || ''
+      };
+      const res = await APIClient.request('/api/agents/tasks', {
+        method: 'POST',
+        body: JSON.stringify({ goal, input })
+      });
+      const task = res.data?.task;
+      this.temp.agent.currentRunId = task?.id || '';
+      this.temp.agent.status = task?.status || 'pending';
+      await this.refreshAgentRuntime(true);
+      this.rerender();
+      this.pollRuntimeTask(task?.id);
+    });
+  },
+
+  async agentRunLocal(btn) {
     if (this.temp.agent.running) return;
     if (!this.temp.agent.steps.length) this.agentPlan();
     const agent = this.temp.agent;
@@ -2551,11 +3308,118 @@ const App = {
   },
 
   agentStop() {
+    if (AuthClient.isLoggedIn() && !AuthClient.isDemo() && this.temp.agent.currentRunId) {
+      return this.runtimeTaskCancel(this.temp.agent.currentRunId);
+    }
     if (!this.temp.agent.running) return;
     this.temp.agent.cancelRequested = true;
     this.temp.agent.status = '取消';
     this.agentLog('收到停止指令，正在取消任务。', 'warning');
     this.rerender();
+  },
+
+  async pollRuntimeTask(taskId) {
+    if (!taskId || !AuthClient.isLoggedIn() || AuthClient.isDemo()) return;
+    clearTimeout(this.runtimePoller);
+    const tick = async () => {
+      const res = await APIClient.request(`/api/agents/tasks/${taskId}`);
+      const task = res.data?.task;
+      if (!task) return;
+      const normalized = this.normalizeRuntimeTask(task);
+      Store.state.taskRecords = [normalized, ...(Store.state.taskRecords || []).filter(item => item.id !== task.id)].slice(0, 200);
+      this.temp.agent.currentRunId = task.id;
+      this.temp.agent.status = task.status || 'running';
+      this.temp.agent.steps = (task.input_payload?.plan || []).map((step, index) => ({
+        key: step.key || step.toolName || `step_${index + 1}`,
+        text: step.label || step.actionLabel || step.toolName || `步骤 ${index + 1}`,
+        status: index < Number(task.current_step || 0)
+          ? '已完成'
+          : task.status === 'waiting_human' && index === Number(task.current_step || 0)
+            ? '等待审批'
+            : task.status === 'running' && index === Number(task.current_step || 0)
+              ? '执行中'
+              : task.status === 'failed' && index === Number(task.current_step || 0)
+                ? '失败'
+                : task.status === 'timeout' && index === Number(task.current_step || 0)
+                  ? '超时'
+                  : task.status === 'cancelled' && index === Number(task.current_step || 0)
+                    ? '已取消'
+                    : '等待中',
+        duration: 0,
+        error: index === Number(task.current_step || 0) ? (task.error_message || '') : ''
+      }));
+      this.temp.agent.result = task.output_payload?.result || task.error_message || '';
+      this.temp.agent.logs = (task.logs || []).map(log => ({
+        id: log.id,
+        time: new Date(log.created_at).toLocaleTimeString('zh-CN'),
+        text: `${log.tool_name || log.agent_name || 'agent'} · ${log.status}${log.error_message ? ` · ${log.error_message}` : ''}`,
+        status: log.status,
+        stepKey: log.tool_name || ''
+      }));
+      if (task.approval) {
+        Store.state.agentApprovals = [{
+          id: task.approval.id,
+          taskId: task.id,
+          toolName: task.approval.tool_name,
+          actionLabel: task.approval.action_label,
+          status: task.approval.status,
+          reason: task.approval.reason,
+          createdAt: new Date(task.approval.created_at).getTime()
+        }, ...(Store.state.agentApprovals || []).filter(item => item.id !== task.approval.id)];
+      }
+      Store.save();
+      this.rerender();
+      if (!['pending', 'running', 'waiting_human'].includes(task.status)) return;
+      this.runtimePoller = setTimeout(() => tick().catch(error => this.toast(Utils.friendlyErrorMessage(error.message), 'error')), 1500);
+    };
+    await tick();
+  },
+
+  async runtimeTaskCancel(taskId) {
+    await APIClient.request(`/api/agents/tasks/${taskId}/cancel`, { method: 'POST', body: JSON.stringify({}) });
+    await this.refreshAgentRuntime();
+    this.toast('任务已取消');
+  },
+
+  async runtimeTaskRetry(taskId) {
+    await APIClient.request(`/api/agents/tasks/${taskId}/retry`, { method: 'POST', body: JSON.stringify({}) });
+    await this.refreshAgentRuntime();
+    this.pollRuntimeTask(taskId);
+    this.toast('任务已重新执行');
+  },
+
+  async runtimeApproval(taskId, approved) {
+    await APIClient.request(`/api/agents/tasks/${taskId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ approved, reason: approved ? '人工审批通过' : '人工审批拒绝' })
+    });
+    await this.refreshAgentRuntime();
+    if (approved) this.pollRuntimeTask(taskId);
+    this.toast(approved ? '审批已通过，任务继续执行' : '审批已拒绝，任务已终止');
+  },
+
+  async toolCenterRun(btn) {
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) throw new Error('请使用后端登录后再执行 Tool Center');
+    const selected = Store.state.toolCatalog.find(item => item.toolName === this.temp.toolSelectedName) || Store.state.toolCatalog[0];
+    if (!selected) throw new Error('当前没有可执行工具');
+    const ws = this.getWorkspace('toolcenter');
+    await this.busy(btn, async () => {
+      const raw = document.getElementById('toolcenterInput')?.value.trim() || ws.prompt || '{}';
+      ws.prompt = raw;
+      let input;
+      try {
+        input = JSON.parse(raw || '{}');
+      } catch {
+        throw new Error('参数格式错误：请输入合法 JSON');
+      }
+      const res = await APIClient.request(`/api/agents/tools/${selected.toolName}/execute`, {
+        method: 'POST',
+        body: JSON.stringify({ input })
+      });
+      ws.result = JSON.stringify(res.data?.result || {}, null, 2);
+      Store.save();
+      this.rerender();
+    });
   },
 
   async runAgentStep(step) {
@@ -2683,7 +3547,7 @@ const App = {
   },
 
   async workspaceRun(route = this.route, btn) {
-    const ws = this.getWorkspace(route);
+    const ws = this.syncWorkspaceFromDom(route);
     await this.busy(btn, async () => {
       switch (route) {
         case 'templates': {
@@ -2814,6 +3678,132 @@ const App = {
     Store.save();
     Store.addActivity(`执行数据校验：${mode}`, 'ai');
     this.rerender();
+  },
+
+  qualityModuleMap(label) {
+    const map = {
+      'AI Chat': 'chat',
+      'OCR': 'ocr',
+      'Excel': 'excel',
+      'CSV': 'csv',
+      'PDF': 'pdf',
+      'Word': 'word',
+      'PPT': 'ppt',
+      'SQL': 'sql',
+      'MES': 'mes',
+      'ERP': 'erp',
+      'BOM': 'bom',
+      '生产计划': 'productionplan',
+      '企业办公': 'enterprise',
+      '数据管理': 'datamanagement',
+      'Tool Center': 'toolcenter',
+      'Agent Runtime': 'agentruntime'
+    };
+    return map[label] || String(label || 'general').toLowerCase().replace(/\s+/g, '-');
+  },
+
+  async qualityCheck(btn) {
+    const ws = this.getWorkspace('quality');
+    this.syncWorkspaceFromDom('quality');
+    const moduleName = this.qualityModuleMap(ws.selected || 'AI Chat');
+    await this.busy(btn, async () => {
+      const res = await APIClient.request('/api/quality/check', {
+        method: 'POST',
+        body: JSON.stringify({
+          module: moduleName,
+          text: ws.prompt || '',
+          allowAi: Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled,
+          source: 'frontend'
+        })
+      }, { timeout: 30000 });
+      const report = res.data || res.report || res;
+      ws.result = [
+        `模块：${report.module || moduleName}`,
+        `风险：${report.risk || '低'}`,
+        `请求ID：${report.requestId || '无'}`,
+        '',
+        report.summary || '未发现明显质量问题',
+        '',
+        '问题列表：',
+        ...(report.issues || []).map((item, index) => `${index + 1}. [${item.severity || '中'}] ${item.message}${item.suggestion ? `\n   建议：${item.suggestion}` : ''}`)
+      ].join('\n');
+      ws.before = report.before || ws.prompt || '';
+      ws.after = report.after || ws.prompt || '';
+      ws.updatedAt = Date.now();
+      Store.save();
+      Store.addActivity(`质量检测：${moduleName}`, 'ai');
+      this.toast('质量检测已完成');
+      this.rerender();
+    });
+  },
+
+  async qualityFix(btn) {
+    const ws = this.getWorkspace('quality');
+    this.syncWorkspaceFromDom('quality');
+    const moduleName = this.qualityModuleMap(ws.selected || 'AI Chat');
+    await this.busy(btn, async () => {
+      const res = await APIClient.request('/api/quality/fix', {
+        method: 'POST',
+        body: JSON.stringify({
+          module: moduleName,
+          text: ws.prompt || '',
+          before: ws.before || ws.prompt || '',
+          after: ws.after || ws.prompt || '',
+          allowAi: Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled,
+          requireApproval: true,
+          source: 'frontend'
+        })
+      }, { timeout: 30000 });
+      const report = res.data || res.report || res;
+      ws.result = [
+        `模块：${report.module || moduleName}`,
+        `风险：${report.risk || '低'}`,
+        report.approvalRequired ? '修复建议需要人工确认。' : '修复建议已生成。',
+        '',
+        report.summary || '',
+        '',
+        '修复前：',
+        report.before || ws.prompt || '',
+        '',
+        '修复后：',
+        report.after || ws.prompt || ''
+      ].join('\n');
+      ws.before = report.before || ws.prompt || '';
+      ws.after = report.after || ws.prompt || '';
+      ws.updatedAt = Date.now();
+      Store.save();
+      if (report.approvalRequired) Store.addActivity(`质量修复待审批：${moduleName}`, 'warn');
+      else Store.addActivity(`质量修复建议：${moduleName}`, 'ai');
+      this.toast(report.approvalRequired ? '高风险修复建议已生成，请人工确认' : '修复建议已生成');
+      this.rerender();
+    });
+  },
+
+  async qualityExport(btn) {
+    const ws = this.getWorkspace('quality');
+    this.syncWorkspaceFromDom('quality');
+    const moduleName = this.qualityModuleMap(ws.selected || 'AI Chat');
+    await this.busy(btn, async () => {
+      const res = await APIClient.request('/api/quality/export', {
+        method: 'POST',
+        body: JSON.stringify({
+          module: moduleName,
+          text: ws.prompt || '',
+          before: ws.before || ws.prompt || '',
+          after: ws.after || ws.prompt || '',
+          source: 'frontend'
+        })
+      }, { timeout: 30000 });
+      const text = res.data?.text || res.text || '';
+      if (!text) throw new Error('导出报告为空');
+      Utils.textDownload(text, `${safeName((ws.selected || 'quality') + '-quality-report')}.txt`);
+      ws.result = text;
+      ws.updatedAt = Date.now();
+      Store.save();
+      Store.addActivity(`导出质量报告：${moduleName}`, 'file');
+      this.toast('质量报告已导出');
+      this.rerender();
+    });
   },
 
   getMailWorkspace() {
@@ -3451,7 +4441,7 @@ const App = {
     const topP = Number(document.getElementById('apiTopP')?.value || 1);
     const maxTokens = Number(document.getElementById('apiMaxTokens')?.value || 2048);
     const timeout = Number(document.getElementById('apiTimeout')?.value || 30000);
-    if (accessMode !== 'local' && (!apiUrl || !apiKey || !model)) throw new Error('真实 AI 模式下请填写 Base URL、API Key 和模型名称');
+    if (accessMode !== 'local' && (!apiUrl || !model)) throw new Error('真实 AI 模式下请填写 AI Gateway 地址和模型名称');
     Store.state.settings = {
       ...Store.state.settings,
       accessMode,
@@ -3469,6 +4459,7 @@ const App = {
     };
     Store.save();
     this.updateApiState();
+    this.rerender();
     this.toast('AI Gateway 配置已保存到当前浏览器 localStorage');
   },
 
@@ -3576,6 +4567,7 @@ const App = {
     await this.refreshDashboard();
     await this.refreshOrders();
     await this.refreshInventory();
+    await this.refreshAgentRuntime(true);
     this.toast('登录成功');
     this.renderNav();
     this.navigate('home');
@@ -3623,6 +4615,7 @@ const App = {
     await this.refreshDashboard();
     await this.refreshOrders();
     await this.refreshInventory();
+    await this.refreshAgentRuntime(true);
     this.toast('注册成功，已自动登录');
     this.renderNav();
     this.navigate('home');
