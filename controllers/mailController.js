@@ -5,6 +5,9 @@ const { ok } = require('../utils/response');
 
 async function testConnection(req, res, next) {
   try {
+    if (!mailAgent.isConfigured()) {
+      return res.status(503).json({ ok: false, message: '当前未配置 Mail Agent 企业接口，请在系统设置中完成配置。', data: { status: '未配置' } });
+    }
     const inbox = await mailAgent.listInbox();
     ok(res, { inbox }, 'Mail Agent 连接可用');
   } catch (error) {

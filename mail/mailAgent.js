@@ -1,5 +1,9 @@
 const env = require('../config/env');
 
+function isConfigured() {
+  return Boolean(env.mailAgentBaseUrl && env.mailAgentApiKey);
+}
+
 async function sendMail(payload) {
   if (!env.mailAgentBaseUrl || !env.mailAgentApiKey) {
     return {
@@ -37,5 +41,6 @@ async function listInbox() {
 
 module.exports = {
   sendMail,
-  listInbox
+  listInbox,
+  isConfigured
 };

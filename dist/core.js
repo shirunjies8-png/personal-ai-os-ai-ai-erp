@@ -13,6 +13,8 @@ const DEMO_ACCOUNT = {
 
 const DefaultState = {
   version: 2,
+  buildTime: RuntimeConfig.BUILD_TIME || new Date().toISOString(),
+  commitHash: RuntimeConfig.COMMIT_HASH || '',
   settings: {
     accessMode: RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY ? 'cloud' : 'local',
     apiEnabled: Boolean(RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY),
@@ -63,6 +65,21 @@ const DefaultState = {
   operationLogs: [],
   aiErrors: [],
   aiHistory: [],
+  taskRecords: [],
+  downloadRecords: [],
+  agentApprovals: [],
+  toolCatalog: [],
+  memoryEntries: [],
+  runtimeMonitor: {
+    totalTasks: 0,
+    successTasks: 0,
+    failedTasks: 0,
+    timeoutTasks: 0,
+    waitingHumanTasks: 0,
+    toolCallCount: 0,
+    toolStats: [],
+    recentLogs: []
+  },
   aiGatewayStatus: { state: 'mock', message: '等待配置 AI Gateway', provider: '本地模式', model: 'deepseek-v4-flash', updatedAt: 0 },
   connectors: [
     { id: 'erp', type: 'ERP', name: 'ERP Connector', status: '未配置', enabled: false, config: {}, logs: [], mappings: [], updatedAt: 0 },
@@ -197,6 +214,12 @@ const APIClient = {
     if (/\/v1$/i.test(normalized)) return `${normalized}/chat/completions`;
     return `${normalized}/v1/chat/completions`;
   },
+  resolveGatewayBase() {
+    const configured = String(RuntimeConfig.API_BASE_URL || '').trim().replace(/\/$/, '');
+    if (configured) return configured;
+    if (typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) return location.origin;
+    return '';
+  },
   async request(path, options = {}, meta = {}) {
     const headers = {
       'Content-Type': 'application/json',
@@ -223,17 +246,22 @@ const APIClient = {
     }
   },
   async chat(messages, module = 'ai-chat', extra = {}) {
-    const baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '';
-    if (!baseUrl || /your-vercel-backend\.vercel\.app/.test(baseUrl)) {
-      throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
-    }
+    const baseUrl = this.resolveGatewayBase();
+    if (!baseUrl || /your-vercel-backend\.vercel\.app/.test(baseUrl)) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
     try {
       return await this.request('/api/chat', {
         method: 'POST',
         body: JSON.stringify({
           messages,
           module,
-          ...extra
+          provider: extra.provider || Store.state.settings.provider || 'deepseek',
+          model: extra.model || Store.state.settings.model || 'deepseek-v4-flash',
+          temperature: extra.temperature ?? Store.state.settings.temperature ?? 0.2,
+          max_tokens: extra.max_tokens ?? Store.state.settings.maxTokens ?? 2048,
+          timeout: extra.timeout ?? (Store.state.settings.timeout || 30000),
+          demoMode: extra.demoMode ?? (Store.state.settings.accessMode !== 'api'),
+          allowMockFallback: extra.allowMockFallback ?? true,
+          stream: extra.stream ?? false
         })
       }, { baseUrl, timeout: Store.state.settings.timeout || 30000 });
     } catch (error) {
@@ -245,58 +273,38 @@ const APIClient = {
   },
   async openAICompatible(messages, extra = {}) {
     const settings = Store.state.settings;
-    const baseUrl = String(settings.apiUrl || '').trim().replace(/\/$/, '');
-    const apiKey = String(settings.apiKey || '').trim();
-    if (!baseUrl) throw new Error('请填写 OpenAI-compatible Base URL');
-    if (!apiKey) throw new Error('请填写 API Key');
-    const timeout = Math.max(1000, Number(settings.timeout || 30000));
-    const localGateway = typeof location !== 'undefined' && /^https?:$/.test(location.protocol) && !/github\.io$/i.test(location.hostname)
-      ? location.origin
-      : '';
-    const gatewayBase = String(RuntimeConfig.API_BASE_URL || localGateway || '').replace(/\/$/, '');
-    if (gatewayBase && gatewayBase !== baseUrl) {
-      return this.request('/api/chat', {
-        method: 'POST',
-        body: JSON.stringify({
-          messages,
-          module: extra.module || 'general',
-          model: extra.model || settings.model,
-          temperature: extra.temperature ?? settings.temperature ?? 0.2,
-          max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
-          timeout,
-          apiKey,
-          providerBaseUrl: baseUrl
-        })
-      }, { baseUrl: gatewayBase, timeout: timeout + 1000 });
+    const baseUrl = this.resolveGatewayBase();
+    if (!baseUrl) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
+    return this.request('/api/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        messages,
+        module: extra.module || 'general',
+        provider: extra.provider || settings.provider || 'deepseek',
+        model: extra.model || settings.model || 'deepseek-v4-flash',
+        temperature: extra.temperature ?? settings.temperature ?? 0.2,
+        max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
+        timeout: extra.timeout ?? (settings.timeout || 30000),
+        demoMode: extra.demoMode ?? (settings.accessMode !== 'api'),
+        allowMockFallback: extra.allowMockFallback ?? true,
+        stream: extra.stream ?? false
+      })
+    }, { baseUrl, timeout: Math.max(1000, Number(settings.timeout || 30000)) });
+  },
+  async streamChat(messages, module = 'ai-chat', extra = {}) {
+    const res = await this.chat(messages, module, { ...extra, stream: true });
+    const full = String(res.reply || res.text || '').trim();
+    if (!full) return res;
+    if (typeof extra.onUpdate === 'function') {
+      let current = '';
+      const step = Math.max(6, Math.ceil(full.length / 40));
+      for (let i = 0; i < full.length; i += step) {
+        current += full.slice(i, i + step);
+        extra.onUpdate(current, i + step >= full.length, res);
+        await new Promise(resolve => setTimeout(resolve, 18));
+      }
     }
-    const url = this.resolveOpenAIEndpoint(baseUrl);
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: extra.model || settings.model,
-          messages,
-          temperature: extra.temperature ?? settings.temperature ?? 0.2,
-          max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
-          ...(extra.top_p == null ? {} : { top_p: extra.top_p })
-        }),
-        signal: controller?.signal
-      });
-      const { json: payload, raw } = await this.safeReadResponse(response);
-      if (!response.ok) throw new Error(payload?.error?.message || payload?.message || raw || `HTTP ${response.status}`);
-      const reply = payload?.choices?.[0]?.message?.content?.trim();
-      if (!reply) throw new Error('模型返回为空');
-      return { ok: true, reply, raw: payload };
-    } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('AI 请求超时');
-      if (/Failed to fetch|Load failed|NetworkError/i.test(error.message || '')) throw new Error('AI 后端连接失败');
-      throw error;
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    return res;
   },
   async health(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
     if (!baseUrl) throw new Error('未配置后端地址');
@@ -329,6 +337,12 @@ const Store = {
       if (!Array.isArray(this.state.operationLogs)) this.state.operationLogs = [];
       if (!Array.isArray(this.state.aiErrors)) this.state.aiErrors = [];
       if (!Array.isArray(this.state.aiHistory)) this.state.aiHistory = [];
+      if (!Array.isArray(this.state.taskRecords)) this.state.taskRecords = [];
+      if (!Array.isArray(this.state.downloadRecords)) this.state.downloadRecords = [];
+      if (!Array.isArray(this.state.agentApprovals)) this.state.agentApprovals = [];
+      if (!Array.isArray(this.state.toolCatalog)) this.state.toolCatalog = [];
+      if (!Array.isArray(this.state.memoryEntries)) this.state.memoryEntries = [];
+      if (!this.state.runtimeMonitor || typeof this.state.runtimeMonitor !== 'object') this.state.runtimeMonitor = structuredClone(DefaultState.runtimeMonitor);
       if (!this.state.aiGatewayStatus || typeof this.state.aiGatewayStatus !== 'object') this.state.aiGatewayStatus = structuredClone(DefaultState.aiGatewayStatus);
       if (!Array.isArray(this.state.connectors) || !this.state.connectors.length) this.state.connectors = structuredClone(DefaultState.connectors);
       if (!this.state.settings.accessMode) this.state.settings.accessMode = this.state.settings.apiEnabled ? 'api' : 'local';
@@ -413,8 +427,13 @@ const Store = {
       model: entry.model || '',
       success: !!entry.success,
       mock: !!entry.mock,
+      requestId: entry.requestId || '',
       duration: Number(entry.duration || 0),
+      latencyMs: Number(entry.latencyMs || entry.duration || 0),
       error: entry.error || '',
+      rawError: entry.rawError || '',
+      promptTokens: entry.promptTokens ?? entry.inputTokens ?? null,
+      completionTokens: entry.completionTokens ?? entry.outputTokens ?? null,
       inputTokens: entry.inputTokens ?? null,
       outputTokens: entry.outputTokens ?? null,
       totalTokens: entry.totalTokens ?? null,
@@ -422,6 +441,39 @@ const Store = {
       httpStatus: entry.httpStatus ?? null
     });
     this.state.aiHistory = this.state.aiHistory.slice(0, 200);
+    this.save();
+  },
+  addTaskRecord(entry) {
+    this.state.taskRecords = this.state.taskRecords || [];
+    this.state.taskRecords.unshift({
+      id: entry.id || uid(),
+      time: Date.now(),
+      type: entry.type || '',
+      fileName: entry.fileName || '',
+      module: entry.module || '',
+      status: entry.status || '完成',
+      summary: entry.summary || '',
+      result: entry.result || '',
+      sourceId: entry.sourceId || '',
+      route: entry.route || ''
+    });
+    this.state.taskRecords = this.state.taskRecords.slice(0, 200);
+    this.save();
+  },
+  addDownloadRecord(entry) {
+    this.state.downloadRecords = this.state.downloadRecords || [];
+    this.state.downloadRecords.unshift({
+      id: entry.id || uid(),
+      time: Date.now(),
+      filename: entry.filename || '',
+      sourceModule: entry.sourceModule || '',
+      sourceName: entry.sourceName || '',
+      fileType: entry.fileType || '',
+      status: entry.status || '已生成',
+      summary: entry.summary || '',
+      actionLabel: entry.actionLabel || '下载'
+    });
+    this.state.downloadRecords = this.state.downloadRecords.slice(0, 200);
     this.save();
   },
   restore(data) {
@@ -587,11 +639,70 @@ const Utils = {
       day: '2-digit'
     });
   },
+  sameDate(left, right) {
+    const a = new Date(left);
+    const b = new Date(right);
+    return a.getFullYear() === b.getFullYear()
+      && a.getMonth() === b.getMonth()
+      && a.getDate() === b.getDate();
+  },
   escape(value = '') {
     return String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
   },
   textToHtml(text = '') {
     return this.escape(text).replace(/\n/g, '<br>');
+  },
+  markdownToHtml(text = '') {
+    const escaped = this.escape(text).replace(/\r\n?/g, '\n');
+    const codeBlocks = [];
+    let source = escaped.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_match, language, code) => {
+      const token = `@@CODE_BLOCK_${codeBlocks.length}@@`;
+      codeBlocks.push(`<pre class="chat-code"><code data-language="${language || 'text'}">${code.replace(/^\n|\n$/g, '')}</code></pre>`);
+      return token;
+    });
+    source = source
+      .replace(/^###\s+(.+)$/gm, '<h4>$1</h4>')
+      .replace(/^##\s+(.+)$/gm, '<h3>$1</h3>')
+      .replace(/^#\s+(.+)$/gm, '<h2>$1</h2>')
+      .replace(/^>\s+(.+)$/gm, '<blockquote class="chat-quote">$1</blockquote>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/`([^`\n]+)`/g, '<code class="chat-inline-code">$1</code>');
+    const lines = source.split('\n');
+    const html = [];
+    let list = '';
+    let table = null;
+    const closeList = () => { if (list) { html.push(`</${list}>`); list = ''; } };
+    const closeTable = () => {
+      if (table) {
+        html.push(`<table class="chat-table">${table.map((row, index) => `<tr>${row.map(cell => index === 1 ? `<th>${cell}</th>` : `<td>${cell}</td>`).join('')}</tr>`).join('')}</table>`);
+        table = null;
+      }
+    };
+    for (const line of lines) {
+      const tableRow = line.includes('|') && /\|/.test(line) ? line.split('|').map(part => part.trim()).filter(Boolean) : null;
+      if (tableRow && tableRow.length >= 2 && !/^[-:\s|]+$/.test(line.replace(/\s/g, ''))) {
+        closeList();
+        table = table || [];
+        table.push(tableRow);
+        continue;
+      }
+      if (table) {
+        closeTable();
+      }
+      const unordered = line.match(/^\s*[-*]\s+(.+)$/);
+      const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+      if (unordered || ordered) {
+        const nextList = unordered ? 'ul' : 'ol';
+        if (list !== nextList) { closeList(); html.push(`<${nextList}>`); list = nextList; }
+        html.push(`<li>${(unordered || ordered)[1]}</li>`);
+      } else {
+        closeList();
+        html.push(line ? `<p>${line}</p>` : '<br>');
+      }
+    }
+    closeList();
+    closeTable();
+    return html.join('').replace(/@@CODE_BLOCK_(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] || '');
   },
   async copy(text) {
     try {
@@ -690,7 +801,22 @@ const Utils = {
       for (let i = 1; i <= raw.pdf.numPages; i += 1) {
         const blob = await this.renderPdfPageToBlob(raw.pdf, i, 2);
         const imageFile = new File([blob], `${safeName(file.name)}-page-${i}.png`, { type: 'image/png' });
-        const text = await OCRService.recognize(imageFile);
+        let text = '';
+        try {
+          text = await OCRService.recognize(imageFile);
+        } catch {
+          text = [
+            '当前为演示模式，已使用模拟 OCR 结果。',
+            '单号：SO-2026-015',
+            '客户：常州新能源科技有限公司',
+            '产品：304不锈钢连接件',
+            '发货数量：760',
+            '总金额：9710.00',
+            '付款方式：月结30天',
+            '运输方式：物流配送',
+            '状态：待签收'
+          ].join('\n');
+        }
         texts.push(`# 第 ${i} 页\n${text}`);
       }
       return {
@@ -1017,19 +1143,47 @@ const ExcelBusiness = {
 
 const OCRService = {
   worker: null,
+  engineState: 'unknown',
+  engineError: '',
   async getWorker(onProgress = () => {}) {
-    if (!window.Tesseract) throw new Error('OCR 引擎未加载');
+    if (!window.Tesseract) {
+      this.engineState = 'unavailable';
+      this.engineError = 'OCR 引擎未加载';
+      throw new Error('当前环境无法运行真实 OCR，已使用 Mock 兜底。');
+    }
     if (!this.worker) {
-      this.worker = await Tesseract.createWorker('chi_sim', 1, {
-        workerPath: './vendor/tesseract/worker.min.js',
-        corePath: './vendor/tesseract-core',
-        langPath: './assets/ocr',
-        logger: message => {
-          if (typeof message.progress === 'number') onProgress(message.progress, message.status);
-        }
-      });
+      this.engineState = 'loading';
+      try {
+        this.worker = await Tesseract.createWorker('chi_sim', 1, {
+          workerPath: './vendor/tesseract/worker.min.js',
+          corePath: './vendor/tesseract-core',
+          langPath: './assets/ocr',
+          cacheMethod: 'readOnly',
+          gzip: true,
+          logger: message => {
+            if (typeof message.progress === 'number') onProgress(message.progress, message.status);
+          },
+          errorHandler: error => {
+            this.engineError = String(error?.message || error || '');
+          }
+        });
+        this.engineState = 'ready';
+      } catch (error) {
+        this.worker = null;
+        this.engineState = 'failed';
+        this.engineError = String(error?.message || error || 'OCR 初始化失败');
+        throw new Error(`当前环境无法运行真实 OCR，已使用 Mock 兜底。原因：${this.engineError}`);
+      }
     }
     return this.worker;
+  },
+  health() {
+    return {
+      hasTesseract: Boolean(window.Tesseract),
+      hasWorker: Boolean(this.worker),
+      engineState: this.engineState,
+      engineError: this.engineError || ''
+    };
   },
   correct(text = '') {
     return String(text)
@@ -1089,9 +1243,15 @@ const OCRService = {
     return { template, lines, pairs };
   },
   async recognize(file, onProgress = () => {}) {
-    const worker = await this.getWorker(onProgress);
-    const result = await worker.recognize(file);
-    return this.correct(result.data.text || '');
+    try {
+      const worker = await this.getWorker(onProgress);
+      const result = await worker.recognize(file);
+      return this.correct(result.data.text || '');
+    } catch (error) {
+      this.engineState = 'failed';
+      this.engineError = String(error?.message || error || '');
+      throw error;
+    }
   }
 };
 
@@ -1507,15 +1667,18 @@ const AIService = {
   lastMode: 'api',
   isRetryable(error = {}) {
     const text = String(error.message || error || '');
-    return /Selected model is at capacity|Rate limit exceeded|\b429\b|\b503\b|Timeout|Network Error|AI 后端连接失败/i.test(text);
+    return /Selected model is at capacity|Rate limit exceeded|\b429\b|\b502\b|\b503\b|\b504\b|Timeout|Network Error|AI 后端连接失败/i.test(text);
   },
   friendlyMessage(error = {}) {
     const text = String(error.message || error || '');
     if (/DEEPSEEK_API_KEY/.test(text)) return '当前未配置 DeepSeek API Key，无法调用真实 AI。';
     if (/401|unauthorized|invalid api key|authentication/i.test(text)) return 'DeepSeek API Key 无效或无权限，请检查配置。';
+    if (/402|balance|insufficient|credit/i.test(text)) return 'DeepSeek 余额不足或额度已用完。';
     if (/403|forbidden/i.test(text)) return '当前 DeepSeek API Key 没有访问该模型的权限。';
+    if (/404|model|not found|unsupported/i.test(text)) return '当前模型不可用，请检查模型名称或权限。';
     if (/AbortError|请求超时|timeout/i.test(text)) return 'AI 请求超时，请稍后重试或增大 Timeout。';
-    if (this.isRetryable(error)) return '当前 AI 模型繁忙，请稍后重试。';
+    if (/429|502|503|504|Selected model is at capacity|Rate limit exceeded/i.test(text)) return '当前 AI 模型繁忙，请稍后重试。';
+    if (/Network Error|fetch|ENOTFOUND|ECONN/i.test(text)) return 'AI 后端连接失败，请检查网络或 Base URL。';
     return text || 'AI 调用失败';
   },
   setStatus(state, message, model = Store.state.settings.model) {
@@ -1530,107 +1693,123 @@ const AIService = {
   },
   async complete(prompt, options = {}) {
     const settings = Store.state.settings;
-    if (settings.apiEnabled && settings.apiUrl && settings.accessMode !== 'local') {
-      const system = options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。';
-      const models = settings.apiKey
-        ? [settings.model || 'deepseek-v4-flash']
-        : [settings.model || 'deepseek-v4-flash', ...(settings.backupModels || [])].filter(Boolean);
-      let lastError = null;
-      for (let i = 0; i < models.length; i += 1) {
-        const model = models[i];
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          const startedAt = Date.now();
-          try {
-            const messages = [
-              { role: 'system', content: system },
-              { role: 'user', content: prompt }
-            ];
-            const requestOptions = {
-              model,
-              temperature: options.temperature ?? settings.temperature ?? 0.2,
-              top_p: options.topP ?? settings.topP ?? 1,
-              max_tokens: options.maxTokens ?? settings.maxTokens ?? 2048
-            };
-            const payload = settings.apiKey
-              ? await APIClient.openAICompatible(messages, { ...requestOptions, module: options.module || options.mode || 'general' })
-              : await APIClient.chat(messages, options.module || options.mode || 'general', requestOptions);
-            const text = payload.reply || payload.data?.reply || payload.text;
-            if (!text) throw new Error('模型返回为空');
-            const usage = payload.usage || payload.raw?.usage || payload.data?.usage || null;
-            const duration = Date.now() - startedAt;
-            const provider = settings.provider || 'OpenAI-compatible';
-            const inputTokens = usage?.prompt_tokens ?? usage?.input_tokens ?? null;
-            const outputTokens = usage?.completion_tokens ?? usage?.output_tokens ?? null;
-            const totalTokens = usage?.total_tokens ?? ((inputTokens ?? 0) + (outputTokens ?? 0) || null);
-            const estimatedCost = totalTokens ? Number((totalTokens * 0.00001).toFixed(6)) : null;
-            this.lastMode = 'api';
-            this.setStatus('online', '真实 AI 调用成功', model);
-            if (model !== settings.model) Store.state.settings.model = model;
-            Store.logAiHistory({
-              module: options.module || options.mode || 'general',
-              provider,
-              model,
-              success: true,
-              mock: false,
-              duration,
-              error: '',
-              inputTokens,
-              outputTokens,
-              totalTokens,
-              estimatedCost,
-              httpStatus: payload.status || 200
-            });
-            return { text, mode: 'api', model, usage };
-          } catch (error) {
-            lastError = error;
-            Store.logAiHistory({
-              module: options.module || options.mode || 'general',
-              provider: settings.provider || 'OpenAI-compatible',
-              model,
-              success: false,
-              mock: false,
-              duration: Date.now() - startedAt,
-              error: this.friendlyMessage(error),
-              httpStatus: error?.status || error?.response?.status || null
-            });
-            if (!this.isRetryable(error) || attempt === 1) break;
-            await wait(400);
-          }
-        }
-      }
-      const friendly = this.friendlyMessage(lastError);
-      this.setStatus('fallback', friendly, settings.model);
-      if (options.mockFallback != null) {
-        const fallback = typeof options.mockFallback === 'function' ? options.mockFallback(friendly) : options.mockFallback;
-        Store.logAiHistory({
-          module: options.module || options.mode || 'general',
-          provider: settings.provider || 'OpenAI-compatible',
-          model: settings.model,
-          success: true,
-          mock: true,
-          duration: 0,
-          error: friendly
-        });
-        return { text: String(fallback || ''), mode: 'mock', model: settings.model, error: friendly };
-      }
-      throw new Error(friendly);
-    }
-    const message = 'AI Gateway 未启用，当前使用 Mock 兜底。';
-    this.setStatus('mock', message, settings.model);
-    if (options.mockFallback != null) {
-      const fallback = typeof options.mockFallback === 'function' ? options.mockFallback(message) : options.mockFallback;
+    const system = options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。';
+    const provider = settings.provider || 'deepseek';
+    const model = settings.model || 'deepseek-v4-flash';
+    const allowMockFallback = options.allowMockFallback ?? (settings.accessMode !== 'api');
+    const messages = Array.isArray(prompt)
+      ? prompt
+      : [
+          { role: 'system', content: system },
+          { role: 'user', content: String(prompt || '') }
+        ];
+    if (settings.accessMode === 'local') {
+      const fallbackMessage = 'AI Gateway 未启用，当前使用 Mock 兜底。';
+      const fallback = typeof options.mockFallback === 'function'
+        ? options.mockFallback(fallbackMessage)
+        : options.mockFallback ?? fallbackMessage;
+      this.lastMode = 'mock';
+      this.setStatus('mock', fallbackMessage, model);
       Store.logAiHistory({
         module: options.module || options.mode || 'general',
-        provider: settings.provider || 'OpenAI-compatible',
-        model: settings.model,
+        provider,
+        model,
         success: true,
         mock: true,
         duration: 0,
-        error: message
+        error: fallbackMessage,
+        rawError: fallbackMessage
       });
-      return { text: String(fallback || ''), mode: 'mock', model: settings.model, error: message };
+      return { text: String(fallback || ''), mode: 'mock', model, error: fallbackMessage };
     }
-    throw new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
+    const startedAt = Date.now();
+    try {
+      const payload = await APIClient.chat(messages, options.module || options.mode || 'general', {
+        provider,
+        model,
+        temperature: options.temperature ?? settings.temperature ?? 0.2,
+        maxTokens: options.maxTokens ?? settings.maxTokens ?? 2048,
+        timeout: options.timeout ?? settings.timeout ?? 30000,
+        demoMode: allowMockFallback,
+        allowMockFallback,
+        stream: false
+      });
+      const text = String(payload.reply || payload.text || '').trim();
+      if (!text) throw new Error(payload.rawError || '模型响应为空，请检查模型名称或请求格式。');
+      const duration = Date.now() - startedAt;
+      const usage = {
+        prompt_tokens: payload.promptTokens ?? 0,
+        completion_tokens: payload.completionTokens ?? 0,
+        total_tokens: payload.totalTokens ?? 0
+      };
+      this.lastMode = payload.mock ? 'mock' : 'api';
+      this.setStatus(payload.mock ? 'fallback' : 'online', payload.mock ? (payload.rawError || '真实 AI 调用失败，已自动切换 Mock。') : '真实 AI 调用成功', model);
+      Store.logAiHistory({
+        requestId: payload.requestId,
+        module: options.module || options.mode || 'general',
+        provider: payload.provider || provider,
+        model: payload.model || model,
+        success: true,
+        mock: !!payload.mock,
+        duration,
+        error: payload.mock ? (payload.rawError || '已切换 Mock') : '',
+        rawError: payload.rawError || '',
+        promptTokens: usage.prompt_tokens,
+        completionTokens: usage.completion_tokens,
+        inputTokens: usage.prompt_tokens,
+        outputTokens: usage.completion_tokens,
+        totalTokens: usage.total_tokens,
+        estimatedCost: usage.total_tokens ? Number((usage.total_tokens * 0.00001).toFixed(6)) : null,
+        httpStatus: payload.httpStatus || 200
+      });
+      return {
+        text,
+        mode: payload.mock ? 'mock' : 'api',
+        model: payload.model || model,
+        usage,
+        requestId: payload.requestId,
+        rawError: payload.rawError || '',
+        latencyMs: payload.latencyMs || duration,
+        fallbackReason: payload.fallbackReason || ''
+      };
+    } catch (error) {
+      const friendly = this.friendlyMessage(error);
+      this.lastMode = 'mock';
+      this.setStatus('fallback', friendly, model);
+      Store.logAiHistory({
+        requestId: error.requestId,
+        module: options.module || options.mode || 'general',
+        provider,
+        model,
+        success: false,
+        mock: false,
+        duration: Date.now() - startedAt,
+        error: friendly,
+        rawError: String(error?.rawError || error?.message || error || ''),
+        httpStatus: error?.httpStatus || error?.status || null
+      });
+      if (allowMockFallback) {
+        const fallback = typeof options.mockFallback === 'function'
+          ? options.mockFallback(friendly)
+          : options.mockFallback ?? `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n原因：${friendly}`;
+        return { text: String(fallback || ''), mode: 'mock', model, error: friendly };
+      }
+      throw new Error(friendly);
+    }
+  },
+  async streamChat(prompt, options = {}) {
+    const res = await this.complete(prompt, options);
+    const full = String(res.text || '');
+    if (typeof options.onUpdate === 'function') {
+      let current = '';
+      const step = Math.max(6, Math.ceil(full.length / 40));
+      for (let i = 0; i < full.length; i += step) {
+        current += full.slice(i, i + step);
+        options.onUpdate(current, i + step >= full.length, res);
+        await wait(18);
+      }
+    }
+    return res;
   }
 };
 

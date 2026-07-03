@@ -1,6 +1,10 @@
 # 部署说明
 
-Industrial AI OS 现在采用双部署架构：
+Industrial AI OS —— 具备 Enterprise Agent Runtime V1 骨架的可运行系统。
+
+当前发布版本：`v1.2-agent-runtime-verify`
+
+本项目现在采用双部署架构：
 
 - 前端：GitHub Pages
 - 后端：Render Express 服务
@@ -89,9 +93,18 @@ DEEPSEEK_API_KEY=你的真实DeepSeekKey
 
 - 打开前端页面能看到首页
 - `/api/health` 返回 `ok: true`
+- `/api/self-test` 返回本地自检结果
 - 点击“测试 AI 连接”能请求 Render 后端
 - DeepSeek 可返回真实结果
 - 手机和电脑浏览器都能打开
+
+如果你在发布前想做最后一次冻结验证，请运行：
+
+```bash
+npm run verify
+```
+
+它会依次执行语法检查、构建、Bug 扫描与浏览器回归（若本机可用 Chrome）。
 
 ## 六、可选云平台
 
@@ -102,4 +115,3 @@ DEEPSEEK_API_KEY=你的真实DeepSeekKey
 - 其它支持 Node.js 的平台
 
 但前端仍建议统一发布到 GitHub Pages，后端统一走公网 HTTPS 地址。
-

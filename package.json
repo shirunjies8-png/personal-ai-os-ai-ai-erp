@@ -6,11 +6,17 @@
   "scripts": {
     "prestart": "node scripts/sync-public.mjs",
     "prebuild": "node scripts/sync-public.mjs",
+    "check": "node --check app.js core.js ui.js services/aiGateway.js services/aiService.js services/aiQualityCheckService.js services/toolRegistry.js services/agentRuntimeService.js services/memoryService.js services/mcpAdapter.js controllers/agentController.js api/chat.js logger.js utils/logger.js routes/index.js",
     "build": "node scripts/build-static.mjs",
     "start": "node server.js",
     "dev": "node server.js",
     "preview": "python3 -m http.server 4173 -d dist",
-    "db:init": "node scripts/init-db.mjs"
+    "db:init": "node scripts/init-db.mjs",
+    "test:unit": "node scripts/bug-scan.mjs --check-only",
+    "test:e2e": "node scripts/run-e2e.mjs",
+    "bug:scan": "node scripts/bug-scan.mjs",
+    "bug:fix": "node scripts/auto-fix-known-issues.mjs",
+    "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

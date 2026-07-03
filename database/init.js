@@ -103,6 +103,72 @@ CREATE TABLE IF NOT EXISTS mail_records (
   failure_reason TEXT DEFAULT '',
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  title TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  status TEXT NOT NULL,
+  current_step INTEGER NOT NULL DEFAULT 0,
+  total_steps INTEGER NOT NULL DEFAULT 0,
+  input_payload TEXT DEFAULT '{}',
+  output_payload TEXT DEFAULT '{}',
+  error_code TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  confidence REAL NOT NULL DEFAULT 0,
+  needs_approval INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_task_logs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  enterprise_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  agent_name TEXT DEFAULT '',
+  tool_name TEXT DEFAULT '',
+  status TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
+  detail TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_approvals (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  enterprise_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL,
+  action_label TEXT NOT NULL,
+  status TEXT NOT NULL,
+  reason TEXT DEFAULT '',
+  payload TEXT DEFAULT '{}',
+  approved_by TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS memory_entries (
+  id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  memory_type TEXT NOT NULL,
+  memory_key TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `);
 
 async function seed() {
