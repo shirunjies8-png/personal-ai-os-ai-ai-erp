@@ -3235,7 +3235,23 @@ const App = {
       const task = res.data?.task;
       this.temp.agent.currentRunId = task?.id || '';
       this.temp.agent.status = task?.status || 'pending';
-      await this.refreshAgentRuntime(true);
+      if (task?.id) {
+        const runtimeTask = this.normalizeRuntimeTask(task);
+        Store.state.taskRecords = [runtimeTask, ...(Store.state.taskRecords || []).filter(item => item.id !== task.id)].slice(0, 200);
+        Store.state.agentRuns = [{
+          id: task.id,
+          goal: task.goal,
+          result: task.output_payload?.summary || task.output_payload?.result || task.error_message || '',
+          status: task.status || 'pending',
+          time: new Date(task.updated_at || task.created_at || Date.now()).getTime()
+        }, ...(Store.state.agentRuns || []).filter(item => item.id !== task.id)].slice(0, 20);
+        Store.save();
+      }
+      try {
+        await this.refreshAgentRuntime(true);
+      } catch (error) {
+        this.agentLog(`刷新 Agent 状态失败：${Utils.friendlyErrorMessage(error.message)}`, 'warning');
+      }
       this.rerender();
       this.pollRuntimeTask(task?.id);
     });
@@ -5560,6 +5576,9 @@ const App = {
     return `${modules.map(m => `<button class="command-item" data-route="${m.id}"><span>${icon(m.icon)}</span><div><b>${m.name}</b><small>打开工作区</small></div></button>`).join('')}${matched.map(f => `<button class="command-item" data-action="file-open" data-id="${f.id}"><span>${icon('folder')}</span><div><b>${Utils.escape(f.name)}</b><small>${f.category} · ${Utils.formatBytes(f.size)}</small></div></button>`).join('')}`;
   }
 };
+
+window.App = App;
+window.Store = Store;
 
 document.addEventListener('input', event => {
   if (event.target.id === 'commandInput') document.getElementById('commandList').innerHTML = App.commandItems(event.target.value);

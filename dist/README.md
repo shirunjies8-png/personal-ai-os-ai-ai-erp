@@ -2,9 +2,9 @@
 
 Industrial AI OS —— 具备 Enterprise Agent Runtime V1 骨架的可运行系统。
 
-当前版本：`v1.2-agent-runtime-verify`
+当前版本：`v1.3-practical`
 
-项目状态：稳定收口 / 可交付 / 可持续迭代
+项目状态：v1.3 实用版 / 可实际操作 / 可持续迭代
 
 推荐入口：
 
