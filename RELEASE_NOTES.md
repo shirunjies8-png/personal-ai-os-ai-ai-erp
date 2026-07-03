@@ -1,5 +1,34 @@
 # Release Notes
 
+版本：`v1.3-practical`
+
+发布时间：2026-07-03
+
+## 本次定位
+
+- 从 `v1.2-agent-runtime-verify` 收口到 `v1.3 实用版`
+- 不再强调 PPT 式介绍页，主打真实可操作功能
+- 重点保持 AI Chat、OCR、PDF、Excel、生产计划、任务中心的可用性和稳定性
+
+## 调整
+
+- 首页与项目介绍页文案收口为“实用版 / 可实际操作”
+- 版本号升级为 `1.3.0`
+- README、发布说明与项目状态统一到 v1.3 口径
+
+## 保持不变
+
+- AI Gateway 真实调用与 Mock 兜底策略
+- OCR / PDF / Excel / Task Center / Human Approval / Monitor 的现有流程
+- 自动 Bug 巡检、自动修复已知问题、回归验证机制
+
+## 已知限制
+
+- 真实 OCR 仍取决于本地/浏览器环境可用性，必要时会明确回退到 Mock 兜底。
+- 企业 Connector、MCP、GraphRAG、多 Agent 编排仍保持预留。
+
+---
+
 版本：`v1.2-agent-runtime-verify`
 
 发布时间：2026-07-03

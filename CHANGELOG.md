@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## 2026-07-03 — v1.3 实用版收口
+
+### 调整
+
+- 项目主视觉与首页文案收口为 `v1.3 实用版`，强调“能点击、能输入、能上传、能处理、能导出结果”
+- `package.json` 版本升级为 `1.3.0`
+- `README.md`、`RELEASE_NOTES.md` 的版本叙述统一到 `v1.3-practical`
+
+### 保持
+
+- 不改 `.env.local`
+- 不新增无关业务模块
+- 保持 AI Chat、OCR、PDF、Excel、生产计划、任务中心等已有可操作能力
+- 保持 DeepSeek 真实调用、AI Gateway、Agent Runtime、Tool Center、Task Queue、Human Approval、Monitor
+
 ## 2026-07-03 — 最终闭环：质量助手与回归收口
 
 ### 新增

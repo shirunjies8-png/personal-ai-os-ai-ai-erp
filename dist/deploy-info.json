@@ -1,7 +1,7 @@
 {
   "app": "Personal AI OS",
   "mode": "static-web",
-  "generatedAt": "2026-07-03T05:05:55.391Z",
+  "generatedAt": "2026-07-03T06:26:19.171Z",
   "notes": [
     "默认可直接作为静态网页部署",
     "本地模式无需服务端",
