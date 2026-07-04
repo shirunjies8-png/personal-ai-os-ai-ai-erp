@@ -78,6 +78,13 @@ const App = {
   },
   saveTimer: null,
   agentTimer: null,
+  chatLayoutObserver: null,
+  chatResizeRaf: null,
+  chatScrollRaf: null,
+  chatResizeFallbackBound: false,
+  chatMutationObserver: null,
+  chatAutoScrollUntil: 0,
+  chatAutoScrollBound: false,
 
   async init() {
     if (!Store.state.chats.length) this.createChat(false);
@@ -90,6 +97,7 @@ const App = {
     this.navigate(initialRoute, false);
     await this.updateStorage();
     this.updateApiState();
+    this.renderBugMonitor();
     if (AuthClient.isLoggedIn()) {
       await this.refreshDashboard();
       await this.refreshOrders();
@@ -119,6 +127,7 @@ const App = {
     document.body.classList.remove('sidebar-open');
     this.renderStaticIcons();
     this.afterRender();
+    this.renderBugMonitor();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   },
 
@@ -217,6 +226,59 @@ const App = {
     });
   },
 
+  renderBugMonitor() {
+    const dock = document.getElementById('bugMonitorDock');
+    if (!dock) return;
+    if (this.route === 'chat') {
+      dock.innerHTML = '';
+      dock.hidden = true;
+      return;
+    }
+    const alerts = (Store.state.bugAlerts || []).filter(item => !item.confirmed).slice(0, 1);
+    if (!alerts.length) {
+      dock.innerHTML = '';
+      dock.hidden = true;
+      return;
+    }
+    dock.hidden = false;
+    dock.innerHTML = `<section class="bug-monitor-card"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${alerts.length} 个待确认问题</small></div><span class="status-pill warning">智能诊断</span></div>${alerts.map(item => `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">${Utils.formatDate(item.time, true)}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">确认修复</button></div></div>`).join('')}</section>`;
+  },
+
+  reportBug(payload = {}) {
+    const record = {
+      id: uid(),
+      module: payload.module || 'system',
+      feature: payload.feature || '',
+      type: payload.type || '异常',
+      message: payload.message || payload.description || '检测到异常',
+      description: payload.description || payload.message || '检测到异常',
+      suggestion: payload.suggestion || '请根据错误信息修复',
+      requestId: payload.requestId || '',
+      time: Date.now(),
+      source: payload.source || 'frontend',
+      confirmed: false,
+      confirmedAt: 0
+    };
+    Store.state.bugAlerts = Store.state.bugAlerts || [];
+    const signature = `${record.module}|${record.feature}|${record.type}|${record.message}`;
+    if (Store.state.bugAlerts.some(item => `${item.module}|${item.feature}|${item.type}|${item.message}` === signature && !item.confirmed)) return record;
+    Store.state.bugAlerts.unshift(record);
+    Store.state.bugAlerts = Store.state.bugAlerts.slice(0, 20);
+    Store.save();
+    this.renderBugMonitor();
+    return record;
+  },
+
+  confirmBugAlert(id) {
+    const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
+    if (!item) return;
+    item.confirmed = true;
+    item.confirmedAt = Date.now();
+    Store.save();
+    this.toast('已记录该问题，请开发者根据错误信息修复。');
+    this.renderBugMonitor();
+  },
+
   afterRender() {
     if (this.route === 'chat') {
       const active = Store.state.chats.find(chat => chat.id === Store.state.activeChatId);
@@ -232,16 +294,73 @@ const App = {
         submit.disabled = this.temp.chatSending;
         submit.lastChild.textContent = this.temp.chatSending ? '生成中...' : '发送';
       }
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const box = document.getElementById('chatMessages');
-          if (box) {
-            box.scrollTop = box.scrollHeight;
-            box.scrollTo({ top: box.scrollHeight, behavior: 'auto' });
-          }
+      this.bindChatLayoutObserver();
+      this.bindChatMessageObserver();
+      this.scrollChatToBottom('auto');
+      requestAnimationFrame(() => this.scrollChatToBottom('auto'));
+      setTimeout(() => this.scrollChatToBottom('auto'), 60);
+      setTimeout(() => this.scrollChatToBottom('auto'), 220);
+    }
+  },
+
+  bindChatLayoutObserver() {
+    const main = document.querySelector('.chat-main');
+    const composer = document.querySelector('.chat-composer');
+    const messages = document.getElementById('chatMessages');
+    if (!main || !composer || !messages) return;
+    const update = () => {
+      const height = Math.max(96, Math.ceil(composer.getBoundingClientRect().height || 0));
+      main.style.setProperty('--chat-composer-height', `${height}px`);
+      messages.style.setProperty('--chat-composer-height', `${height}px`);
+      messages.style.paddingBottom = `calc(${height}px + 80px + var(--chat-bottom-gap, 0px) + env(safe-area-inset-bottom))`;
+      messages.style.scrollPaddingBottom = `calc(${height}px + 88px + var(--chat-bottom-gap, 0px) + env(safe-area-inset-bottom))`;
+    };
+    update();
+    if (this.chatLayoutObserver) this.chatLayoutObserver.disconnect();
+    if ('ResizeObserver' in window) {
+      this.chatLayoutObserver = new ResizeObserver(() => {
+        if (this.chatResizeRaf) cancelAnimationFrame(this.chatResizeRaf);
+        this.chatResizeRaf = requestAnimationFrame(() => {
+          update();
+          this.scrollChatToBottom('auto');
         });
       });
+      this.chatLayoutObserver.observe(composer);
+      this.chatLayoutObserver.observe(messages);
+    } else {
+    if (!this.chatResizeFallbackBound) {
+        window.addEventListener('resize', update, { passive: true });
+        this.chatResizeFallbackBound = true;
+      }
     }
+  },
+
+  bindChatMessageObserver() {
+    const messages = document.getElementById('chatMessages');
+    if (!messages) return;
+    if (this.chatAutoScrollBound) return;
+    this.chatAutoScrollBound = true;
+    if ('MutationObserver' in window) {
+      this.chatMutationObserver = new MutationObserver(() => {
+        if (this.temp.chatSending || Date.now() <= this.chatAutoScrollUntil) {
+          this.scrollChatToBottom('auto');
+        }
+      });
+      this.chatMutationObserver.observe(messages, { childList: true, subtree: true, characterData: true });
+    }
+  },
+
+  scrollChatToBottom(behavior = 'auto') {
+    if (this.chatScrollRaf) cancelAnimationFrame(this.chatScrollRaf);
+    this.chatScrollRaf = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const box = document.getElementById('chatMessages');
+        if (!box) return;
+        const target = Math.max(0, box.scrollHeight - box.clientHeight);
+        box.scrollTop = target;
+        if (typeof box.scrollTo === 'function') box.scrollTo({ top: target, behavior });
+      });
+    });
   },
 
   handleInput(target) {
@@ -290,7 +409,30 @@ const App = {
     if (target.dataset.wsField && target.dataset.module) {
       const ws = this.getWorkspace(target.dataset.module);
       ws[target.dataset.wsField] = target.value;
+      if (target.dataset.module === 'cost' && ['quantity', 'materialFee', 'laborCost', 'processFee', 'quoteAmount', 'unitPrice', 'prompt'].includes(target.dataset.wsField)) {
+        const numericKeys = ['quantity', 'unitPrice', 'materialFee', 'laborCost', 'processFee', 'quoteAmount'];
+        const values = Object.fromEntries(numericKeys.map(key => [key, Utils.number(ws[key])]));
+        const hasNegative = Object.values(values).some(value => Number.isFinite(value) && value < 0);
+        if (hasNegative) {
+          ws.result = '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。';
+          ws.costStatus = '⚠️ 输入异常';
+          this.reportBug({
+            module: '成本核算助手',
+            feature: '输入校验',
+            type: '输入异常',
+            message: '检测到负数输入，请先修正后再计算。',
+            description: '成本核算助手不接受负数价格或数量。',
+            suggestion: '请将数量、材料费、工时成本、加工费、报价金额修正为非负数。',
+            source: 'business-detection'
+          });
+        } else {
+          ws.result = this.computeCostResult(ws);
+          ws.costStatus = '✅ Production Ready';
+          this.detectCostCalculationBug(ws);
+        }
+      }
       Store.save();
+      if (target.dataset.module === 'cost' && this.route === 'cost') this.rerender();
     }
     if (target.dataset.mailField) {
       const ws = this.getWorkspace('mail');
@@ -402,6 +544,7 @@ const App = {
       'quality-check': () => this.qualityCheck(el),
       'quality-fix': () => this.qualityFix(el),
       'quality-export': () => this.qualityExport(el),
+      'bug-confirm': () => this.confirmBugAlert(el.dataset.id),
       'mail-generate': () => this.mailGenerate(el),
       'mail-polish': () => this.mailPolish(el),
       'mail-translate': () => this.mailTranslate(el),
@@ -1302,6 +1445,16 @@ const App = {
       time: Date.now()
     });
     Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
+    this.reportBug({
+      module: context || 'AI',
+      feature: 'AI 调用',
+      type: 'AI错误',
+      message,
+      description: String(error?.message || error || ''),
+      suggestion: this.suggestFix(error),
+      requestId: error?.requestId || '',
+      source: 'ai-error'
+    });
     Store.addActivity(`AI错误：${context || '未知任务'}`, 'error');
     Store.save();
     return message;
@@ -1341,6 +1494,16 @@ const App = {
       time: Date.now()
     });
     Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
+    this.reportBug({
+      module,
+      feature: context,
+      type: '系统错误',
+      message,
+      description: String(error?.message || error || ''),
+      suggestion: this.suggestFix(error),
+      requestId: error?.requestId || '',
+      source: 'system-error'
+    });
     Store.addActivity(`系统错误：${context || module}`, 'error');
     Store.save();
     return message;
@@ -1406,7 +1569,10 @@ const App = {
     let apiStatus = '🔴 异常';
     let deepseekStatus = '🔴 异常';
     try {
-      if (apiUrl) {
+      if (Utils.isGitHubPagesHost()) {
+        apiStatus = '🟡 展示模式';
+        deepseekStatus = '🟡 未连接';
+      } else if (apiUrl) {
         const res = await APIClient.health(apiUrl);
         apiStatus = res.ok ? '🟢 正常' : '🟡 部分完成';
         deepseekStatus = res.ok ? '🟡 部分完成' : '🔴 异常';
@@ -1460,6 +1626,7 @@ const App = {
       return;
     }
     this.temp.chatSending = true;
+    this.chatAutoScrollUntil = Date.now() + 3000;
     let chat = Store.state.chats.find(c => c.id === Store.state.activeChatId) || this.createChat(false);
     const fileContext = (chat.files || []).map(item => `文件：${item.name}\n${item.content.slice(0, 2000)}`).join('\n\n');
     const history = chat.messages.slice(-8).map(message => `${message.role === 'user' ? '用户' : 'AI'}：${message.content}`).join('\n');
@@ -1498,6 +1665,7 @@ const App = {
       if (input) input.value = '';
       this.renderNav();
       this.rerender();
+      this.scrollChatToBottom('auto');
     } catch (error) {
       chat = Store.state.chats.find(c => c.id === chat.id);
       chat.messages = chat.messages.filter(item => item.id !== loadingId);
@@ -1507,8 +1675,10 @@ const App = {
       Store.save();
       this.toast(message, 'error');
       this.rerender();
+      this.scrollChatToBottom('auto');
     } finally {
       this.temp.chatSending = false;
+      this.chatAutoScrollUntil = Date.now() + 1200;
       if (this.route === 'chat') this.rerender();
     }
   },
@@ -3575,7 +3745,8 @@ const App = {
           ws.result = this.buildMailContent(ws.selected || '商务邮件', ws.prompt || '');
           break;
         case 'cost':
-          ws.result = this.computeCostResult(ws.prompt || '');
+          ws.result = this.computeCostResult(ws);
+          this.detectCostCalculationBug(ws);
           break;
         case 'prodexception':
           this.exceptionReport();
@@ -4169,38 +4340,151 @@ const App = {
     this.navigate('mail');
   },
 
-  computeCostResult(prompt = '') {
-    const kv = this.parseKeyValueText(prompt);
-    const qty = Utils.number(kv.数量);
-    const unitPrice = Utils.number(kv.单价);
-    const material = Utils.number(kv.材料费);
-    const hours = Utils.number(kv.工时);
-    const hourPrice = Utils.number(kv.工时单价);
-    const processFee = Utils.number(kv.加工费);
-    const quote = Utils.number(kv.报价金额);
-    const variable = (Number.isFinite(qty) && Number.isFinite(unitPrice) ? qty * unitPrice : 0);
-    const labor = (Number.isFinite(hours) && Number.isFinite(hourPrice) ? hours * hourPrice : 0);
-    const totalCost = variable + (Number.isFinite(material) ? material : 0) + labor + (Number.isFinite(processFee) ? processFee : 0);
+  computeCostResult(source = '') {
+    const startedAt = Date.now();
+    const parsed = typeof source === 'string' ? this.parseKeyValueText(source) : this.parseKeyValueText(source?.prompt || '');
+    const kv = typeof source === 'object' && source ? { ...source, ...parsed } : parsed;
+    const pick = (...keys) => {
+      for (const key of keys) {
+        const value = kv?.[key];
+        if (value != null && value !== '') return value;
+      }
+      return '';
+    };
+    const qty = Utils.number(pick('quantity', '数量', 'qty'));
+    const unitPrice = Utils.number(pick('unitPrice', '单价', 'price'));
+    const material = Utils.number(pick('materialFee', '材料费'));
+    const laborCost = Utils.number(pick('laborCost', '工时成本'));
+    const hours = Utils.number(pick('hours', '工时'));
+    const hourPrice = Utils.number(pick('hourPrice', '工时单价'));
+    const processFee = Utils.number(pick('processFee', '加工费'));
+    const quote = Utils.number(pick('quoteAmount', '报价金额', 'quote'));
+    const hasNegative = [qty, unitPrice, material, laborCost, hours, hourPrice, processFee, quote].some(value => Number.isFinite(value) && value < 0);
+    if (hasNegative) {
+      return [
+        '成本核算结果',
+        '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。'
+      ].join('\n');
+    }
+    const resolvedLabor = Number.isFinite(laborCost)
+      ? laborCost
+      : (Number.isFinite(hours) && Number.isFinite(hourPrice) ? hours * hourPrice : 0);
+    const qtyUnitCost = Number.isFinite(qty) && Number.isFinite(unitPrice) ? qty * unitPrice : NaN;
+    const totalCost = (Number.isFinite(material) ? material : 0) + resolvedLabor + (Number.isFinite(processFee) ? processFee : 0);
     const profit = Number.isFinite(quote) ? quote - totalCost : NaN;
     const margin = Number.isFinite(profit) && Number.isFinite(quote) && quote ? profit / quote * 100 : NaN;
+    const durationMs = Math.max(1, Date.now() - startedAt);
+    const risk = Number.isFinite(margin)
+      ? (margin < 10 ? '风险提示：利润率低于 10%，请复核材料费、工时成本、加工费与报价金额。' : '利润率正常：可继续保留当前报价策略。')
+      : '利润率未计算：报价金额为空或为 0。';
+    const materialLine = Number.isFinite(material) ? `材料：${material.toFixed(2)}` : '材料：0.00';
+    const laborLine = Number.isFinite(resolvedLabor) ? `工时：${resolvedLabor.toFixed(2)}` : '工时：0.00';
+    const processLine = Number.isFinite(processFee) ? `加工：${processFee.toFixed(2)}` : '加工：0.00';
+    const totalLine = `总成本：${totalCost.toFixed(2)}`;
+    const quoteLine = `报价：${Number.isFinite(quote) ? quote.toFixed(2) : '0.00'}`;
+    const profitLine = `利润：${Number.isFinite(profit) ? profit.toFixed(2) : '未计算'}`;
+    const marginLine = `利润率：${Number.isFinite(margin) ? `${margin.toFixed(2)}%` : '未计算'}`;
+    const warningLine = Number.isFinite(margin) ? (margin < 10 ? '提示：利润率低于 10%' : '提示：利润率正常') : '提示：利润率未计算';
     return [
       '成本核算结果',
-      `数量：${Number.isFinite(qty) ? qty : '未提供'}`,
-      `材料费：${Number.isFinite(material) ? material.toFixed(2) : '0.00'}`,
-      `工时成本：${labor.toFixed(2)}`,
-      `加工费：${Number.isFinite(processFee) ? processFee.toFixed(2) : '0.00'}`,
-      `数量×单价成本：${variable.toFixed(2)}`,
-      `总成本：${totalCost.toFixed(2)}`,
-      `报价金额：${Number.isFinite(quote) ? quote.toFixed(2) : '未提供'}`,
-      `利润：${Number.isFinite(profit) ? profit.toFixed(2) : '未计算'}`,
-      `利润率：${Number.isFinite(margin) ? `${margin.toFixed(2)}%` : '未计算'}`,
+      `数量：${Number.isFinite(qty) ? qty : 0}`,
+      `数量×单价成本：${Number.isFinite(qtyUnitCost) ? qtyUnitCost.toFixed(2) : '0.00'}`,
+      '成本组成：',
+      materialLine,
+      laborLine,
+      processLine,
+      '↓',
+      totalLine,
+      '↓',
+      quoteLine,
+      '↓',
+      profitLine,
+      marginLine,
+      `计算时间：${durationMs} ms`,
       '',
-      '建议：若利润率低于 10%，请复核材料费、工时和加工费。'
+      warningLine,
+      risk
     ].join('\n');
   },
 
+  detectCostCalculationBug(ws = {}) {
+    const quantity = Utils.number(ws.quantity);
+    const material = Utils.number(ws.materialFee);
+    const labor = Utils.number(ws.laborCost);
+    const processFee = Utils.number(ws.processFee);
+    const quote = Utils.number(ws.quoteAmount);
+    const hasInput = [quantity, material, labor, processFee, quote].some(value => Number.isFinite(value) && value > 0);
+    if (!hasInput || !ws.result) return;
+    const expectedTotal = (Number.isFinite(material) ? material : 0) + (Number.isFinite(labor) ? labor : 0) + (Number.isFinite(processFee) ? processFee : 0);
+    const totalMatch = String(ws.result).match(/总成本[:：]\s*([-\d.]+)/);
+    const profitMatch = String(ws.result).match(/利润[:：]\s*([-\d.]+)/);
+    const marginMatch = String(ws.result).match(/利润率[:：]\s*([-\d.]+)%/);
+    const totalValue = totalMatch ? Number(totalMatch[1]) : NaN;
+    const profitValue = profitMatch ? Number(profitMatch[1]) : NaN;
+    const marginValue = marginMatch ? Number(marginMatch[1]) : NaN;
+    const expectedProfit = Number.isFinite(quote) ? quote - expectedTotal : NaN;
+    const expectedMargin = Number.isFinite(expectedProfit) && Number.isFinite(quote) && quote ? expectedProfit / quote * 100 : NaN;
+    const mismatch = (Number.isFinite(expectedTotal) && (!Number.isFinite(totalValue) || Math.abs(totalValue - expectedTotal) > 0.01))
+      || (Number.isFinite(expectedProfit) && (!Number.isFinite(profitValue) || Math.abs(profitValue - expectedProfit) > 0.01))
+      || (Number.isFinite(expectedMargin) && (!Number.isFinite(marginValue) || Math.abs(marginValue - expectedMargin) > 0.05));
+    if (!mismatch) return;
+    const bug = this.reportBug({
+      module: '成本核算助手',
+      feature: '开始计算',
+      type: '结果与输入不一致',
+      message: '用户输入了数值，但结果区未按当前输入正确计算。',
+      description: `输入：数量=${Number.isFinite(quantity) ? quantity : 0}，材料费=${Number.isFinite(material) ? material : 0}，工时成本=${Number.isFinite(labor) ? labor : 0}，加工费=${Number.isFinite(processFee) ? processFee : 0}，报价金额=${Number.isFinite(quote) ? quote : 0}。`,
+      suggestion: '检查输入字段 id/name 与 JS 读取逻辑，确保使用 input.value 读取当前值，并重新计算。',
+      source: 'business-detection'
+    });
+    return bug;
+  },
+
   costCalc(btn) {
-    return this.workspaceRun('cost', btn);
+    const started = Date.now();
+    const ws = this.syncWorkspaceFromDom('cost');
+    const values = {
+      quantity: Utils.number(ws.quantity),
+      unitPrice: Utils.number(ws.unitPrice),
+      materialFee: Utils.number(ws.materialFee),
+      laborCost: Utils.number(ws.laborCost),
+      processFee: Utils.number(ws.processFee),
+      quoteAmount: Utils.number(ws.quoteAmount),
+      prompt: ws.prompt || ''
+    };
+    if ([values.quantity, values.unitPrice, values.materialFee, values.laborCost, values.processFee, values.quoteAmount].some(value => Number.isFinite(value) && value < 0)) {
+      ws.result = '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。';
+      ws.costStatus = '⚠️ 输入异常';
+      ws.updatedAt = Date.now();
+      Store.save();
+      this.reportBug({
+        module: '成本核算助手',
+        feature: '开始计算',
+        type: '输入异常',
+        message: '检测到负数输入，请先修正后再计算。',
+        description: '成本核算助手不接受负数价格或数量。',
+        suggestion: '请将数量、材料费、工时成本、加工费、报价金额修正为非负数。',
+        source: 'business-detection'
+      });
+      this.rerender();
+      this.toast('请先修正负数输入后再计算', 'error');
+      return ws.result;
+    }
+    ws.result = this.computeCostResult(values);
+    ws.costStatus = '✅ Production Ready';
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.detectCostCalculationBug({ ...ws, ...values, result: ws.result, computedAt: started });
+    ws.costStatus = Number.isFinite(Utils.number(values.quoteAmount)) && Number.isFinite(Utils.number(values.materialFee)) && Number.isFinite(Utils.number(values.laborCost)) && Number.isFinite(Utils.number(values.processFee))
+      ? '✅ Production Ready'
+      : ws.costStatus || '支持中文字段与自动计算';
+    this.rerender();
+    this.toast('成本已重新计算');
+    if (btn) {
+      btn.disabled = false;
+      btn.lastChild.textContent = '开始计算';
+    }
+    return ws.result;
   },
 
   exceptionAdd() {
@@ -4488,10 +4772,15 @@ const App = {
 
   async settingsTestAI(btn) {
     this.settingsSaveAI();
+    if (Utils.isGitHubPagesHost()) {
+      this.toast('当前为 GitHub Pages 展示模式，真实 AI 后端未连接。', 'warning');
+      return;
+    }
     if (Store.state.settings.accessMode === 'local') throw new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
     await this.busy(btn, async () => {
       const res = await AIService.complete('请仅回复：连接成功', { module: 'gateway-test', mode: 'gateway-test' });
       if (res.mode === 'api') this.toast(`DeepSeek 已连接：${res.model || Store.state.settings.model || 'deepseek-v4-flash'}`);
+      else if (Utils.isGitHubPagesHost()) this.toast('当前为 GitHub Pages 展示模式，真实 AI 后端未连接。', 'warning');
       else throw new Error(res.error || 'AI Gateway 测试失败');
     });
   },

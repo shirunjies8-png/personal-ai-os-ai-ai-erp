@@ -1,6 +1,6 @@
 # Industrial AI OS
 
-Industrial AI OS —— 具备 Enterprise Agent Runtime V1 骨架的可运行系统。
+Industrial AI OS v1.3 Practical —— 可实际操作的 AI 企业办公工具，具备 Enterprise Agent Runtime V1 骨架。
 
 当前版本：`v1.3-practical`
 
@@ -24,25 +24,30 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 
 ## 当前版本能力
 
+真实闭环：
+
+- Excel：上传 → 解析 → 检测 → 建议 → 确认 → 导出 → 记录
+- OCR：上传 → 识别 → AI 校对/兜底 → 结构化 → 导出 → 记录
+- PDF：上传 → 读取/扫描件提示 → 总结/提取 → 导出 → 记录
+- AI Chat：连续对话、挂载文件、长回复完整显示
+- Agent Runtime：任务、状态、审批、监控、历史
+- 数据管理：历史、导出、清空、查看
+
 已实现：
 
-- AI Gateway、DeepSeek 真调用、Hybrid / Mock 降级
+- AI Gateway、DeepSeek 真调用、Hybrid / Mock 明确兜底
 - AI Chat 长回复显示、流式输出、Markdown 渲染
 - OCR、PDF、Excel、CSV、PPT、Word、SQL 等办公入口
 - Agent Runtime V1 骨架、Tool Center V1、Task Queue、Human Approval
 - Monitor、AI History、Memory、Health Check、Self Test
 - 自动 Bug 巡检、自动修复已知问题、浏览器回归验证
 
-部分实现：
+诚实标注：
 
-- 真实 OCR 引擎在不同浏览器/系统环境下可能回退到 Mock 兜底
-- 企业 Connector、MCP 完整协议、GraphRAG、多 Agent 编排仍为预留项
-
-预留能力：
-
-- LangGraph、LlamaIndex、MCP 完整协议、GraphRAG
-- 企业 Connector（ERP / MES / OA / CRM）
-- 分布式消息队列、灰度发布、完整幻觉检测
+- DeepSeek 真实调用可用
+- Mock 只作为明确兜底
+- LangGraph / LlamaIndex / MCP 完整协议 / GraphRAG / 企业 Connector 仍是 V2
+- 当前不是完整企业级生产平台
 
 ## AI Mode
 

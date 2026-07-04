@@ -64,6 +64,7 @@ const DefaultState = {
   ],
   operationLogs: [],
   aiErrors: [],
+  bugAlerts: [],
   aiHistory: [],
   taskRecords: [],
   downloadRecords: [],
@@ -248,6 +249,7 @@ const APIClient = {
   async chat(messages, module = 'ai-chat', extra = {}) {
     const baseUrl = this.resolveGatewayBase();
     if (!baseUrl || /your-vercel-backend\.vercel\.app/.test(baseUrl)) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
+    const displayMode = Utils.isDisplayMode();
     try {
       return await this.request('/api/chat', {
         method: 'POST',
@@ -259,7 +261,7 @@ const APIClient = {
           temperature: extra.temperature ?? Store.state.settings.temperature ?? 0.2,
           max_tokens: extra.max_tokens ?? Store.state.settings.maxTokens ?? 2048,
           timeout: extra.timeout ?? (Store.state.settings.timeout || 30000),
-          demoMode: extra.demoMode ?? (Store.state.settings.accessMode !== 'api'),
+          demoMode: extra.demoMode ?? (displayMode || Store.state.settings.accessMode === 'local'),
           allowMockFallback: extra.allowMockFallback ?? true,
           stream: extra.stream ?? false
         })
@@ -275,6 +277,7 @@ const APIClient = {
     const settings = Store.state.settings;
     const baseUrl = this.resolveGatewayBase();
     if (!baseUrl) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
+    const displayMode = Utils.isDisplayMode();
     return this.request('/api/chat', {
       method: 'POST',
       body: JSON.stringify({
@@ -285,7 +288,7 @@ const APIClient = {
         temperature: extra.temperature ?? settings.temperature ?? 0.2,
         max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
         timeout: extra.timeout ?? (settings.timeout || 30000),
-        demoMode: extra.demoMode ?? (settings.accessMode !== 'api'),
+        demoMode: extra.demoMode ?? (displayMode || settings.accessMode === 'local'),
         allowMockFallback: extra.allowMockFallback ?? true,
         stream: extra.stream ?? false
       })
@@ -307,6 +310,16 @@ const APIClient = {
     return res;
   },
   async health(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
+    if (Utils.isGitHubPagesHost()) {
+      return {
+        ok: true,
+        mode: 'display',
+        provider: 'mock',
+        model: Store.state.settings.model || 'deepseek-v4-flash',
+        message: '当前为 GitHub Pages 展示模式，真实 AI 后端未连接。',
+        displayMode: true
+      };
+    }
     if (!baseUrl) throw new Error('未配置后端地址');
     return this.request('/api/health', {}, { baseUrl });
   }
@@ -336,6 +349,7 @@ const Store = {
       if (!Array.isArray(this.state.roles)) this.state.roles = structuredClone(DefaultState.roles);
       if (!Array.isArray(this.state.operationLogs)) this.state.operationLogs = [];
       if (!Array.isArray(this.state.aiErrors)) this.state.aiErrors = [];
+      if (!Array.isArray(this.state.bugAlerts)) this.state.bugAlerts = [];
       if (!Array.isArray(this.state.aiHistory)) this.state.aiHistory = [];
       if (!Array.isArray(this.state.taskRecords)) this.state.taskRecords = [];
       if (!Array.isArray(this.state.downloadRecords)) this.state.downloadRecords = [];
@@ -601,6 +615,13 @@ const FileDB = {
 };
 
 const Utils = {
+  isGitHubPagesHost() {
+    if (typeof window === 'undefined' || typeof location === 'undefined') return false;
+    return /(^|\.)github\.io$/i.test(String(location.hostname || '').trim());
+  },
+  isDisplayMode() {
+    return this.isGitHubPagesHost();
+  },
   async safeReadResponse(response) {
     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
     const text = await response.text();
@@ -1697,17 +1718,22 @@ const AIService = {
     const provider = settings.provider || 'deepseek';
     const model = settings.model || 'deepseek-v4-flash';
     const allowMockFallback = options.allowMockFallback ?? (settings.accessMode !== 'api');
+    const displayMode = Utils.isDisplayMode();
     const messages = Array.isArray(prompt)
       ? prompt
       : [
           { role: 'system', content: system },
           { role: 'user', content: String(prompt || '') }
         ];
-    if (settings.accessMode === 'local') {
-      const fallbackMessage = 'AI Gateway 未启用，当前使用 Mock 兜底。';
+    if (displayMode || settings.accessMode === 'local') {
+      const fallbackMessage = displayMode
+        ? '当前为 GitHub Pages 展示模式，真实 AI 后端未连接。'
+        : 'AI Gateway 未启用，当前使用 Mock 兜底。';
       const fallback = typeof options.mockFallback === 'function'
         ? options.mockFallback(fallbackMessage)
-        : options.mockFallback ?? fallbackMessage;
+        : options.mockFallback ?? (displayMode
+          ? `当前为 GitHub Pages 展示模式，真实 AI 后端未连接。\n已使用 Mock 演示回复。\n如需真实AI，请部署后端并配置 DEEPSEEK_API_KEY。`
+          : fallbackMessage);
       this.lastMode = 'mock';
       this.setStatus('mock', fallbackMessage, model);
       Store.logAiHistory({
@@ -1730,11 +1756,11 @@ const AIService = {
         temperature: options.temperature ?? settings.temperature ?? 0.2,
         maxTokens: options.maxTokens ?? settings.maxTokens ?? 2048,
         timeout: options.timeout ?? settings.timeout ?? 30000,
-        demoMode: allowMockFallback,
+        demoMode: displayMode || settings.accessMode === 'local',
         allowMockFallback,
         stream: false
       });
-      const text = String(payload.reply || payload.text || '').trim();
+      const text = String(payload.content || payload.reply || payload.text || '').trim();
       if (!text) throw new Error(payload.rawError || '模型响应为空，请检查模型名称或请求格式。');
       const duration = Date.now() - startedAt;
       const usage = {
