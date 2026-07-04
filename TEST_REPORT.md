@@ -1,4 +1,232 @@
+## 2026-07-04 — Sprint 2：AI Chat Production Ready
+
+### 已修复
+
+- AI Chat 真实调用链收口到 DeepSeek：
+  - 本地 / 真实后端模式下，`AIService.complete()` 与 `sendChat()` 现已按真实模式调用 `/api/chat`
+  - GitHub Pages 展示模式仍会自动走 Mock，且不会触发 `/api/chat` / `/health`
+- 修复 AI Chat 连续多轮对话中“误走演示模式”的根因：
+  - 之前 `demoMode` 默认值过宽，导致本地云端模式也被后端判为 Mock
+  - 现已收紧为仅 GitHub Pages / 本地展示模式触发 Mock
+- 文件挂载反馈正常：
+  - 会话中已显示挂载文件名
+  - 仅展示模式下会给出文件名上下文提示
+- 连续会话、刷新保留和输入框继续可用已回归检查
+
+### 浏览器验证
+
+- `AIService.complete('你好', { module: 'ai-chat' })`：返回真实 DeepSeek 回复，`mode = api`
+- `AIService.complete('你好', { module: 'ai-chat', allowMockFallback: false })`：返回真实 DeepSeek 回复
+- 连续三轮同会话对话：
+  1. `你能做什么`
+  2. `继续`
+  3. `帮我生成一份生产日报`
+  - 三条用户消息与三条 AI 回复均正常显示
+  - 刷新后会话仍在
+- 文件挂载验证：
+  - 已挂载 `demo-order.txt`
+  - 当前会话显示“已挂载 1 个文件”
+- 聊天布局检查：
+  - 输入框可继续使用
+  - 消息区无底部遮挡
+  - 末尾消息未被 composer 盖住
+
+### GitHub Pages / 本地模式
+
+- 代码路径已实现：
+  - GitHub Pages 域名命中时自动进入展示模式
+  - 不请求 `/api/chat`
+  - 不请求 `/health`
+  - 状态中心显示展示模式 / Mock AI / DeepSeek 未连接
+- 本地模式已恢复真实 AI 调用
+
+### 已验证命令
+
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 备注
+
+- 本轮只修 AI Chat，不改其它模块。
+- 本轮未修改 `.env.local`。
+- 本轮未打印或提交完整 API Key。
+
+## 2026-07-04 — 成本核算助手 Production Ready 收口
+
+### 已完成
+
+- 成本核算助手补齐真实异常测试：
+  - 数量为空
+  - 单价为空
+  - 报价为空
+  - 输入负数
+  - 输入小数
+  - 输入非法字符
+- 结果区增加计算过程：
+  - 材料
+  - 工时
+  - 加工
+  - 总成本
+  - 报价
+  - 利润
+  - 利润率
+- 结果区增加 `计算时间`，本轮浏览器实测显示为 `1 ms`
+- 负数输入时会明确提示“输入异常”，并写入 Bug Monitor
+
+### 浏览器验证
+
+- 示例值：
+  - 数量 500
+  - 材料费 500
+  - 工时成本 300
+  - 加工费 1000
+  - 报价金额 5000
+- 验证结果：
+  - 总成本：`1800.00`
+  - 利润：`3200.00`
+  - 利润率：`64.00%`
+  - 状态：`✅ Production Ready`
+- 异常值验证：
+  - 数量为空：无 NaN / undefined / null / Infinity
+  - 单价为空：无 NaN / undefined / null / Infinity
+  - 报价为空：显示未计算，不报错
+  - 小数输入：正常计算
+  - 非法字符：未引发页面异常
+  - 负数输入：显示“输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。”
+
+### 已验证命令
+
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 备注
+
+- 本轮只修成本核算助手，不改其它模块。
+- 本轮未修改 `.env.local`。
+- 本轮未打印或提交完整 API Key。
+
+## 2026-07-04 — 成本核算助手实时计算与保存收口
+
+### 已修复
+
+- 成本核算助手改为输入时实时计算，`数量 / 材料费 / 工时成本 / 加工费 / 报价金额` 一变更就刷新结果。
+- 结果区正确显示：
+  - 总成本：1800.00
+  - 利润：3200.00
+  - 利润率：64.00%
+- 保存参数后刷新页面，输入值仍然保留。
+
+### 已验证
+
+- 浏览器真实验证：
+  - 在 `#/cost` 页面填入示例值后，无需再点计算按钮即可看到正确结果。
+  - 刷新页面后输入值仍在。
+  - 导出按钮保持可用。
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 剩余提示
+
+- Bug Monitor 中仍可见上一轮留下的登录失效提示，这不是成本核算助手本身的问题，本轮未处理。
+
+### 备注
+
+- 本轮只修成本核算助手，不改其它模块。
+- 本轮未修改 `.env.local`。
+- 本轮未打印或提交完整 API Key。
+
+## 2026-07-03 — AI Chat 底部裁切修复与 Bug 监测收口
+
+### 已修复
+
+- AI Chat 消息容器底部预留增加到输入区高度 + 安全间距，并在发送后、Markdown 渲染后、尺寸变化后持续滚到底部。
+- 手机端 chat composer 预留了底部导航高度，避免输入区被底部导航和浮层遮挡。
+- Bug 监测浮层在 Chat 页面自动隐藏，避免覆盖发送按钮与输入区。
+
+### 已验证
+
+- 浏览器真实验证：
+  - Chat 页面消息容器 `#chatMessages` 可正常滚动。
+  - 底部输入区 `.chat-composer` 完整显示，不再只露半截。
+  - 连续发送长回复后，最后一句完整可见，未被输入框遮挡。
+  - 手机上发送按钮可点击，未被底部导航拦截。
+- 浏览器定位结果：
+  - 实际消息容器：`#chatMessages`（`.chat-messages`）
+  - 实际输入区：`.chat-composer`
+  - 实际加载 CSS：`/styles.css`
+  - `overflow-y: auto`、`min-height: 0`、动态底部预留均已生效
+  - 发送后、Markdown 渲染后、尺寸变化后都会再次滚到底部
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 仍需注意
+
+- Safari 原生自动化仍受本机环境限制，当前由 Chrome 实测完成。
+- 项目仍保持诚实标注：LangGraph / LlamaIndex / MCP 完整协议 / GraphRAG / 企业 Connector 属于 V2 预留。
+
+### 备注
+
+- 本轮未新增业务模块。
+- 本轮未修改 `.env.local`。
+- 本轮未打印或提交完整 API Key。
+
 # TEST_REPORT
+
+## 2026-07-03 — AI Chat 页面底部裁切修复
+
+### 根因定位
+
+- 实际聊天容器为 `#chatMessages`（`.chat-messages`），底部输入区为 `.chat-composer`。
+- 页面实际加载的样式来源是 `/styles.css`，并已同步到 `public/styles.css` 与 `dist/styles.css`。
+- 根因不是单一 `dist` / `public` 文件，而是聊天页在父级高度链条上没有被真正约束住，导致消息区在某些视口下把整页撑高，底部输入区看起来只显示半截。
+
+### 已修复
+
+- 页面整体改为使用 `100dvh` 作为视口基准，避免移动端 `100vh` 带来的裁切偏差。
+- `app-shell`、`main-area`、`workspace`、`page-enter`、`chat-layout` 的高度链条已收紧为纵向 flex 布局。
+- 聊天页消息区继续保持 `overflow-y:auto`，且底部保留输入框真实高度 + 安全余量。
+- 聊天输入区继续使用 `sticky`，但不会再把内容流顶出可见区域。
+
+### 浏览器验证
+
+- 浏览器里实际读取到：
+  - 容器：`#chatMessages`
+  - 输入区：`.chat-composer`
+  - CSS：`/styles.css`
+- 滚动到底部后，最后一条 AI 回复完整可见，且 `last.bottom < composer.top`，不再重叠。
+- 连续长回复后，最后一句“需要我针对某项业务场景展开，或直接处理一个具体文件/问题？”可完整显示。
+
+### 验证结果
+
+- `npm run build`：通过
+- 浏览器真实检查：通过
+
+### 说明
+
+- 本轮只修 AI Chat 底部裁切，不改其它模块。
+- 本轮未修改 `.env.local`，未打印或提交完整 API Key。
+
+## 2026-07-03 — v1.3 Practical 闭环说明收口
+
+### 当前版本定位
+
+- `Industrial AI OS v1.3 Practical —— 可实际操作的 AI 企业办公工具，具备 Enterprise Agent Runtime V1 骨架`
+
+### 真实闭环
+
+- Excel：上传 → 解析 → 检测 → 建议 → 确认 → 导出 → 记录
+- OCR：上传 → 识别 → AI 校对/兜底 → 结构化 → 导出 → 记录
+- PDF：上传 → 读取/扫描件提示 → 总结/提取 → 导出 → 记录
+- AI Chat：连续对话、挂载文件、长回复完整显示
+- Agent Runtime：任务、状态、审批、监控、历史
+- 数据管理：历史、导出、清空、查看
+
+### 诚实说明
+
+- DeepSeek 真实调用可用
+- Mock 仅作为明确兜底
+- LangGraph / LlamaIndex / MCP 完整协议 / GraphRAG / 企业 Connector 仍为 V2 预留
+- 当前不是完整企业级生产平台
 
 ## 2026-07-03 — 最终闭环：质量助手与回归收口
 
@@ -750,6 +978,31 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 - 真实 OCR 引擎仍可能受当前浏览器/运行环境限制而回退到 Mock，若如此会明确提示，不冒充真实成功。
 - 浏览器自动回归脚本已补齐，但仍建议在稳定的测试环境中补跑一轮完整 e2e。
 
+# 2026-07-03 — AI Chat 底部遮挡修复
+
+### 已修复
+
+- 聊天布局补齐底部安全区与输入区预留空间，消息列表底部现在会根据输入框实际高度动态增加 padding-bottom。
+- 父级布局补上 `min-height: 0`，避免 flex / grid 下滚动区域被压缩后失去到底部能力。
+- 发送完成后与 Markdown 渲染完成后都会再次滚动到底部，避免最后一条回复被输入框遮挡。
+- 连续长回复时，最后一句可完整显示，不再被底部输入框盖住。
+
+### 已测试
+
+- 本地浏览器页面真实验证：AI Chat 连续长回复后，最后一句可见。
+- Chrome 扩展浏览器真实验证：AI Chat 连续长回复后，最后一句可见。
+- `npm run verify`：通过。
+
+### 仍有环境限制
+
+- 当前机器未安装可用的 Safari.app，因此本轮未能在 Safari 中完成同等自动化验证；代码层面未引入 Safari 专属分支。
+
+### 备注
+
+- 本轮未新增任何业务功能。
+- 本轮未修改 `.env.local`。
+- 本轮未打印或提交完整 API Key。
+
 ## 2026-07-02 — 自动 Bug 巡检与浏览器回归补充
 
 ### 已完成
@@ -774,3 +1027,43 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 - 本轮没有修改 `.env.local`。
 - 本轮没有打印或提交完整 API Key。
 - 项目已增加自动 Bug 巡检、自动修复已知问题、回归测试和错误边界能力，但不能保证未来永远无 Bug。
+
+## 2026-07-04 — Sprint 3 系统监控真实健康检查
+
+### 已完成
+
+- 系统监控从展示态切换为真实健康检查结果驱动。
+- GitHub Pages 下不再把后端、AI Gateway、DeepSeek 误标为绿色，改为展示模式 / Mock / 未连接等真实提示。
+- 本地模式下已真实检测：
+  - `/api/health`
+  - `/api/chat`
+  - AI Gateway
+  - DeepSeek
+  - PDF Worker
+  - OCR
+  - Excel
+  - localStorage
+- 一键自检已改为真实执行并写入监控结果。
+- 最近错误 / 最近修复改为读取 Error Center、Bug Monitor 和已确认修复记录。
+- Bug Monitor 确认修复后会进入修复记录，不再写死空值。
+
+### 浏览器测试
+
+- 本地浏览器：`http://127.0.0.1:3000/#/systemcheck`
+  - 真实健康检查可见。
+  - AI Gateway / DeepSeek / localStorage / Excel 通过。
+  - PDF Worker 真实显示为异常，不再假绿。
+- GitHub Pages：`https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/#/systemcheck`
+  - 仍为展示模式，未把后端误标为绿色。
+
+### 验证
+
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮没有新增业务模块。
+- 本轮没有修改 `.env.local`。
+- 本轮没有打印或提交完整 API Key。
+- 系统监控现已以真实检测结果为准，但 PDF Worker 当前仍显示为异常，需要后续单独排查。

@@ -274,6 +274,26 @@ const App = {
     if (!item) return;
     item.confirmed = true;
     item.confirmedAt = Date.now();
+    Store.state.repairRecords = Store.state.repairRecords || [];
+    Store.state.repairRecords.unshift({
+      id: uid(),
+      bugId: item.id,
+      module: item.module || 'system',
+      feature: item.feature || item.type || '异常',
+      type: item.type || '异常',
+      message: item.message || item.description || '检测到问题',
+      suggestion: item.suggestion || '请根据错误信息修复',
+      requestId: item.requestId || '',
+      time: Date.now(),
+      confirmedAt: item.confirmedAt
+    });
+    Store.state.repairRecords = Store.state.repairRecords.slice(0, 20);
+    (Store.state.aiErrors || []).forEach(error => {
+      if ((error.requestId && error.requestId === item.requestId) || `${error.message || ''}` === `${item.message || ''}`) {
+        error.fixed = true;
+        error.fixedAt = Date.now();
+      }
+    });
     Store.save();
     this.toast('已记录该问题，请开发者根据错误信息修复。');
     this.renderBugMonitor();
@@ -1518,28 +1538,8 @@ const App = {
     return '请查看日志并重试，如仍失败请切换 Mock 模式。';
   },
 
-  oneClickSelfCheck() {
-    const checks = [];
-    checks.push(['登录状态', AuthClient.isLoggedIn() ? '正常' : '异常']);
-    checks.push(['AI Gateway', Store.state.settings.apiEnabled ? '正常' : '未配置']);
-    checks.push(['Excel', this.temp.excel?.rows?.length ? '正常' : '待验证']);
-    checks.push(['PDF', this.temp.pdf?.files?.length ? '正常' : '待验证']);
-    checks.push(['OCR', this.temp.ocr?.file ? '正常' : '待验证']);
-    checks.push(['PPT', this.getWorkspace('ppt')?.result ? '正常' : '待验证']);
-    checks.push(['AI GEO', this.getWorkspace('geo')?.result ? '正常' : '待验证']);
-    checks.push(['生产计划', this.getPlanWorkspace()?.planResult ? '正常' : '待验证']);
-    checks.push(['知识库', (Store.state.knowledge || []).length ? '正常' : '空']);
-    checks.push(['Workflow', this.getWorkspace('workflow')?.result ? '正常' : '待验证']);
-    checks.push(['Dashboard', Store.state.dashboard ? '正常' : '异常']);
-    checks.push(['Integration Center', Array.isArray(Store.state.connectors) ? '正常' : '异常']);
-    checks.push(['localStorage', typeof localStorage !== 'undefined' ? '正常' : '异常']);
-    checks.push(['API Key 泄露', Store.state.settings.apiKey ? '已本地保存' : '未配置']);
-    checks.push(['GitHub Pages / Server Mode', Store.state.settings.githubPagesUrl ? '已配置' : '未发布']);
-    checks.push(['移动端适配', document.body.clientWidth < 900 ? '正常' : '正常']);
-    const ws = this.getWorkspace('systemcheck');
-    ws.result = checks.map(([n, s]) => `${n}：${s}`).join('\n');
-    ws.checkedAt = Date.now();
-    Store.save();
+  async oneClickSelfCheck() {
+    await this.runSystemCheck();
     this.toast('自检已完成');
     this.navigate('systemcheck');
   },
@@ -1566,50 +1566,159 @@ const App = {
   async runSystemCheck() {
     const ws = this.getWorkspace('systemcheck');
     const apiUrl = Store.state.settings.apiUrl;
-    let apiStatus = '🔴 异常';
-    let deepseekStatus = '🔴 异常';
-    try {
-      if (Utils.isGitHubPagesHost()) {
-        apiStatus = '🟡 展示模式';
-        deepseekStatus = '🟡 未连接';
-      } else if (apiUrl) {
-        const res = await APIClient.health(apiUrl);
-        apiStatus = res.ok ? '🟢 正常' : '🟡 部分完成';
-        deepseekStatus = res.ok ? '🟡 部分完成' : '🔴 异常';
+    const displayMode = Utils.isGitHubPagesHost();
+    const now = Date.now();
+    const report = [];
+    const push = (name, status, reason, suggestion) => {
+      report.push({ name, status, reason: reason || '', suggestion: suggestion || '', time: now });
+    };
+    const latestFix = (Store.state.repairRecords || []).length
+      ? Store.state.repairRecords[0]
+      : (Store.state.bugAlerts || []).filter(item => item.confirmed).sort((a, b) => (b.confirmedAt || b.time || 0) - (a.confirmedAt || a.time || 0))[0] || null;
+    const unresolvedErrors = (Store.state.aiErrors || []).filter(item => !item.fixed);
+    const hasRecentChatFetchError = unresolvedErrors.some(item => /ai-chat|chat/i.test(`${item.context || ''} ${item.module || ''}`) && /Failed to fetch|Network Error|AI 后端连接失败|Timeout/i.test(`${item.message || ''} ${item.detail || ''}`));
+    const hasRecentPdfError = unresolvedErrors.some(item => /PDF Worker|pdf/i.test(`${item.context || ''} ${item.module || ''}`) && /Failed to fetch|worker|路径|加载失败|PDF/i.test(`${item.message || ''} ${item.detail || ''}`));
+    const localStorageOk = (() => {
+      try {
+        const key = `__eaos_health_${now}`;
+        localStorage.setItem(key, '1');
+        const ok = localStorage.getItem(key) === '1';
+        localStorage.removeItem(key);
+        return ok;
+      } catch {
+        return false;
       }
-    } catch {
-      apiStatus = '🔴 异常';
-      deepseekStatus = '🔴 异常';
+    })();
+    const pdfWorkerReady = Boolean(globalThis.PDFLib?.GlobalWorkerOptions?.workerSrc);
+    const ocrHealth = typeof OCRService?.health === 'function' ? OCRService.health() : {};
+    const excelProbe = (() => {
+      try {
+        const sample = [
+          ['序号', '产品编码', '产品名称', '规格型号', '单位', '发货数量', '单价', '金额'],
+          ['1', 'A001', '测试件', 'M1', '件', '2', '10', '20']
+        ];
+        const extracted = ExcelBusiness.extract(sample);
+        return extracted.detailRows.length === 1 && ExcelBusiness.toObjects(extracted).length === 1;
+      } catch {
+        return false;
+      }
+    })();
+    let backendOk = false;
+    let apiHealth = null;
+    let gatewayStatus = '⚪ 未配置';
+    let gatewayReason = '未配置后端地址或未启用远程 AI。';
+    let gatewaySuggestion = '请在 AI 设置中心配置 API Base URL 并开启远程 AI。';
+    let deepseekStatus = '⚪ 未配置';
+    let deepseekReason = gatewayReason;
+    let deepseekSuggestion = gatewaySuggestion;
+    let backendStatus = displayMode ? '🟡 展示模式 / 后端不可用' : '⚪ 未配置';
+    let backendReason = displayMode ? '当前运行在 GitHub Pages 展示模式，后端不可用。' : '未配置后端地址。';
+    let backendSuggestion = displayMode ? '部署真实后端后再切换到生产模式。' : '请先配置后端地址。';
+
+    if (displayMode) {
+      gatewayStatus = '🟡 Mock 演示';
+      gatewayReason = 'GitHub Pages 无后端，已自动使用 Mock 演示。';
+      gatewaySuggestion = '如需真实 AI，请部署后端。';
+      deepseekStatus = '🟡 未连接';
+      deepseekReason = 'GitHub Pages 展示模式不连接 DeepSeek。';
+      deepseekSuggestion = '部署后端并配置 DeepSeek Key。';
+    } else if (apiUrl && Store.state.settings.apiEnabled) {
+      try {
+        apiHealth = await APIClient.health(apiUrl);
+        backendOk = Boolean(apiHealth?.ok);
+        backendStatus = backendOk ? '🟢 正常' : '🔴 异常';
+        backendReason = backendOk ? 'GET /api/health 返回正常。' : 'GET /api/health 返回异常。';
+        backendSuggestion = backendOk ? '后端可达。' : '请检查后端服务与健康检查接口。';
+      } catch (error) {
+        backendStatus = '🔴 异常';
+        backendReason = Utils.friendlyErrorMessage(error?.message || error);
+        backendSuggestion = '请检查网络、后端地址或服务状态。';
+      }
+      if (backendOk) {
+        if (apiHealth?.deepseekConfigured) {
+          try {
+            const probe = await AIService.complete('请只回复：pong', {
+              module: 'systemcheck',
+              mode: 'health-check',
+              temperature: 0,
+              maxTokens: 16,
+              timeout: 8000,
+              allowMockFallback: false
+            });
+            gatewayStatus = probe.mode === 'api' ? '🟢 真实 AI 可用' : '🟡 降级可用';
+            gatewayReason = probe.mode === 'api'
+              ? '通过 /api/chat 成功返回真实 DeepSeek 响应。'
+              : 'AI 调用已降级。';
+            gatewaySuggestion = probe.mode === 'api' ? 'AI Gateway 正常。' : '请检查模型配置。';
+            deepseekStatus = probe.mode === 'api' ? '🟢 已连接' : '🟡 降级';
+            deepseekReason = probe.mode === 'api' ? 'DeepSeek 真实调用成功。' : (probe.error || '模型返回为空或已降级。');
+            deepseekSuggestion = probe.mode === 'api' ? 'DeepSeek 可用。' : '请检查模型名称、Key 权限或配额。';
+          } catch (error) {
+            const friendly = AIService.friendlyMessage(error);
+            gatewayStatus = '🔴 真实错误';
+            gatewayReason = friendly;
+            gatewaySuggestion = '请检查 DeepSeek Key、模型名称、Base URL 或网络。';
+            deepseekStatus = '🔴 未连接';
+            deepseekReason = friendly;
+            deepseekSuggestion = gatewaySuggestion;
+          }
+        } else {
+          gatewayStatus = '⚪ 未配置';
+          gatewayReason = '后端可达，但 DeepSeek 未配置。';
+          gatewaySuggestion = '请在后端环境变量中配置 DEEPSEEK_API_KEY。';
+          deepseekStatus = '⚪ 未配置';
+          deepseekReason = gatewayReason;
+          deepseekSuggestion = gatewaySuggestion;
+        }
+      }
     }
-    const rows = [
-      ['登录', AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常'],
-      ['Word', this.temp.word?.content !== undefined ? '🟢 正常' : '🟡 部分完成'],
-      ['Excel', this.temp.excel?.rows ? '🟢 正常' : '🟡 部分完成'],
-      ['PDF', this.temp.pdf?.files ? '🟢 正常' : '🟡 部分完成'],
-      ['PDF上传', this.temp.pdf?.files?.length ? '🟢 正常' : '🟡 待验证'],
-      ['PDF总结', this.temp.pdf?.summaryCompleted ? '🟢 正常' : '🟡 待验证'],
-      ['OCR', this.temp.ocr?.result !== undefined ? '🟢 正常' : '🟡 部分完成'],
-      ['OCR识别按钮', typeof this.ocrRun === 'function' ? '🟢 正常' : '🔴 异常'],
-      ['OCR导出', typeof this.ocrTxt === 'function' && typeof this.ocrWord === 'function' && typeof this.ocrExcel === 'function' ? '🟢 正常' : '🔴 异常'],
-      ['PPT AI Gateway', Store.state.settings.accessMode !== 'local' ? '🟢 已连接' : '🟡 当前Mock'],
-      ['PPT Mock兜底', typeof this.pptGenerate === 'function' ? '🟢 可用' : '🔴 异常'],
-      ['AI GEO', this.getWorkspace('geo')?.result ? '🟢 正常' : '🟡 待验证'],
-      ['SQL', this.temp.sql?.output !== undefined ? '🟢 正常' : '🟡 部分完成'],
-      ['生产计划助手', this.getPlanWorkspace()?.planResult ? '🟢 正常' : '🟡 待验证'],
-      ['CSV订单导入', this.getPlanWorkspace()?.csvImportedAt ? '🟢 正常' : '🟡 待验证'],
-      ['设备台账', (Store.state.equipment || []).length >= 8 ? '🟢 正常' : '🟡 待验证'],
-      ['AI', apiStatus],
-      ['DeepSeek', deepseekStatus],
-      ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 部分完成'],
-      ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 部分完成'],
-      ['数据库', (Store.state.orders.length || Store.state.inventory.length) ? '🟢 正常' : '🟡 部分完成'],
-      ['API', apiStatus],
-      ['GitHub Pages', '🟢 正常'],
-      ['Vercel', apiUrl ? '🟢 正常' : '🔴 异常'],
-      ['模型', Store.state.settings.model ? '🟢 正常' : '🔴 异常']
+
+    if (displayMode) {
+      backendReason = '当前运行在 GitHub Pages 展示模式，后端不可用。';
+      gatewayStatus = '🟡 Mock 演示';
+      gatewayReason = 'GitHub Pages 无法连接后端，已自动使用 Mock 演示。';
+      deepseekStatus = '🟡 未连接';
+      deepseekReason = '展示模式不连接 DeepSeek。';
+    }
+
+    if (hasRecentChatFetchError) {
+      gatewayStatus = displayMode ? '🟡 Mock 演示' : '🟡 近期存在网络错误';
+      gatewayReason = '存在未确认的 ai-chat Failed to fetch / 网络错误记录，需先排查后端连通性。';
+      gatewaySuggestion = '请先查看 Error Center 并确认最近网络错误已修复。';
+    }
+    if (hasRecentPdfError) {
+      backendStatus = displayMode ? '🟡 展示模式 / 后端不可用' : '🟡 降级可用';
+      backendReason = '存在未确认的 PDF Worker 失败记录，文件处理不能视为绿色。';
+      backendSuggestion = '请先排查 PDF Worker / 路径问题并确认最近错误已修复。';
+    }
+
+    const pushState = [
+      ['登录', AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常', AuthClient.isLoggedIn() ? '已登录。' : '请先登录。', AuthClient.isLoggedIn() ? '保持当前登录状态。' : '请使用演示账号或正式账号登录。'],
+      ['GitHub Pages / Server Mode', displayMode ? '🟡 展示模式' : '🟢 正常', displayMode ? '当前运行在 GitHub Pages 展示模式。' : '当前处于本地/服务器模式。', displayMode ? '展示模式下不请求后端。' : '可继续进行真实 AI 调用。'],
+      ['后端状态', backendStatus, backendReason, backendSuggestion],
+      ['AI Gateway', gatewayStatus, gatewayReason, gatewaySuggestion],
+      ['DeepSeek', deepseekStatus, deepseekReason, deepseekSuggestion],
+      ['PDF Worker', displayMode ? '🟡 仅前端能力可用' : (pdfWorkerReady ? '🟢 正常' : '🔴 异常'), displayMode ? 'GitHub Pages 仅提供前端能力。' : (pdfWorkerReady ? 'PDF Worker 已就绪。' : 'PDF Worker 未加载或路径错误。'), displayMode ? '部署后端版本后可启用更完整能力。' : '请检查 vendor/pdfjs/pdf.worker.mjs 路径。'],
+      ['OCR', displayMode ? '🟡 仅前端能力可用' : (ocrHealth.hasTesseract ? '🟢 正常' : '🔴 异常'), displayMode ? 'GitHub Pages 仅提供前端能力。' : (ocrHealth.hasTesseract ? `引擎状态：${ocrHealth.engineState || 'unknown'}` : 'OCR 引擎未加载。'), displayMode ? '如需真实后端可在部署版中扩展。' : '请检查 Tesseract 依赖是否可用。'],
+      ['Excel', displayMode ? '🟡 仅前端能力可用' : (excelProbe ? '🟢 正常' : '🔴 异常'), displayMode ? 'GitHub Pages 仅提供前端能力。' : (excelProbe ? 'Excel 解析规则通过样例验证。' : 'Excel 解析样例未通过。'), displayMode ? '部署本地/服务器版后继续使用真实文件。' : '请检查 Excel 解析逻辑。'],
+      ['localStorage', localStorageOk ? '🟢 正常' : '🔴 异常', localStorageOk ? '读写正常。' : '本地存储读写失败。', localStorageOk ? '可继续保存本地数据。' : '请检查浏览器隐私设置。'],
+      ['Connector 状态', Array.isArray(Store.state.connectors) ? (Store.state.connectors.some(item => item.status === '已连接') ? '🟢 已连接' : Store.state.connectors.every(item => item.status === '未配置' || !item.enabled) ? '⚪ 未配置' : Store.state.connectors.some(item => item.status === '连接失败') ? '🔴 连接失败' : '🟡 待验证') : '🔴 异常', Array.isArray(Store.state.connectors) ? `未配置 ${Store.state.connectors.filter(item => item.status === '未配置' || !item.enabled).length} 个；已连接 ${Store.state.connectors.filter(item => item.status === '已连接').length} 个；连接失败 ${Store.state.connectors.filter(item => item.status === '连接失败').length} 个。` : '连接器数据缺失。', '请在 Integration Center 中按真实配置逐个启用。'],
+      ['最近错误', unresolvedErrors.length ? `${unresolvedErrors[0].message || '错误'}` : '暂无', unresolvedErrors.length ? `来源：${unresolvedErrors[0].context || unresolvedErrors[0].module || 'system'}` : '暂无最近错误记录。', unresolvedErrors.length ? '查看 Error Center 并确认修复。' : '暂无需要处理的问题。'],
+      ['最近修复', latestFix ? `${latestFix.module || 'system'} · ${latestFix.feature || latestFix.type || '已确认修复'}` : '暂无已确认修复记录', latestFix ? `${latestFix.message || latestFix.description || ''}` : '暂无用户点击“确认修复”的记录。', latestFix ? '可在 Bug Monitor 查看确认修复记录。' : '点击 Bug Monitor 的“确认修复”后会出现在这里。'],
+      ['Agent 任务总数', String((Store.state.runtimeMonitor?.totalTasks || 0)), `成功 ${(Store.state.runtimeMonitor?.successTasks || 0)} / 失败 ${(Store.state.runtimeMonitor?.failedTasks || 0)} / 超时 ${(Store.state.runtimeMonitor?.timeoutTasks || 0)}`, '继续执行 Agent Runtime 任务会自动更新。'],
+      ['成功任务数', String((Store.state.runtimeMonitor?.successTasks || 0)), '来自任务队列统计。', '继续执行任务后会自动刷新。'],
+      ['失败任务数', String((Store.state.runtimeMonitor?.failedTasks || 0)), '来自任务队列统计。', '失败任务会写入日志与 Error Center。'],
+      ['超时任务数', String((Store.state.runtimeMonitor?.timeoutTasks || 0)), '来自任务队列统计。', '可根据超时原因调整任务或工具。'],
+      ['等待审批任务数', String((Store.state.runtimeMonitor?.waitingHumanTasks || 0)), '来自 Human Approval 统计。', '审批后状态会继续流转。'],
+      ['工具调用总数', String((Store.state.runtimeMonitor?.toolCallCount || 0)), '来自 Tool Center 统计。', '继续调用工具会自动增加。']
     ];
-    ws.result = rows.map(item => `${item[0]}：${item[1]}`).join('\n');
-    ws.checkedAt = Date.now();
+    Store.state.runtimeMonitor = Store.state.runtimeMonitor || {};
+    Store.state.runtimeMonitor.healthChecks = pushState.map(([name, status, reason, suggestion]) => ({ name, status, reason, suggestion, time: now }));
+    Store.state.runtimeMonitor.lastSelfCheckAt = now;
+    Store.state.runtimeMonitor.lastSelfCheckSource = displayMode ? 'GitHub Pages' : (apiUrl ? '本地/服务器' : '未配置');
+    Store.state.runtimeMonitor.lastSelfCheckSummary = Store.state.runtimeMonitor.healthChecks.map(item => `${item.name}：${item.status}`).join(' | ');
+    ws.result = Store.state.runtimeMonitor.healthChecks.map(item => `${item.name}｜${item.status}｜${item.reason || '无'}｜${item.suggestion || '无'}｜${Utils.formatDate(item.time, true)}`).join('\n');
+    ws.checkedAt = now;
     Store.save();
     this.rerender();
   },
@@ -5789,7 +5898,8 @@ const App = {
     const displayMode = Utils.isGitHubPagesHost();
     const mode = Store.state.settings.accessMode || 'local';
     el.textContent = displayMode ? '展示模式' : mode === 'local' ? '本地模式' : mode === 'api' ? 'API模式' : '云端模式';
-    el.classList.toggle('live', displayMode || mode !== 'local');
+    el.classList.toggle('live', !displayMode && mode !== 'local');
+    el.classList.toggle('display', displayMode);
   },
 
   async updateStorage() {
