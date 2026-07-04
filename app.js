@@ -5786,9 +5786,10 @@ const App = {
   updateApiState() {
     const el = document.getElementById('apiState');
     if (!el) return;
+    const displayMode = Utils.isGitHubPagesHost();
     const mode = Store.state.settings.accessMode || 'local';
-    el.textContent = mode === 'local' ? '本地模式' : mode === 'api' ? 'API模式' : '云端模式';
-    el.classList.toggle('live', mode !== 'local');
+    el.textContent = displayMode ? '展示模式' : mode === 'local' ? '本地模式' : mode === 'api' ? 'API模式' : '云端模式';
+    el.classList.toggle('live', displayMode || mode !== 'local');
   },
 
   async updateStorage() {
