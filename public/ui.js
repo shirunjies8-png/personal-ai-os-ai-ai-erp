@@ -519,40 +519,15 @@ const UI = {
   },
   monitoring() {
     const latestError = Store.state.aiErrors?.[0];
-    const recentFixes = (Store.state.aiErrors || []).filter(item => item.fixed).slice(0, 8);
+    const repairRecords = (Store.state.repairRecords || []).slice().sort((a, b) => (b.confirmedAt || b.time || 0) - (a.confirmedAt || a.time || 0));
     const bugAlerts = (Store.state.bugAlerts || []).slice(0, 6);
     const monitor = Store.state.runtimeMonitor || {};
-    const status = [
-      ['前端状态', '🟢 正常'],
-      ['后端状态', Store.state.settings.apiUrl ? '🟢 已配置' : '🟡 未配置'],
-      ['AI Gateway', Store.state.settings.apiEnabled ? '🟢 已启用' : '🟡 未启用'],
-      ['DeepSeek状态', Store.state.settings.apiEnabled ? '🟢 DeepSeek 已连接' : '🟡 未启用'],
-      ['AI Provider', Store.state.settings.provider || '未配置'],
-      ['当前模型', Store.state.settings.model || '未配置'],
-      ['Streaming', '🟢 已启用'],
-      ['Mock fallback', Store.state.settings.accessMode === 'api' ? '🟡 关闭' : '🟢 开启'],
-      ['Demo Mode', Store.state.settings.accessMode === 'local' ? '🟢 开启' : '🟡 关闭'],
-      ['API状态', Store.state.settings.apiUrl ? '🟢 在线' : '🟡 未配置'],
-      ['OCR状态', `${App.temp.ocr?.status || '未开始'}${App.temp.ocr?.engineStatus?.engineState ? ` · ${App.temp.ocr.engineStatus.engineState}` : ''}`],
-      ['PDF状态', App.temp.pdf?.scanMode ? `已处理 · ${App.temp.pdf.scanMode}` : '未开始'],
-      ['Excel状态', App.temp.excel?.rows?.length ? `已加载 · ${App.temp.excel.rows.length} 行` : '未开始'],
-      ['Render状态', /render\.com$/i.test(String(window.location.hostname || '')) ? '🟢 生产环境' : '🟡 本地/待部署'],
-      ['GitHub Commit', Store.state.commitHash || '未注入'],
-      ['Build Time', Store.state.buildTime || '未注入'],
-      ['Version', `v${Store.state.version || 1}`],
-      ['文件处理状态', App.temp.excel?.rows?.length || App.temp.pdf?.files?.length || App.temp.ocr?.file ? '🟢 可用' : '🟡 待验证'],
-      ['本地存储状态', typeof localStorage !== 'undefined' ? '🟢 可用' : '🔴 异常'],
-      ['Connector 状态', Array.isArray(Store.state.connectors) ? '🟢 可用' : '🔴 异常'],
-      ['最近错误', latestError ? latestError.message : '无'],
-      ['最近修复', recentFixes.length ? recentFixes[0].suggestion : '无'],
-      ['Agent任务总数', String(monitor.totalTasks || 0)],
-      ['成功任务数', String(monitor.successTasks || 0)],
-      ['失败任务数', String(monitor.failedTasks || 0)],
-      ['超时任务数', String(monitor.timeoutTasks || 0)],
-      ['等待审批任务数', String(monitor.waitingHumanTasks || 0)],
-      ['工具调用总数', String(monitor.toolCallCount || 0)]
+    const healthChecks = Array.isArray(monitor.healthChecks) && monitor.healthChecks.length ? monitor.healthChecks : [];
+    const renderHealth = item => `<div class="activity"><span class="activity-icon">${icon(item.status.startsWith('🟢') ? 'check' : item.status.startsWith('⚪') ? 'dot' : item.status.startsWith('🟡') ? 'clock' : 'x')}</span><span><b>${Utils.escape(item.name)}</b><small>${Utils.escape(item.status)}${item.reason ? ` · ${Utils.escape(item.reason)}` : ''}${item.suggestion ? ` · ${Utils.escape(item.suggestion)}` : ''}</small></span></div>`;
+    const status = healthChecks.length ? healthChecks : [
+      { name: '前端状态', status: '🟡 待检测', reason: '尚未执行一键自检。', suggestion: '点击“一键自检”获取真实结果。' }
     ];
-    return `${this.pageHead('系统监控', '健康检查、错误中心、任务监控与最近修复建议。', `<button class="primary-btn" data-action="self-check">${icon('check')}一键自检</button><button class="secondary-btn" data-action="monitor-refresh">${icon('refresh')}刷新</button>`)}<div class="workbench"><div class="stack"><section class="panel"><div class="panel-head"><div><h3>健康状态</h3></div></div><div class="panel-body">${status.map(([name, value]) => `<div class="activity"><span class="activity-icon">${icon('shield')}</span><span><b>${name}</b><small>${Utils.escape(value)}</small></span></div>`).join('')}</div></section><section class="panel"><div class="panel-head"><div><h3>Bug 监测</h3></div><span class="badge">${bugAlerts.length}</span></div><div class="panel-body">${bugAlerts.length ? `<div class="kb-list">${bugAlerts.map(item => `<article class="kb-item"><span>${icon(item.confirmed ? 'check' : 'shield')}</span><div><b>${Utils.escape(item.module || '系统')} · ${Utils.escape(item.feature || item.type || '异常')}</b><p>${Utils.escape(item.description || item.message || '')}</p><small>${Utils.formatDate(item.time, true)} · ${Utils.escape(item.suggestion || '请根据错误信息修复')}</small></div><div class="table-actions"><span class="status-pill ${item.confirmed ? 'success' : 'warning'}">${item.confirmed ? '已记录' : '待确认'}</span>${item.confirmed ? '' : `<button class="icon-btn" data-action="bug-confirm" data-id="${item.id}">${icon('check')}</button>`}</div></article>`).join('')}</div>` : this.result('暂无 Bug 监测记录。', '检测到异常时会出现在这里')}</div></section></div><div class="stack"><section class="panel"><div class="panel-head"><div><h3>Error Center</h3></div><span class="badge">${(Store.state.aiErrors || []).length}</span></div><div class="panel-body">${(Store.state.aiErrors || []).length ? `<div class="kb-list">${(Store.state.aiErrors || []).slice(0, 12).map(item => `<article class="kb-item"><span>${icon('x')}</span><div><b>${Utils.escape(item.message || '错误')}</b><p>${Utils.escape(item.context || item.module || 'system')}</p><small>${Utils.formatDate(item.time, true)} · ${Utils.escape(item.suggestion || '请查看日志')}</small></div><span class="status-pill">${Utils.escape(item.fixed ? '已修复' : '待修复')}</span></article>`).join('')}</div>` : this.result('暂无错误记录。', '发生错误后会自动进入这里')}</div></section><section class="panel"><div class="panel-head"><div><h3>最近 20 条 Agent 日志</h3></div><span class="badge">${(monitor.recentLogs || []).length}</span></div><div class="panel-body">${(monitor.recentLogs || []).length ? `<div class="activity-list">${monitor.recentLogs.map(item => `<div class="activity"><span class="activity-icon">${icon(item.status === 'success' ? 'check' : item.status === 'waiting_human' ? 'clock' : 'x')}</span><span><b>${Utils.escape(item.tool_name || item.agent_name || 'agent')}</b><small>${Utils.escape(item.status || '')} · ${Number(item.duration_ms || 0)} ms · ${Utils.escape(item.request_id || '')}</small></span></div>`).join('')}</div>` : this.result('暂无 Agent 日志。', '执行 Agent Runtime 后会出现在这里')}</div></section></div></div>`;
+    return `${this.pageHead('系统监控', '健康检查、错误中心、任务监控与最近修复建议。', `<button class="primary-btn" data-action="self-check">${icon('check')}一键自检</button><button class="secondary-btn" data-action="monitor-refresh">${icon('refresh')}刷新</button>`)}<div class="workbench"><div class="stack"><section class="panel"><div class="panel-head"><div><h3>健康状态</h3></div><span class="badge">${status.length}</span></div><div class="panel-body">${status.map(renderHealth).join('')}</div></section><section class="panel"><div class="panel-head"><div><h3>Bug 监测</h3></div><span class="badge">${bugAlerts.length}</span></div><div class="panel-body">${bugAlerts.length ? `<div class="kb-list">${bugAlerts.map(item => `<article class="kb-item"><span>${icon(item.confirmed ? 'check' : 'shield')}</span><div><b>${Utils.escape(item.module || '系统')} · ${Utils.escape(item.feature || item.type || '异常')}</b><p>${Utils.escape(item.description || item.message || '')}</p><small>${Utils.formatDate(item.time, true)} · ${Utils.escape(item.suggestion || '请根据错误信息修复')}</small></div><div class="table-actions"><span class="status-pill ${item.confirmed ? 'success' : 'warning'}">${item.confirmed ? '已记录' : '待确认'}</span>${item.confirmed ? '' : `<button class="icon-btn" data-action="bug-confirm" data-id="${item.id}">${icon('check')}</button>`}</div></article>`).join('')}</div>` : this.result('暂无 Bug 监测记录。', '检测到异常时会出现在这里')}</div></section></div><div class="stack"><section class="panel"><div class="panel-head"><div><h3>Error Center</h3></div><span class="badge">${(Store.state.aiErrors || []).length}</span></div><div class="panel-body">${(Store.state.aiErrors || []).length ? `<div class="kb-list">${(Store.state.aiErrors || []).slice(0, 12).map(item => `<article class="kb-item"><span>${icon('x')}</span><div><b>${Utils.escape(item.message || '错误')}</b><p>${Utils.escape(item.context || item.module || 'system')}</p><small>${Utils.formatDate(item.time, true)} · ${Utils.escape(item.suggestion || '请查看日志')}</small></div><span class="status-pill">${Utils.escape(item.fixed ? '已修复' : '待修复')}</span></article>`).join('')}</div>` : this.result('暂无错误记录。', '发生错误后会自动进入这里')}</div></section><section class="panel"><div class="panel-head"><div><h3>最近修复</h3></div><span class="badge">${repairRecords.length}</span></div><div class="panel-body">${repairRecords.length ? `<div class="kb-list">${repairRecords.map(item => `<article class="kb-item"><span>${icon('check')}</span><div><b>${Utils.escape(item.module || '系统')} · ${Utils.escape(item.feature || item.type || '已确认修复')}</b><p>${Utils.escape(item.message || item.suggestion || '')}</p><small>${Utils.formatDate(item.confirmedAt || item.time, true)} · ${Utils.escape(item.requestId || '无 requestId')}</small></div><span class="status-pill success">已确认</span></article>`).join('')}</div>` : this.result('暂无已确认修复记录。', '点击 Bug Monitor 的“确认修复”后会出现在这里')}</div></section><section class="panel"><div class="panel-head"><div><h3>最近 20 条 Agent 日志</h3></div><span class="badge">${(monitor.recentLogs || []).length}</span></div><div class="panel-body">${(monitor.recentLogs || []).length ? `<div class="activity-list">${monitor.recentLogs.map(item => `<div class="activity"><span class="activity-icon">${icon(item.status === 'success' ? 'check' : item.status === 'waiting_human' ? 'clock' : 'x')}</span><span><b>${Utils.escape(item.tool_name || item.agent_name || 'agent')}</b><small>${Utils.escape(item.status || '')} · ${Number(item.duration_ms || 0)} ms · ${Utils.escape(item.request_id || '')}</small></span></div>`).join('')}</div>` : this.result('暂无 Agent 日志。', '执行 Agent Runtime 后会出现在这里')}</div></section></div></div>`;
   },
   aihistory() {
     const items = (Store.state.aiHistory || []).slice(0, 20);
@@ -619,73 +594,14 @@ const UI = {
     </div>`;
   },
   systemcheck() {
-    const checks = [
-      ['登录', AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常'],
-      ['Word', App.temp.word?.content !== undefined ? '🟢 正常' : '🟡 部分完成'],
-      ['Excel', App.temp.excel?.rows ? '🟢 正常' : '🟡 部分完成'],
-      ['PDF', App.temp.pdf?.files ? '🟢 正常' : '🟡 部分完成'],
-      ['PDF上传', App.temp.pdf?.files?.length ? '🟢 正常' : '🟡 待验证'],
-      ['PDF总结', App.temp.pdf?.summaryCompleted ? '🟢 正常' : '🟡 待验证'],
-      ['Fetch Response 安全读取', typeof Utils.safeReadResponse === 'function' ? '🟢 正常' : '🔴 异常'],
-      ['PDF生成', typeof Utils.exportPdf === 'function' ? '🟢 可用' : '🔴 异常'],
-      ['PDF OCR兜底', App.temp.pdf?.scanMode ? '🟢 已可用' : '🟡 待验证'],
-      ['OCR', App.temp.ocr?.result !== undefined ? '🟢 正常' : '🟡 部分完成'],
-      ['OCR识别按钮', typeof App.ocrRun === 'function' ? '🟢 正常' : '🔴 异常'],
-      ['OCR导出', typeof App.ocrTxt === 'function' && typeof App.ocrWord === 'function' && typeof App.ocrExcel === 'function' ? '🟢 正常' : '🔴 异常'],
-      ['PPT AI Gateway', Store.state.settings.accessMode !== 'local' ? '🟢 已连接' : '🟡 当前Mock'],
-      ['PPT Mock兜底', typeof App.pptGenerate === 'function' ? '🟢 可用' : '🔴 异常'],
-      ['AI GEO', App.getWorkspace('geo')?.result ? '🟢 正常' : '🟡 待验证'],
-      ['SQL', App.temp.sql?.output !== undefined ? '🟢 正常' : '🟡 部分完成'],
-      ['生产计划助手', App.getWorkspace('productionplan')?.planResult ? '🟢 正常' : '🟡 待验证'],
-      ['任务中心', (Store.state.taskRecords || []).length ? '🟢 已记录' : '🟡 待验证'],
-      ['下载中心', (Store.state.downloadRecords || []).length ? '🟢 已记录' : '🟡 待验证'],
-      ['文件管理中心', (Store.state.files || []).length ? '🟢 已记录' : '🟡 待验证'],
-      ['AI调用历史', (Store.state.aiHistory || []).length ? '🟢 已记录' : '🟡 待验证'],
-      ['Integration Center', Array.isArray(Store.state.connectors) ? '🟢 可用' : '🔴 异常'],
-      ['Connector 未配置', Array.isArray(Store.state.connectors) ? `🟢 ${Store.state.connectors.filter(item => item.status === '未配置' || !item.enabled).length} 个` : '🔴 异常'],
-      ['CSV订单导入', App.getWorkspace('productionplan')?.csvImportedAt ? '🟢 正常' : '🟡 待验证'],
-      ['设备台账', (Store.state.equipment || []).length >= 8 ? '🟢 正常' : '🟡 部分完成'],
-      ['AI', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 部分完成'],
-      ['Mock AI', Store.state.settings.accessMode === 'local' ? '🟢 开启' : '🟡 关闭'],
-      ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 部分完成'],
-      ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 部分完成'],
-      ['Render状态', runtime === 'Render' ? '🟢 生产环境' : '🟡 未部署到 Render'],
-      ['GitHub Commit', Store.state.commitHash || '未注入'],
-      ['Build Time', Store.state.buildTime || '未注入'],
-      ['Version', `v${Store.state.version || 1}`],
-      ['数据库', (Store.state.orders.length || Store.state.inventory.length) ? '🟢 正常' : '🟡 部分完成'],
-      ['API', '🟢 正常'],
-      ['GitHub Pages', '🟢 正常'],
-      ['Vercel', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 部分完成'],
-      ['模型', Store.state.settings.model ? '🟢 正常' : '🔴 异常'],
-      ['数据脱敏工具', '🟢 可用'],
-      ['手机号脱敏', '🟢 可用'],
-      ['邮箱脱敏', '🟢 可用'],
-      ['数据管理英文错误', '🟢 已收口'],
-      ['企业办公英文错误', '🟢 已收口'],
-      ['AI自动化英文错误', '🟢 已收口'],
-      ['OCR低置信度提示', '🟢 已显示'],
-      ['远程 AI 安全提示', '🟢 已显示'],
-      ['AI调用历史', (Store.state.aiHistory || []).length ? '🟢 已记录' : '🟡 待验证'],
-      ['AI成本统计', (Store.state.aiHistory || []).length ? '🟢 已显示' : '🟡 待验证'],
-      ['Render状态', /render\.com$/i.test(String(window.location.hostname || '')) ? '🟢 生产环境' : '🟡 本地/待部署'],
-      ['GitHub Commit', Store.state.commitHash ? '🟢 已显示' : '🟡 未注入'],
-      ['Build Time', Store.state.buildTime ? '🟢 已显示' : '🟡 未注入'],
-      ['Version', Store.state.version ? '🟢 已显示' : '🟡 异常'],
-      ['Developer Mode', typeof Store.state.settings.developerMode === 'boolean' ? '🟢 可开关' : '🔴 异常'],
-      ['API Key 未进入日志', '🟢 已验证'],
-      ['手机端适配', '🟢 已启用'],
-      ['桌面端适配', '🟢 已启用'],
-      ['API Key 本地保存', '🟢 已启用'],
-      ['清空本地数据', '🟢 可用'],
-      ['数据安全提示', '🟢 已显示'],
-      ['远程 AI 提示', '🟢 已显示'],
-      ['.gitignore', '🟢 已存在'],
-      ['SECURITY.md', '🟢 已存在'],
-      ['GitHub Pages 演示说明', '🟢 已存在'],
-      ['企业内网部署说明', '🟢 已存在']
+    const report = Array.isArray(Store.state.runtimeMonitor?.healthChecks) ? Store.state.runtimeMonitor.healthChecks : [];
+    const checks = report.length ? report : [
+      { name: '登录', status: AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常', reason: AuthClient.isLoggedIn() ? '已登录。' : '请先登录。', suggestion: AuthClient.isLoggedIn() ? '保持当前登录状态。' : '请使用演示账号或正式账号登录。', time: Date.now() },
+      { name: 'AI Gateway', status: Utils.isGitHubPagesHost() ? '🟡 展示模式 / Mock 演示' : Store.state.settings.apiEnabled ? '🟡 待自检' : '⚪ 未配置', reason: Utils.isGitHubPagesHost() ? 'GitHub Pages 无后端。' : Store.state.settings.apiEnabled ? '等待一键自检。' : '未启用远程 AI。', suggestion: Utils.isGitHubPagesHost() ? '部署后端后再启用真实 AI。' : Store.state.settings.apiEnabled ? '点击“一键自检”执行真实检测。' : '在 AI 设置中心开启远程 AI。', time: Date.now() },
+      { name: 'DeepSeek', status: Utils.isGitHubPagesHost() ? '🟡 未连接' : Store.state.settings.apiEnabled ? '🟡 待自检' : '⚪ 未配置', reason: Utils.isGitHubPagesHost() ? '展示模式不连接 DeepSeek。' : Store.state.settings.apiEnabled ? '等待真实请求检测。' : '未启用远程 AI。', suggestion: Utils.isGitHubPagesHost() ? '部署后端后再连接 DeepSeek。' : Store.state.settings.apiEnabled ? '点击“一键自检”验证 /api/chat。' : '请先开启远程 AI。', time: Date.now() },
+      { name: 'localStorage', status: typeof localStorage !== 'undefined' ? '🟢 正常' : '🔴 异常', reason: typeof localStorage !== 'undefined' ? '浏览器本地存储可读写。' : '本地存储不可用。', suggestion: typeof localStorage !== 'undefined' ? '可正常保存本地数据。' : '请检查浏览器隐私设置。', time: Date.now() }
     ];
-    return `${this.pageHead('系统验收中心', '自动检测登录、Word、Excel、PDF、OCR、SQL、生产计划助手、AI、Agent、RL、数据库、API、GitHub Pages、Vercel、模型。', `<button class="primary-btn" data-action="systemcheck-run">${icon('check')}开始检测</button>`)}<section class="panel"><div class="panel-head"><div><h3>验收结果</h3></div><span class="badge">${checks.length}</span></div><div class="panel-body">${checks.map(([name, status]) => `<div class="activity"><span class="activity-icon">${icon('check')}</span><span><b>${name}</b><small>${status}</small></span></div>`).join('')}<div class="privacy-note" style="margin-top:12px">${icon('clock')}<span>记录测试时间、修复状态和版本号后，可作为现场演示验收记录。</span></div></div></section>`;
+    return `${this.pageHead('系统验收中心', '自动检测登录、Word、Excel、PDF、OCR、SQL、生产计划助手、AI、Agent、RL、数据库、API、GitHub Pages、Vercel、模型。', `<button class="primary-btn" data-action="systemcheck-run">${icon('check')}开始检测</button>`)}<section class="panel"><div class="panel-head"><div><h3>验收结果</h3></div><span class="badge">${checks.length}</span></div><div class="panel-body">${checks.map(item => `<div class="activity"><span class="activity-icon">${icon(item.status.startsWith('🟢') ? 'check' : item.status.startsWith('⚪') ? 'dot' : item.status.startsWith('🟡') ? 'clock' : 'x')}</span><span><b>${Utils.escape(item.name)}</b><small>${Utils.escape(item.status)}${item.reason ? ` · ${Utils.escape(item.reason)}` : ''}${item.suggestion ? ` · ${Utils.escape(item.suggestion)}` : ''}</small></span></div>`).join('')}<div class="privacy-note" style="margin-top:12px">${icon('clock')}<span>记录测试时间、修复状态和版本号后，可作为现场演示验收记录。</span></div></div></section>`;
   },
   searchcenter() {
     const q = App.getWorkspace('searchcenter').prompt || '';

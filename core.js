@@ -69,6 +69,7 @@ const DefaultState = {
   taskRecords: [],
   downloadRecords: [],
   agentApprovals: [],
+  repairRecords: [],
   toolCatalog: [],
   memoryEntries: [],
   runtimeMonitor: {
@@ -79,7 +80,11 @@ const DefaultState = {
     waitingHumanTasks: 0,
     toolCallCount: 0,
     toolStats: [],
-    recentLogs: []
+    recentLogs: [],
+    healthChecks: [],
+    lastSelfCheckAt: 0,
+    lastSelfCheckSource: '',
+    lastSelfCheckSummary: ''
   },
   aiGatewayStatus: { state: 'mock', message: '等待配置 AI Gateway', provider: '本地模式', model: 'deepseek-v4-flash', updatedAt: 0 },
   connectors: [
@@ -354,9 +359,14 @@ const Store = {
       if (!Array.isArray(this.state.taskRecords)) this.state.taskRecords = [];
       if (!Array.isArray(this.state.downloadRecords)) this.state.downloadRecords = [];
       if (!Array.isArray(this.state.agentApprovals)) this.state.agentApprovals = [];
+      if (!Array.isArray(this.state.repairRecords)) this.state.repairRecords = [];
       if (!Array.isArray(this.state.toolCatalog)) this.state.toolCatalog = [];
       if (!Array.isArray(this.state.memoryEntries)) this.state.memoryEntries = [];
       if (!this.state.runtimeMonitor || typeof this.state.runtimeMonitor !== 'object') this.state.runtimeMonitor = structuredClone(DefaultState.runtimeMonitor);
+      if (!Array.isArray(this.state.runtimeMonitor.healthChecks)) this.state.runtimeMonitor.healthChecks = [];
+      if (!this.state.runtimeMonitor.lastSelfCheckAt) this.state.runtimeMonitor.lastSelfCheckAt = 0;
+      if (!this.state.runtimeMonitor.lastSelfCheckSource) this.state.runtimeMonitor.lastSelfCheckSource = '';
+      if (!this.state.runtimeMonitor.lastSelfCheckSummary) this.state.runtimeMonitor.lastSelfCheckSummary = '';
       if (!this.state.aiGatewayStatus || typeof this.state.aiGatewayStatus !== 'object') this.state.aiGatewayStatus = structuredClone(DefaultState.aiGatewayStatus);
       if (!Array.isArray(this.state.connectors) || !this.state.connectors.length) this.state.connectors = structuredClone(DefaultState.connectors);
       if (!this.state.settings.accessMode) this.state.settings.accessMode = this.state.settings.apiEnabled ? 'api' : 'local';
