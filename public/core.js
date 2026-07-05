@@ -72,6 +72,16 @@ const DefaultState = {
   repairRecords: [],
   toolCatalog: [],
   memoryEntries: [],
+  aiResult: null,
+  systemHealth: {},
+  errorLog: [],
+  runtime: null,
+  ocrResult: {
+    text: '',
+    table: null,
+    imageMeta: {},
+    status: 'idle'
+  },
   runtimeMonitor: {
     totalTasks: 0,
     successTasks: 0,
@@ -330,10 +340,65 @@ const APIClient = {
   }
 };
 
+function createRuntimeFallback() {
+  return {
+    ready: true,
+    mode: 'fallback',
+    state: 'fallback',
+    get(name, fallback = null) {
+      return fallback;
+    },
+    set() {},
+    call(name, fallback = null) {
+      if (typeof fallback === 'function') return fallback();
+      return fallback;
+    }
+  };
+}
+
+var runtime = (typeof window !== 'undefined' && window.runtime) ? window.runtime : createRuntimeFallback();
+if (typeof window !== 'undefined') window.runtime = runtime;
+if (typeof globalThis !== 'undefined') globalThis.runtime = runtime;
+if (typeof globalThis !== 'undefined') {
+  globalThis.GlobalSystemState = globalThis.GlobalSystemState && typeof globalThis.GlobalSystemState === 'object' ? globalThis.GlobalSystemState : { ocrResult: null, aiResult: null, systemHealth: {}, errorLog: [], runtime: null };
+  globalThis.GlobalSystemState.runtime = runtime;
+}
+
+function emit(name, detail) {
+  if (typeof window !== 'undefined' && window.EventBus && typeof window.EventBus.emit === 'function') {
+    window.EventBus.emit(name, detail);
+  }
+  document.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+function on(name, handler) {
+  if (typeof window !== 'undefined' && window.EventBus && typeof window.EventBus.on === 'function') {
+    window.EventBus.on(name, handler);
+    return;
+  }
+  document.addEventListener(name, event => handler(event.detail, event));
+}
+
 const Store = {
   state: null,
   syncTimer: null,
   syncing: false,
+  syncGlobalState() {
+    if (typeof globalThis !== 'undefined') {
+      const existing = globalThis.GlobalSystemState && typeof globalThis.GlobalSystemState === 'object' ? globalThis.GlobalSystemState : {};
+      globalThis.GlobalSystemState = {
+        ocrResult: this.state?.ocrResult ?? existing.ocrResult ?? null,
+        aiResult: this.state?.aiResult ?? existing.aiResult ?? null,
+        systemHealth: this.state?.systemHealth ?? existing.systemHealth ?? {},
+        errorLog: this.state?.errorLog ?? existing.errorLog ?? [],
+        runtime: this.state?.runtime ?? existing.runtime ?? null,
+        aiGateway: this.state?.aiGatewayStatus ?? existing.aiGateway ?? null
+      };
+      if (this.state && this.state.aiGatewayStatus) {
+        this.state.aiGateway = this.state.aiGatewayStatus;
+      }
+    }
+  },
   load() {
     try {
       const saved = JSON.parse(localStorage.getItem(APP_KEY) || 'null');
@@ -362,7 +427,18 @@ const Store = {
       if (!Array.isArray(this.state.repairRecords)) this.state.repairRecords = [];
       if (!Array.isArray(this.state.toolCatalog)) this.state.toolCatalog = [];
       if (!Array.isArray(this.state.memoryEntries)) this.state.memoryEntries = [];
+      if (!('aiResult' in this.state)) this.state.aiResult = null;
+      if (!this.state.systemHealth || typeof this.state.systemHealth !== 'object') this.state.systemHealth = {};
+      if (!Array.isArray(this.state.errorLog)) this.state.errorLog = [];
+      if (!('runtime' in this.state)) this.state.runtime = null;
+      if (!this.state.ocrResult || typeof this.state.ocrResult !== 'object') this.state.ocrResult = structuredClone(DefaultState.ocrResult);
+      if (typeof this.state.ocrResult.status !== 'string') this.state.ocrResult.status = 'idle';
+      if (typeof this.state.ocrResult.text !== 'string') this.state.ocrResult.text = '';
+      if (!('table' in this.state.ocrResult)) this.state.ocrResult.table = null;
+      if (!this.state.ocrResult.imageMeta || typeof this.state.ocrResult.imageMeta !== 'object') this.state.ocrResult.imageMeta = {};
       if (!this.state.runtimeMonitor || typeof this.state.runtimeMonitor !== 'object') this.state.runtimeMonitor = structuredClone(DefaultState.runtimeMonitor);
+      if (!this.state.systemHealth || typeof this.state.systemHealth !== 'object') this.state.systemHealth = {};
+      if (!Array.isArray(this.state.errorLog)) this.state.errorLog = [];
       if (!Array.isArray(this.state.runtimeMonitor.healthChecks)) this.state.runtimeMonitor.healthChecks = [];
       if (!this.state.runtimeMonitor.lastSelfCheckAt) this.state.runtimeMonitor.lastSelfCheckAt = 0;
       if (!this.state.runtimeMonitor.lastSelfCheckSource) this.state.runtimeMonitor.lastSelfCheckSource = '';
@@ -390,12 +466,17 @@ const Store = {
         this.state.settings.accessMode = 'cloud';
         this.state.settings.apiEnabled = true;
       }
+      this.state.systemHealth = this.state.systemHealth || {};
+      this.state.errorLog = Array.isArray(this.state.errorLog) ? this.state.errorLog : [];
+      this.syncGlobalState();
     } catch {
       this.state = structuredClone(DefaultState);
+      this.syncGlobalState();
     }
     return this.state;
   },
   save() {
+    this.syncGlobalState();
     localStorage.setItem(APP_KEY, JSON.stringify(this.state));
     this.scheduleSync();
     document.dispatchEvent(new CustomEvent('app:saved'));
@@ -417,6 +498,7 @@ const Store = {
   },
   reset() {
     this.state = structuredClone(DefaultState);
+    this.syncGlobalState();
     this.save();
   },
   backup() {
@@ -591,6 +673,8 @@ const Store = {
     }
   }
 };
+
+Store.syncGlobalState();
 
 const FileDB = {
   db: null,
@@ -1713,13 +1797,16 @@ const AIService = {
     return text || 'AI 调用失败';
   },
   setStatus(state, message, model = Store.state.settings.model) {
-    Store.state.aiGatewayStatus = {
+    const gateway = {
       state,
       message,
       provider: Store.state.settings.provider || 'OpenAI-compatible',
       model: model || '',
       updatedAt: Date.now()
     };
+    Store.state.aiGatewayStatus = gateway;
+    Store.state.aiGateway = gateway;
+    Store.syncGlobalState();
     Store.save();
   },
   async complete(prompt, options = {}) {
@@ -1779,6 +1866,16 @@ const AIService = {
         total_tokens: payload.totalTokens ?? 0
       };
       this.lastMode = payload.mock ? 'mock' : 'api';
+      Store.state.aiResult = {
+        text,
+        mode: payload.mock ? 'mock' : 'api',
+        model: payload.model || model,
+        requestId: payload.requestId || '',
+        module: options.module || options.mode || 'general',
+        time: Date.now(),
+        latencyMs: payload.latencyMs || duration
+      };
+      Store.save();
       this.setStatus(payload.mock ? 'fallback' : 'online', payload.mock ? (payload.rawError || '真实 AI 调用失败，已自动切换 Mock。') : '真实 AI 调用成功', model);
       Store.logAiHistory({
         requestId: payload.requestId,
@@ -1798,6 +1895,7 @@ const AIService = {
         estimatedCost: usage.total_tokens ? Number((usage.total_tokens * 0.00001).toFixed(6)) : null,
         httpStatus: payload.httpStatus || 200
       });
+      emit('ai:completed', Store.state.aiResult);
       return {
         text,
         mode: payload.mock ? 'mock' : 'api',
@@ -1811,6 +1909,17 @@ const AIService = {
     } catch (error) {
       const friendly = this.friendlyMessage(error);
       this.lastMode = 'mock';
+      Store.state.aiResult = {
+        text: '',
+        mode: 'error',
+        model,
+        requestId: error.requestId || '',
+        module: options.module || options.mode || 'general',
+        time: Date.now(),
+        error: friendly,
+        rawError: String(error?.rawError || error?.message || error || '')
+      };
+      Store.save();
       this.setStatus('fallback', friendly, model);
       Store.logAiHistory({
         requestId: error.requestId,
@@ -1828,6 +1937,7 @@ const AIService = {
         const fallback = typeof options.mockFallback === 'function'
           ? options.mockFallback(friendly)
           : options.mockFallback ?? `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n原因：${friendly}`;
+        emit('ai:completed', Store.state.aiResult);
         return { text: String(fallback || ''), mode: 'mock', model, error: friendly };
       }
       throw new Error(friendly);

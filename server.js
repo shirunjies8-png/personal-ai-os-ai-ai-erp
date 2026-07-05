@@ -18,7 +18,24 @@ const deepseekStatus = env.deepseekApiKey
   : '未检测到 DEEPSEEK_API_KEY';
 
 app.use(helmet({
-  crossOriginResourcePolicy: false
+  crossOriginResourcePolicy: false,
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      fontSrc: ["'self'", 'https:', 'data:'],
+      formAction: ["'self'"],
+      frameAncestors: ["'self'"],
+      imgSrc: ["'self'", 'https:', 'data:', 'blob:'],
+      objectSrc: ["'none'"],
+      scriptSrc: ["'self'"],
+      scriptSrcAttr: ["'none'"],
+      styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
+      workerSrc: ["'self'", 'blob:'],
+      upgradeInsecureRequests: []
+    }
+  }
 }));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));

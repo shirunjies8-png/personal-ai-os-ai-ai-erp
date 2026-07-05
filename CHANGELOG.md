@@ -583,6 +583,58 @@
   - 系统监控页改为读取真实健康检查结果、错误中心和修复记录。
   - 系统验收中心改为展示一键自检的真实检查报告。
   - AI 状态中心的 API 状态文案补齐展示模式提示。
+- `core.js` / `app.js`
+  - AI Gateway 状态源统一到 `GlobalSystemState.aiGateway`。
+  - 一键自检通过真实 `/api/health` 与 `/api/chat` 探测写回状态，不再由 UI 推断。
+
+## 2026-07-04 — OCR → AI 数据流修复
+
+### Changed
+
+- `core.js`
+  - 新增 `GlobalSystemState.ocrResult` 默认结构。
+  - 新增 `emit()` / `on()` 轻量事件接口，供 OCR 完成态广播使用。
+- `app.js`
+  - OCR 完成后写入 `GlobalSystemState.ocrResult` 并触发 `ocr:completed`。
+  - OCR AI 总结 / 翻译 / 问答 / 纠错优先从 `GlobalSystemState.ocrResult.text` 读取内容。
+  - OCR 人工确认保存会同步回写全局 OCR 状态。
+- `app.js`
+  - 全局事件绑定新增 `ocr:completed`，保证 OCR 状态与 UI 同步。
+
+### Verified
+
+- `node --check app.js core.js ui.js`
+- `npm run build`
+- 本地浏览器 OCR 示例回归
+
+### Notes
+
+- OCR 的状态流已统一，但真实 OCR 引擎是否可用仍受环境影响；Mock 兜底不会伪装成真实成功。
+
+## 2026-07-04 — Runtime System Fix
+
+### Changed
+
+- `core.js`
+  - 新增 `createRuntimeFallback()`。
+  - 在核心脚本最早阶段初始化 `window.runtime` 与全局 `runtime` 别名。
+- `app.js`
+  - 进一步在启动阶段兜底初始化 `window.runtime`，避免运行时未定义。
+- `index.html`
+  - 提前加载 `runtime-init.js`，确保 CSP 允许且运行最早初始化。
+- `scripts/sync-public.mjs`
+  - 将 `runtime-init.js` 纳入同步清单，保证 `public/` 与 `dist/` 同步。
+
+### Verified
+
+- `node --check app.js core.js ui.js`
+- `npm run build`
+- 本地浏览器验证 `window.runtime` 存在
+- OCR / AI Chat 页面仍可正常打开
+
+### Notes
+
+- 本轮仅修复 runtime 初始化与同步，不改其它业务模块。
 
 ### Verified
 
@@ -596,3 +648,72 @@
 - 本轮只修系统监控，没有新增业务模块。
 - `.env.local` 未改动，API Key 未打印、未提交。
 - PDF Worker 当前仍是待单独排查的真实异常，不再被误标为绿色。
+
+## 2026-07-04 — STEP 2 GlobalSystemState 收口修复
+
+### Changed
+
+- `app.js`
+  - 新增 `syncGlobalSystemState()` 统一同步 `ocrResult`、`aiResult`、`systemHealth`、`errorLog`、`runtime`。
+  - OCR 完成、AI 修复、图片 OCR 完成后统一写入全局状态。
+  - 系统错误记录同步写入 `GlobalSystemState.errorLog`。
+- `core.js`
+  - `AIService.complete()` 成功/失败结果写入 `Store.state.aiResult`，并保持全局状态同步。
+- `ui.js`
+  - 系统监控 / 系统验收页面改为读取 `GlobalSystemState.systemHealth`，不再自行推断状态。
+- `server.js`
+  - 放宽 CSP 中的 `img-src` 与 `worker-src`，允许 OCR 预览图与 worker 资源使用 `blob:`。
+
+### Verified
+
+- `node --check app.js core.js ui.js`
+- `npm run build`
+- 本地浏览器验证 OCR → AI 数据流与系统监控状态读取
+
+### Notes
+
+- 本轮只做 GlobalSystemState 收口，不新增业务模块。
+
+## 2026-07-04 — STEP 3 Event 收口修复
+
+### Changed
+
+- `app.js`
+  - 初始化统一 `window.EventBus`。
+  - OCR / AI / Error 流程统一发事件，Monitor 支持自动刷新。
+- `core.js`
+  - `emit` / `on` 兼容事件总线，避免模块间直接强耦合调用。
+- `server.js`
+  - 前端静态资源允许 `blob:` 图片与 worker，降低 OCR 过程 CSP 阻断噪声。
+
+### Verified
+
+- `node --check app.js core.js ui.js server.js`
+- `npm run build`
+- 浏览器中 `window.EventBus` 存在，且 `ocr:completed / ai:completed / error:created` 已注册
+
+### Notes
+
+- 本轮只修统一事件流，不新增业务模块。
+
+## 2026-07-05 — STEP 4 AI Gateway 收口修复
+
+### Changed
+
+- `core.js`
+  - `AIService.complete()` 统一作为 AI 入口，AI 成功 / 降级 / 失败结果统一写入 `Store.state.aiResult` 并触发 `ai:completed`。
+  - `AIService.setStatus()` 同步写入 `Store.state.aiGateway`，与 `GlobalSystemState.aiGateway` 保持一致。
+- `app.js`
+  - OCR 成功、AI 完成与错误记录继续通过统一事件与全局状态联动。
+  - `recordAiError()` / `recordSystemError()` 统一写入错误中心与 Bug Monitor。
+
+### Verified
+
+- `node --check app.js core.js ui.js server.js`
+- `npm run build`
+- 浏览器实测 AI Chat / OCR AI 总结均通过同一 AI Gateway 入口返回
+
+### Notes
+
+- GitHub Pages 自动进入展示模式，避免错误请求真实后端。
+- 本地 / 后端模式继续走真实 DeepSeek。

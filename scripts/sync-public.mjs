@@ -8,6 +8,7 @@ const entries = [
   'index.html',
   'styles.css',
   'config.js',
+  'runtime-init.js',
   'core.js',
   'ui.js',
   'app.js',
