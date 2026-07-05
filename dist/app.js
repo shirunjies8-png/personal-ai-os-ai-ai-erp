@@ -1,3 +1,48 @@
+if (typeof window !== 'undefined') {
+  window.GlobalSystemState = window.GlobalSystemState && typeof window.GlobalSystemState === 'object' ? window.GlobalSystemState : {
+    ocrResult: null,
+    aiResult: null,
+    systemHealth: {},
+    errorLog: [],
+    runtime: null
+  };
+  if (!window.EventBus) {
+    window.EventBus = {
+      events: {},
+      on(event, fn) {
+        (this.events[event] ||= []).push(fn);
+      },
+      emit(event, data) {
+        (this.events[event] || []).forEach(fn => {
+          try {
+            fn(data);
+          } catch (error) {
+            console.error('[EventBus]', event, error);
+          }
+        });
+      }
+    };
+  }
+  if (!window.runtime) window.runtime = createRuntimeFallback();
+  window.GlobalSystemState.runtime = window.runtime;
+}
+
+function syncGlobalSystemState(patch = {}) {
+  if (typeof window === 'undefined') return;
+  const current = window.GlobalSystemState && typeof window.GlobalSystemState === 'object'
+    ? window.GlobalSystemState
+    : { ocrResult: null, aiResult: null, systemHealth: {}, errorLog: [], runtime: null };
+  window.GlobalSystemState = {
+    ocrResult: current.ocrResult ?? null,
+    aiResult: current.aiResult ?? null,
+    systemHealth: current.systemHealth ?? {},
+    errorLog: Array.isArray(current.errorLog) ? current.errorLog : [],
+    runtime: current.runtime ?? window.runtime ?? null,
+    ...patch
+  };
+}
+
+syncGlobalSystemState({ runtime: window.runtime });
 Store.load();
 
 const App = {
@@ -145,6 +190,9 @@ const App = {
   },
 
   bindGlobalEvents() {
+    const refreshMonitor = () => {
+      if (['monitoring', 'systemcheck', 'aistatus'].includes(this.route)) this.rerender();
+    };
     document.addEventListener('click', event => {
       const route = event.target.closest('[data-route]');
       if (route) {
@@ -206,6 +254,22 @@ const App = {
         el.innerHTML = '<i></i> 已保存到本地';
       }, 450);
       this.updateStorage();
+    });
+    on('ocr:completed', data => {
+      if (!data || typeof data !== 'object') return;
+      Store.state.ocrResult = {
+        text: String(data.text || ''),
+        table: data.table ?? null,
+        imageMeta: data.imageMeta && typeof data.imageMeta === 'object' ? data.imageMeta : {},
+        status: data.status || 'success'
+      };
+      Store.save();
+      refreshMonitor();
+    });
+    on('ai:completed', () => refreshMonitor());
+    on('error:created', error => {
+      if (!error) return;
+      refreshMonitor();
     });
     window.addEventListener('hashchange', () => this.navigate(location.hash.replace('#/', '') || 'home', false));
     document.getElementById('modalLayer').addEventListener('click', e => {
@@ -1465,6 +1529,30 @@ const App = {
       time: Date.now()
     });
     Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
+    Store.state.errorLog = Array.isArray(Store.state.errorLog) ? Store.state.errorLog : [];
+    Store.state.errorLog.unshift({
+      id: uid(),
+      time: Date.now(),
+      module: module || 'system',
+      feature: context,
+      message,
+      requestId: error?.requestId || '',
+      suggestion: this.suggestFix(error),
+      rawError: String(error?.rawError || error?.message || error || '')
+    });
+    Store.state.errorLog = Store.state.errorLog.slice(0, 100);
+    syncGlobalSystemState({ errorLog: Store.state.errorLog });
+    emit('error:created', {
+      module: context || 'AI',
+      feature: 'AI 调用',
+      type: 'AI错误',
+      message,
+      description: String(error?.message || error || ''),
+      suggestion: this.suggestFix(error),
+      requestId: error?.requestId || '',
+      source: 'ai-error',
+      time: Date.now()
+    });
     this.reportBug({
       module: context || 'AI',
       feature: 'AI 调用',
@@ -1514,6 +1602,30 @@ const App = {
       time: Date.now()
     });
     Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
+    Store.state.errorLog = Array.isArray(Store.state.errorLog) ? Store.state.errorLog : [];
+    Store.state.errorLog.unshift({
+      id: uid(),
+      time: Date.now(),
+      module: module || 'system',
+      feature: context,
+      message,
+      requestId: error?.requestId || '',
+      suggestion: this.suggestFix(error),
+      rawError: String(error?.rawError || error?.message || error || '')
+    });
+    Store.state.errorLog = Store.state.errorLog.slice(0, 100);
+    syncGlobalSystemState({ errorLog: Store.state.errorLog });
+    emit('error:created', {
+      module: module || 'system',
+      feature: context,
+      type: '系统错误',
+      message,
+      description: String(error?.message || error || ''),
+      suggestion: this.suggestFix(error),
+      requestId: error?.requestId || '',
+      source: 'system-error',
+      time: Date.now()
+    });
     this.reportBug({
       module,
       feature: context,
@@ -1713,10 +1825,37 @@ const App = {
       ['工具调用总数', String((Store.state.runtimeMonitor?.toolCallCount || 0)), '来自 Tool Center 统计。', '继续调用工具会自动增加。']
     ];
     Store.state.runtimeMonitor = Store.state.runtimeMonitor || {};
-    Store.state.runtimeMonitor.healthChecks = pushState.map(([name, status, reason, suggestion]) => ({ name, status, reason, suggestion, time: now }));
+    const healthChecks = pushState.map(([name, status, reason, suggestion]) => ({ name, status, reason, suggestion, time: now }));
+    Store.state.runtimeMonitor.healthChecks = healthChecks;
+    Store.state.systemHealth = {
+      checks: healthChecks,
+      summary: healthChecks.map(item => `${item.name}：${item.status}`).join(' | '),
+      updatedAt: now,
+      source: displayMode ? 'GitHub Pages' : (apiUrl ? '本地/服务器' : '未配置'),
+      gateway: Store.state.aiGatewayStatus,
+      errors: (Store.state.aiErrors || []).slice(0, 20)
+    };
     Store.state.runtimeMonitor.lastSelfCheckAt = now;
     Store.state.runtimeMonitor.lastSelfCheckSource = displayMode ? 'GitHub Pages' : (apiUrl ? '本地/服务器' : '未配置');
-    Store.state.runtimeMonitor.lastSelfCheckSummary = Store.state.runtimeMonitor.healthChecks.map(item => `${item.name}：${item.status}`).join(' | ');
+    Store.state.runtimeMonitor.lastSelfCheckSummary = healthChecks.map(item => `${item.name}：${item.status}`).join(' | ');
+    Store.state.aiGatewayStatus = {
+      state: gatewayStatus.includes('🟢') ? 'online' : gatewayStatus.includes('🟡') ? 'mock' : gatewayStatus.includes('🔴') ? 'error' : 'unknown',
+      message: gatewayReason,
+      provider: displayMode ? 'mock' : (Store.state.settings.provider || 'OpenAI-compatible'),
+      model: Store.state.settings.model || 'deepseek-v4-flash',
+      updatedAt: now
+    };
+    Store.state.aiGateway = Store.state.aiGatewayStatus;
+    if (typeof globalThis !== 'undefined') {
+      syncGlobalSystemState({
+        aiGateway: Store.state.aiGatewayStatus,
+        systemHealth: Store.state.systemHealth,
+        errorLog: Store.state.errorLog,
+        ocrResult: Store.state.ocrResult,
+        aiResult: Store.state.aiResult,
+        runtime: window.runtime
+      });
+    }
     ws.result = Store.state.runtimeMonitor.healthChecks.map(item => `${item.name}｜${item.status}｜${item.reason || '无'}｜${item.suggestion || '无'}｜${Utils.formatDate(item.time, true)}`).join('\n');
     ws.checkedAt = now;
     Store.save();
@@ -2535,6 +2674,16 @@ const App = {
       o.status = health.hasTesseract ? '处理中（真实 OCR）' : '处理中（待降级）';
       o.progress = 0.06;
       o.mock = false;
+      Store.state.ocrResult = {
+        text: '',
+        table: null,
+        imageMeta: { name: o.file.name, size: o.file.size, type: o.file.type },
+        status: 'processing'
+      };
+      if (typeof emit === 'function') emit('ocr:completed', Store.state.ocrResult);
+      if (typeof globalThis !== 'undefined') {
+        syncGlobalSystemState({ ocrResult: Store.state.ocrResult });
+      }
       this.rerender();
       await wait(80);
       const attemptedReal = Boolean(health.hasTesseract);
@@ -2574,6 +2723,14 @@ const App = {
       o.analysis = '';
       o.qaQuestion = '';
       o.qaAnswer = '';
+      const ocrState = {
+        text: o.result || '',
+        table: structured.pairs.length ? structured.pairs : null,
+        imageMeta: { name: o.file.name, size: o.file.size, type: o.file.type },
+        status: o.result ? 'success' : 'failed'
+      };
+      Store.state.ocrResult = ocrState;
+      if (typeof emit === 'function') emit('ocr:completed', ocrState);
       this.recordTask({
         type: 'OCR识别',
         fileName: o.file.name,
@@ -2590,7 +2747,7 @@ const App = {
 
   async ocrSummary(btn) {
     const o = this.temp.ocr;
-    const source = String(o.aiFix || o.result || '').trim();
+    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
     if (!source) throw new Error('请先完成 OCR 识别');
     await this.busy(btn, async () => {
       const ai = await AIService.complete(
@@ -2613,7 +2770,7 @@ const App = {
 
   async ocrTranslate(btn) {
     const o = this.temp.ocr;
-    const source = String(o.aiFix || o.result || '').trim();
+    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
     if (!source) throw new Error('请先完成 OCR 识别');
     await this.busy(btn, async () => {
       const ai = await AIService.complete(
@@ -2636,7 +2793,7 @@ const App = {
 
   async ocrAsk(btn) {
     const o = this.temp.ocr;
-    const source = String(o.aiFix || o.result || '').trim();
+    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
     const question = document.getElementById('ocrQuestion')?.value.trim() || o.qaQuestion || '';
     if (!source) throw new Error('请先完成 OCR 识别');
     if (!question) throw new Error('请输入 OCR 问题');
@@ -2669,7 +2826,7 @@ const App = {
 
   async ocrAIFix(btn) {
     const o = this.temp.ocr;
-    const source = String(o.result || '').trim();
+    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
     if (!source) throw new Error('暂无可纠错的 OCR 结果');
     const quality = o.quality || OCRService.assessQuality(source);
     const buildMock = reason => {
@@ -2752,7 +2909,7 @@ const App = {
 
   async ocrAITable(btn) {
     const o = this.temp.ocr;
-    const source = String(o.aiFix || o.result || '').trim();
+    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
     if (!source) throw new Error('暂无可还原的 OCR 结果');
     await this.busy(btn, async () => {
       const structured = OCRService.structure(source);
@@ -2779,6 +2936,16 @@ const App = {
     if (!text) throw new Error('暂无可保存的 AI 修复结果');
     await this.busy(btn, async () => {
       o.result = text;
+      Store.state.ocrResult = {
+        text,
+        table: Store.state.ocrResult?.table ?? null,
+        imageMeta: Store.state.ocrResult?.imageMeta || {},
+        status: 'success'
+      };
+      if (typeof emit === 'function') emit('ocr:completed', Store.state.ocrResult);
+      if (typeof globalThis !== 'undefined') {
+        syncGlobalSystemState({ ocrResult: Store.state.ocrResult });
+      }
       o.edited = true;
       Store.save();
       this.recordTask({
@@ -3110,6 +3277,18 @@ const App = {
     await this.busy(btn, async () => {
       const text = await OCRService.recognize(this.temp.image.file);
       this.temp.image.ocrText = text;
+      const meta = await imageDimensions(this.temp.image.url);
+      const parsedTable = OCRService.structure(text);
+      Store.state.ocrResult = {
+        text,
+        table: parsedTable.pairs.length ? parsedTable.pairs : parsedTable.lines,
+        imageMeta: meta || {},
+        status: text ? 'success' : 'failed'
+      };
+      if (typeof emit === 'function') emit('ocr:completed', Store.state.ocrResult);
+      if (typeof globalThis !== 'undefined') {
+        syncGlobalSystemState({ ocrResult: Store.state.ocrResult });
+      }
       this.temp.image.result = `OCR识别结果\n\n${text}`;
       Store.addActivity('图片 OCR', 'ai');
       this.rerender();

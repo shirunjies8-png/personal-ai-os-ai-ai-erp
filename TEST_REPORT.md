@@ -1067,3 +1067,142 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 - 本轮没有修改 `.env.local`。
 - 本轮没有打印或提交完整 API Key。
 - 系统监控现已以真实检测结果为准，但 PDF Worker 当前仍显示为异常，需要后续单独排查。
+- AI Gateway 状态已改为统一从 `GlobalSystemState.aiGateway` 读取，自检结果由真实 `/api/health` + `/api/chat` 探测写回，不再由 UI 推断颜色。
+
+## 2026-07-04 — OCR → AI 数据流修复
+
+### 已完成
+
+- OCR 结果已统一写入 `GlobalSystemState.ocrResult`。
+- OCR 完成后会触发 `ocr:completed` 事件。
+- OCR 总结 / 翻译 / 问答 / AI 纠错现在优先从 `GlobalSystemState.ocrResult.text` 读取，不再依赖 UI 临时传参。
+- OCR 完成态在浏览器里可继续直接触发 AI 操作，不需要重新上传。
+
+### 浏览器测试
+
+- 本地浏览器：`http://127.0.0.1:3000/#/ocr`
+  - 加载 OCR 示例图片后执行“开始识别”。
+  - `GlobalSystemState.ocrResult` 可读取到 OCR 文本。
+  - 继续点击 AI 总结后，OCR 数据流保持可用。
+
+### 验证
+
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮没有修改 `.env.local`。
+- 本轮没有打印或提交完整 API Key。
+- OCR 状态统一源已建立，但真实 OCR 引擎是否返回结果仍取决于当前环境，Mock 兜底会如实保留。
+
+## 2026-07-04 — STEP 2 GlobalSystemState 收口修复
+
+### 已完成
+
+- 初始化唯一全局状态源 `window.GlobalSystemState`，保留 `ocrResult`、`aiResult`、`systemHealth`、`errorLog`、`runtime`。
+- OCR 成功后写入 `GlobalSystemState.ocrResult`，AI OCR 修复/总结/翻译改为从全局状态读取 OCR 内容。
+- 系统监控改为读取 `GlobalSystemState.systemHealth`，不再自行推断绿色状态。
+- 错误记录同步写入 `GlobalSystemState.errorLog`，避免 UI 自己伪造错误源。
+- 后端 CSP 补充了 `blob:` 图片与 worker 许可，降低 OCR 预览与识别过程中的浏览器阻断噪声。
+
+### 浏览器测试
+
+- `http://127.0.0.1:3000/#/systemcheck`
+  - `window.runtime` 存在。
+  - `window.GlobalSystemState` 含有唯一状态字段。
+  - 一键自检后 `GlobalSystemState.systemHealth` 有真实检查结果。
+- `http://127.0.0.1:3000/#/ocr`
+  - 加载 OCR 示例后执行“开始识别”。
+  - `GlobalSystemState.ocrResult.status === success`，OCR 文本可读取。
+  - 点击 AI 总结后，`GlobalSystemState.aiResult` 更新并读取到 OCR 内容。
+
+### 验证
+
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮没有修改 `.env.local`。
+- 本轮没有打印或提交完整 API Key。
+- OCR→AI 与 Monitor→State 的数据流已收口到 GlobalSystemState。
+
+## 2026-07-04 — STEP 3 Event 收口修复
+
+### 已完成
+
+- 初始化统一 `window.EventBus`，并将现有 `emit/on` 接口桥接到事件总线。
+- OCR 成功后触发 `ocr:completed`，AI 完成后触发 `ai:completed`，错误创建后触发 `error:created`。
+- Monitor 监听事件后自动刷新，避免依赖模块间直接调用。
+
+### 浏览器测试
+
+- `http://127.0.0.1:3000/?v=step3#/ocr`
+  - `window.EventBus` 存在。
+  - `ocr:completed / ai:completed / error:created` 均已注册监听器。
+  - OCR 成功后 `GlobalSystemState.ocrResult` 保持可读。
+  - AI 总结后 `GlobalSystemState.aiResult` 更新。
+
+### 验证
+
+- `node --check app.js core.js ui.js server.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮只修统一事件流，不新增业务模块。
+
+## 2026-07-05 — STEP 4 AI Gateway 收口修复
+
+### 已完成
+
+- 所有 AI 调用已统一通过 `AIService.complete()` 入口，前端业务模块不再直接分散调用 DeepSeek。
+- AI Chat、OCR AI 总结 / 翻译 / 纠错、企业办公与智能办公相关 AI 调用均复用同一网关链路。
+- GitHub Pages 自动进入展示模式并走 Mock 兜底；本地 / 后端模式继续走真实 AI。
+- AI 成功、失败与降级均写入 `GlobalSystemState.aiResult` 与 `GlobalSystemState.aiGateway`，同时联动 Error Center / Bug Monitor。
+
+### 浏览器测试
+
+- `http://127.0.0.1:3000/#/chat`
+  - 连续输入“你能做什么”后收到完整 AI 回复。
+  - AI 回复已通过同一 AI Gateway 入口返回，输入框可继续使用。
+- `http://127.0.0.1:3000/#/ocr`
+  - OCR 结果写入全局状态后，点击 AI 总结可正常生成结果。
+  - `window.GlobalSystemState.aiResult.module === 'ocr'`。
+- `http://127.0.0.1:3000/#/systemcheck`
+  - AI Gateway / DeepSeek 状态保持真实检测结果。
+  - 监控与错误提示联动正常。
+
+### 验证
+
+- `node --check app.js core.js ui.js server.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- GitHub Pages 会自动保持展示模式，不会尝试连接真实后端。
+- 本地 / 后端模式继续使用真实 DeepSeek，失败时统一 fallback 并记录到错误中心。
+
+## 2026-07-04 — Runtime System Fix
+
+### 已完成
+
+- 在最早执行位置初始化 `window.runtime`，并提供 fallback。
+- 同时保留全局 `runtime` 别名，避免裸引用导致 `runtime is not defined`。
+- `runtime-init.js` 已纳入静态同步与构建产物，避免 CSP 或加载顺序导致空值。
+
+### 浏览器测试
+
+- 本地浏览器：
+  - `window.runtime` 可读取，fallback 正常存在。
+  - 系统监控、OCR、AI Chat 页面均可打开，不再出现 runtime 未定义问题。
+
+### 验证
+
+- `node --check app.js core.js ui.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 这次修复只处理 runtime 初始化与兼容层，不新增业务模块。
