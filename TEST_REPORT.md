@@ -1,3 +1,41 @@
+## 2026-07-05 — STEP 5 Final Validation
+
+### 浏览器验证
+
+- 本地 `http://127.0.0.1:3000/#/monitoring` 已验证：
+  - 重复同类错误后，Bug Monitor 只保留一条聚合记录，次数累加到 2
+  - 首次发生时间保留，最近发生时间更新
+  - 点击“确认修复”后，记录进入“最近修复”
+  - 点击“忽略”后，该项不再影响健康告警
+  - Error Center 与系统监控同步刷新
+- 浏览器里看到的是实际页面状态，不是代码推断。
+
+### GitHub Pages
+
+- `https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/#/monitoring`
+- 本次已完成构建产物同步，GitHub Pages 需等待仓库发布后再做线上复核
+- 线上站点本轮未在当前环境完成再次验证
+- 若使用最新发布版本，页面应进入展示模式并显示 Error Center / Bug Monitor 收口说明
+
+### Build
+
+- `npm run build`：通过
+
+### Node Check
+
+- `node --check app.js core.js ui.js server.js`：通过
+
+### 结论
+
+- 就本轮 STEP 5 的 Error Center / Bug Monitor 收口而言：已达到 STEP 5 Production Ready
+- 这表示错误聚合、确认修复、忽略、监控联动已经可用
+- 若按整个项目全量口径，仍属于 Resume Demo / MVP 增强阶段
+
+### 剩余问题
+
+- 本轮范围内无剩余阻塞问题
+- 仅保留已有系统的其它历史提示，不影响 STEP 5 结果
+
 ## 2026-07-04 — Sprint 2：AI Chat Production Ready
 
 ### 已修复
