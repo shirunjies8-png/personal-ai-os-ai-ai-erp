@@ -12,6 +12,7 @@ const entries = [
   'core.js',
   'ui.js',
   'app.js',
+  'step5-final-polish.js',
   'assets',
   'vendor'
 ];
