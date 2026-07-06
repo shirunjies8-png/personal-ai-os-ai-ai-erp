@@ -1244,3 +1244,49 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 ### 说明
 
 - 这次修复只处理 runtime 初始化与兼容层，不新增业务模块。
+# 2026-07-06 — Bug Detail 查看详情修复
+
+### 浏览器验证
+
+- 点击 Bug Monitor / Error Center / 最近修复里的“查看详情”后，改为打开纯详情弹窗。
+- 不再新增 `AI错误：bug-detail`。
+- 已修复、已确认、已忽略的 Bug 不再被 Bug Monitor 统计为待处理问题。
+- STEP 5 Final Validation 仍保留，当前健康影响仍为 0。
+- 本轮未修改 AI Chat、OCR、STEP 5 聚合逻辑和真实 AI 接入。
+
+### 结论
+
+- STEP 5 Error Center / Bug Monitor 展示链路进一步收口。
+# 2026-07-06 — Skill 模板化系统收口
+
+### 浏览器验证
+
+- 本地 `http://127.0.0.1:3000/#/home` 已验证：
+  - 首页出现 `Skill 模板` 卡片
+  - 点击“一键生成企业介绍”后，输出为固定四段式结构
+  - 输出包含：
+    - `企业简介：`
+    - `核心能力：`
+    - `适合客户：`
+    - `联系建议：`
+  - 示例企业名、主营产品、设备能力、行业、优势、联系方式可正常进入结果
+  - 输出未出现夸张宣传词
+  - 输出保持简洁，适合制造企业网站/客户沟通场景
+
+### 规则验证
+
+- Skill 模板已固定输入与固定输出格式
+- 缺失字段在 Skill 规则里使用 `待补充` 补位
+- 技能结果走固定模板，不再依赖自由发挥
+- AI History 记录已带上 `skillId` / `skillName` / `input` / `output`
+
+### Build / Node Check
+
+- `node --check app.js core.js ui.js server.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮未修改 STEP 5 Error Center / Bug Monitor 聚合逻辑
+- 本轮未接入真实 AI
+- 本轮目标为 Skill 模板化收口，而不是新增业务模块

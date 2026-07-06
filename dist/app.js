@@ -134,6 +134,7 @@ const App = {
   async init() {
     if (!Store.state.chats.length) this.createChat(false);
     await Store.hydrateFromServer();
+    this.normalizeBugAlerts();
     this.applyTheme();
     this.renderNav();
     this.bindGlobalEvents();
@@ -298,46 +299,190 @@ const App = {
       dock.hidden = true;
       return;
     }
-    const alerts = (Store.state.bugAlerts || []).filter(item => !item.confirmed).slice(0, 1);
+    const alerts = this.getVisibleBugAlerts().filter(item => !item.confirmed && !item.fixed && !item.ignored).slice(0, 3);
     if (!alerts.length) {
       dock.innerHTML = '';
       dock.hidden = true;
       return;
     }
     dock.hidden = false;
-    dock.innerHTML = `<section class="bug-monitor-card"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${alerts.length} 个待确认问题</small></div><span class="status-pill warning">智能诊断</span></div>${alerts.map(item => `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">${Utils.formatDate(item.time, true)}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">确认修复</button></div></div>`).join('')}</section>`;
+    dock.innerHTML = `<section class="bug-monitor-card"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${alerts.length} 个待处理问题</small></div><span class="status-pill warning">智能诊断</span></div>${alerts.map(item => this.renderBugAlertCard(item, true)).join('')}</section>`;
+  },
+
+  bugAlertSignature(payload = {}) {
+    return [
+      payload.module || 'system',
+      payload.feature || '',
+      payload.type || '异常',
+      payload.message || payload.description || '检测到异常'
+    ].join('|');
+  },
+
+  normalizeBugAlert(item = {}) {
+    const status = item.status || (item.ignored ? '已忽略' : item.confirmed ? '已修复' : item.fixed ? '已修复' : '待确认');
+    const firstAt = Number(item.firstAt || item.time || Date.now());
+    const lastAt = Number(item.lastAt || item.time || firstAt);
+    const count = Math.max(1, Number(item.count || 1));
+    const normalized = {
+      id: item.id || uid(),
+      signature: item.signature || this.bugAlertSignature(item),
+      module: item.module || 'system',
+      feature: item.feature || '',
+      type: item.type || '异常',
+      message: item.message || item.description || '检测到异常',
+      description: item.description || item.message || '检测到异常',
+      suggestion: item.suggestion || '请根据错误信息修复',
+      requestId: item.requestId || '',
+      source: item.source || 'frontend',
+      status,
+      count,
+      firstAt,
+      lastAt,
+      time: item.time || lastAt,
+      confirmed: status === '已修复',
+      confirmedAt: Number(item.confirmedAt || (status === '已修复' ? lastAt : 0)),
+      ignored: status === '已忽略',
+      ignoredAt: Number(item.ignoredAt || (status === '已忽略' ? lastAt : 0)),
+      fixed: status === '已修复',
+      fixedAt: Number(item.fixedAt || (status === '已修复' ? lastAt : 0)),
+      rawError: item.rawError || ''
+    };
+    return normalized;
+  },
+
+  getVisibleBugAlerts() {
+    const list = Array.isArray(Store.state.bugAlerts) ? Store.state.bugAlerts : [];
+    const merged = new Map();
+    list.map(item => this.normalizeBugAlert(item)).forEach(item => {
+      const existing = merged.get(item.signature);
+      if (!existing) {
+        merged.set(item.signature, { ...item });
+        return;
+      }
+      existing.count = Math.max(1, Number(existing.count || 1)) + Math.max(1, Number(item.count || 1));
+      existing.firstAt = Math.min(existing.firstAt || item.firstAt || item.time, item.firstAt || item.time || existing.firstAt || Date.now());
+      existing.lastAt = Math.max(existing.lastAt || existing.time || 0, item.lastAt || item.time || 0);
+      existing.time = existing.firstAt || existing.time || item.time || Date.now();
+      existing.message = existing.message || item.message;
+      existing.description = existing.description || item.description;
+      existing.suggestion = item.suggestion || existing.suggestion;
+      existing.requestId = item.requestId || existing.requestId;
+      existing.rawError = item.rawError || existing.rawError;
+      const priority = { '已修复': 3, '待修复': 2, '待确认': 1, '已忽略': 0 };
+      const currentPriority = priority[existing.status] ?? 1;
+      const nextPriority = priority[item.status] ?? 1;
+      if (nextPriority > currentPriority) {
+        existing.status = item.status;
+        existing.confirmed = item.confirmed;
+        existing.confirmedAt = item.confirmedAt;
+        existing.fixed = item.fixed;
+        existing.fixedAt = item.fixedAt;
+        existing.ignored = item.ignored;
+        existing.ignoredAt = item.ignoredAt;
+      }
+    });
+    return Array.from(merged.values()).sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0));
+  },
+
+  normalizeBugAlerts() {
+    Store.state.bugAlerts = this.getVisibleBugAlerts();
+    Store.save();
+  },
+
+  persistBugAlerts(alerts = []) {
+    const merged = new Map();
+    alerts.map(item => this.normalizeBugAlert(item)).forEach(item => {
+      const existing = merged.get(item.signature);
+      if (!existing) {
+        merged.set(item.signature, { ...item });
+        return;
+      }
+      existing.count = Math.max(1, Number(existing.count || 1)) + Math.max(1, Number(item.count || 1));
+      existing.firstAt = Math.min(existing.firstAt || item.firstAt || item.time, item.firstAt || item.time || existing.firstAt || Date.now());
+      existing.lastAt = Math.max(existing.lastAt || existing.time || 0, item.lastAt || item.time || 0);
+      existing.time = existing.firstAt || existing.time || item.time || Date.now();
+      existing.message = existing.message || item.message;
+      existing.description = existing.description || item.description;
+      existing.suggestion = item.suggestion || existing.suggestion;
+      existing.requestId = item.requestId || existing.requestId;
+      existing.rawError = item.rawError || existing.rawError;
+    });
+    Store.state.bugAlerts = Array.from(merged.values())
+      .sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0))
+      .slice(0, 20);
+    Store.save();
+    this.renderBugMonitor();
+  },
+
+  renderBugAlertCard(item, compact = false) {
+    const statusLabel = item.status === '已修复'
+      ? '已修复'
+      : item.status === '已忽略'
+        ? '已忽略'
+        : item.status === '待修复'
+          ? '待修复'
+          : '待确认';
+    const badgeClass = item.status === '已修复'
+      ? 'success'
+      : item.status === '已忽略'
+        ? ''
+        : 'warning';
+    return `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">首次：${Utils.formatDate(item.firstAt || item.time, true)} · 最近：${Utils.formatDate(item.lastAt || item.time, true)} · 次数：${item.count || 1}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-detail" data-id="${item.id}">查看详情</button>${item.status === '已修复' || item.status === '已忽略' ? '' : `<button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">确认修复</button><button class="secondary-btn compact" data-action="bug-ignore" data-id="${item.id}">忽略</button>`}</div><div class="table-actions"><span class="status-pill${badgeClass ? ` ${badgeClass}` : ''}">${statusLabel}</span></div></div>`;
   },
 
   reportBug(payload = {}) {
-    const record = {
-      id: uid(),
-      module: payload.module || 'system',
-      feature: payload.feature || '',
-      type: payload.type || '异常',
-      message: payload.message || payload.description || '检测到异常',
-      description: payload.description || payload.message || '检测到异常',
-      suggestion: payload.suggestion || '请根据错误信息修复',
-      requestId: payload.requestId || '',
+    const record = this.normalizeBugAlert({
+      ...payload,
       time: Date.now(),
-      source: payload.source || 'frontend',
-      confirmed: false,
-      confirmedAt: 0
-    };
-    Store.state.bugAlerts = Store.state.bugAlerts || [];
-    const signature = `${record.module}|${record.feature}|${record.type}|${record.message}`;
-    if (Store.state.bugAlerts.some(item => `${item.module}|${item.feature}|${item.type}|${item.message}` === signature && !item.confirmed)) return record;
+      status: payload.status || '待确认'
+    });
+    Store.state.bugAlerts = Array.isArray(Store.state.bugAlerts) ? Store.state.bugAlerts.map(item => this.normalizeBugAlert(item)) : [];
+    const signature = record.signature;
+    const existing = Store.state.bugAlerts.find(item => item.signature === signature);
+    if (existing) {
+      existing.count = Math.max(1, Number(existing.count || 1)) + 1;
+      existing.lastAt = record.time;
+      existing.time = existing.firstAt || existing.time || record.time;
+      existing.message = record.message || existing.message;
+      existing.description = record.description || existing.description;
+      existing.suggestion = record.suggestion || existing.suggestion;
+      existing.requestId = record.requestId || existing.requestId;
+      existing.rawError = record.rawError || existing.rawError;
+      if (existing.status !== '已忽略') {
+        existing.status = '待确认';
+        existing.confirmed = false;
+        existing.confirmedAt = 0;
+        existing.fixed = false;
+        existing.fixedAt = 0;
+      }
+      Store.state.bugAlerts = Store.state.bugAlerts.sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0));
+      Store.save();
+      if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+      else this.renderBugMonitor();
+      return existing;
+    }
     Store.state.bugAlerts.unshift(record);
-    Store.state.bugAlerts = Store.state.bugAlerts.slice(0, 20);
+    Store.state.bugAlerts = Store.state.bugAlerts
+      .map(item => this.normalizeBugAlert(item))
+      .sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0))
+      .slice(0, 20);
     Store.save();
-    this.renderBugMonitor();
+    if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+    else this.renderBugMonitor();
     return record;
   },
 
   confirmBugAlert(id) {
     const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
     if (!item) return;
+    const now = Date.now();
+    item.status = '已修复';
     item.confirmed = true;
-    item.confirmedAt = Date.now();
+    item.fixed = true;
+    item.confirmedAt = now;
+    item.fixedAt = now;
+    item.ignored = false;
+    item.ignoredAt = 0;
     Store.state.repairRecords = Store.state.repairRecords || [];
     Store.state.repairRecords.unshift({
       id: uid(),
@@ -348,19 +493,94 @@ const App = {
       message: item.message || item.description || '检测到问题',
       suggestion: item.suggestion || '请根据错误信息修复',
       requestId: item.requestId || '',
-      time: Date.now(),
+      time: now,
       confirmedAt: item.confirmedAt
     });
     Store.state.repairRecords = Store.state.repairRecords.slice(0, 20);
     (Store.state.aiErrors || []).forEach(error => {
       if ((error.requestId && error.requestId === item.requestId) || `${error.message || ''}` === `${item.message || ''}`) {
         error.fixed = true;
-        error.fixedAt = Date.now();
+        error.fixedAt = now;
+        error.status = '已修复';
+      }
+    });
+    (Store.state.errorLog || []).forEach(entry => {
+      if ((entry.requestId && entry.requestId === item.requestId) || `${entry.message || ''}` === `${item.message || ''}`) {
+        entry.fixed = true;
+        entry.fixedAt = now;
+        entry.status = '已修复';
       }
     });
     Store.save();
     this.toast('已记录该问题，请开发者根据错误信息修复。');
-    this.renderBugMonitor();
+    if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+    else this.renderBugMonitor();
+  },
+
+  ignoreBugAlert(id) {
+    const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
+    if (!item) return;
+    const now = Date.now();
+    item.status = '已忽略';
+    item.ignored = true;
+    item.ignoredAt = now;
+    item.confirmed = false;
+    item.confirmedAt = 0;
+    item.fixed = false;
+    item.fixedAt = 0;
+    (Store.state.aiErrors || []).forEach(error => {
+      if ((error.requestId && error.requestId === item.requestId) || `${error.message || ''}` === `${item.message || ''}`) {
+        error.ignored = true;
+        error.ignoredAt = now;
+        error.status = '已忽略';
+      }
+    });
+    (Store.state.errorLog || []).forEach(entry => {
+      if ((entry.requestId && entry.requestId === item.requestId) || `${entry.message || ''}` === `${item.message || ''}`) {
+        entry.ignored = true;
+        entry.ignoredAt = now;
+        entry.status = '已忽略';
+      }
+    });
+    Store.save();
+    this.toast('已忽略该问题，系统健康状态不再受其影响。');
+    if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+    else this.renderBugMonitor();
+  },
+
+  openBugDetail(id) {
+    const bugAlerts = Array.isArray(Store.state.bugAlerts) ? Store.state.bugAlerts : [];
+    const aiErrors = Array.isArray(Store.state.aiErrors) ? Store.state.aiErrors : [];
+    const repairRecords = Array.isArray(Store.state.repairRecords) ? Store.state.repairRecords : [];
+    const item = bugAlerts.find(alert => alert.id === id)
+      || aiErrors.find(entry => entry.id === id || entry.requestId === id)
+      || repairRecords.find(entry => entry.id === id || entry.bugId === id);
+    if (!item) {
+      this.toast('未找到问题详情', 'error');
+      return;
+    }
+    const status = item.status || (item.confirmed || item.fixed ? '已修复' : item.ignored ? '已忽略' : '待确认');
+    const confirmedAt = item.confirmedAt || item.fixedAt || item.ignoredAt || item.time || 0;
+    const lines = [
+      `模块：${item.module || item.context || '系统'}`,
+      `功能：${item.feature || item.context || item.type || '未知功能'}`,
+      `类型：${item.type || '异常'}`,
+      `状态：${status}`,
+      `首次发生：${Utils.formatDate(item.firstAt || item.time, true)}`,
+      `最近发生：${Utils.formatDate(item.lastAt || item.time, true)}`,
+      `发生次数：${item.count || 1}`,
+      `requestId：${item.requestId || '无'}`,
+      `错误说明：${item.description || item.message || '已检测到问题'}`,
+      `修复建议：${item.suggestion || '请根据错误信息修复'}`,
+      `确认时间：${confirmedAt ? Utils.formatDate(confirmedAt, true) : '无'}`,
+      item.rawError ? `Raw Error：${item.rawError}` : '',
+      repairRecords.some(entry => entry.id === item.id || entry.bugId === item.id) ? '来源：最近修复' : ''
+    ].filter(Boolean).join('\n');
+    this.modal({
+      title: '问题详情',
+      body: `<pre class="log-box">${Utils.escape(lines)}</pre>`,
+      actions: `<button class="secondary-btn" data-action="modal-close">关闭</button>`
+    });
   },
 
   afterRender() {
@@ -628,7 +848,10 @@ const App = {
       'quality-check': () => this.qualityCheck(el),
       'quality-fix': () => this.qualityFix(el),
       'quality-export': () => this.qualityExport(el),
+      'skill-enterprise-intro': () => this.skillEnterpriseIntro(),
       'bug-confirm': () => this.confirmBugAlert(el.dataset.id),
+      'bug-ignore': () => this.ignoreBugAlert(el.dataset.id),
+      'bug-detail': () => this.openBugDetail(el.dataset.id),
       'mail-generate': () => this.mailGenerate(el),
       'mail-polish': () => this.mailPolish(el),
       'mail-translate': () => this.mailTranslate(el),
@@ -740,6 +963,112 @@ const App = {
       const message = this.recordAiError(error, action);
       this.toast(message || '操作失败', 'error');
     }
+  },
+
+  async skillEnterpriseIntro() {
+    const ws = Store.state.workspaces.skillDemo || (Store.state.workspaces.skillDemo = {
+      enterpriseName: '',
+      products: '',
+      equipment: '',
+      industry: '',
+      strengths: '',
+      contact: '',
+      result: '',
+      updatedAt: Date.now()
+    });
+    ws.enterpriseName = document.getElementById('skillEnterpriseName')?.value.trim() || ws.enterpriseName || '';
+    ws.products = document.getElementById('skillProducts')?.value.trim() || ws.products || '';
+    ws.equipment = document.getElementById('skillEquipment')?.value.trim() || ws.equipment || '';
+    ws.industry = document.getElementById('skillIndustry')?.value.trim() || ws.industry || '';
+    ws.strengths = document.getElementById('skillStrengths')?.value.trim() || ws.strengths || '';
+    ws.contact = document.getElementById('skillContact')?.value.trim() || ws.contact || '';
+    await this.busy(null, async () => {
+      const skillInput = {
+        enterpriseName: ws.enterpriseName,
+        products: ws.products,
+        equipment: ws.equipment,
+        industry: ws.industry,
+        strengths: ws.strengths,
+        contact: ws.contact
+      };
+      const resultText = this.skillMockOutput('enterprise-intro', skillInput);
+      ws.result = resultText;
+      ws.updatedAt = Date.now();
+      Store.save();
+      Store.logAiHistory({
+        module: 'skill-enterprise-intro',
+        skillId: 'enterprise-intro',
+        skillName: '企业介绍生成',
+        provider: 'mock',
+        model: 'skill-template',
+        success: true,
+        mock: true,
+        duration: 0,
+        error: '',
+        rawError: '',
+        input: JSON.stringify(skillInput),
+        output: resultText
+      });
+      Store.addActivity('Skill：企业介绍生成', 'ai');
+      this.rerender();
+    });
+  },
+
+  skillMockOutput(skillId, input = {}) {
+    const pick = value => String(value || '').trim() || '待补充';
+    const clamp = (text, max = 200) => {
+      const value = String(text || '').trim();
+      return value ? (value.length > max ? `${value.slice(0, max - 1)}…` : value) : '';
+    };
+    if (skillId === 'enterprise-intro') {
+      return [
+        `企业简介：${clamp(`${pick(input.enterpriseName)}，专注${pick(input.products)}，面向${pick(input.industry)}等场景，提供稳定加工与配套支持。`, 70)}`,
+        `核心能力：${clamp(`设备能力：${pick(input.equipment)}；优势：${pick(input.strengths)}。`, 70)}`,
+        `适合客户：${clamp(`适合需要${pick(input.products)}的采购客户、项目方和长期合作客户。`, 60)}`,
+        `联系建议：${clamp(`如需对接，请联系${pick(input.contact)}，先确认图纸、数量和交期。`, 60)}`
+      ].join('\n');
+    }
+    if (skillId === 'product-intro') {
+      return [
+        `产品简介：${clamp(`${pick(input.productName)}，采用${pick(input.material)}并通过${pick(input.process)}加工，主要用于${pick(input.usage)}。`, 70)}`,
+        `加工能力：${clamp(`支持${pick(input.process)}等工艺，可按图纸和样件确认。`, 60)}`,
+        `适合客户：${clamp(`适合${pick(input.industry)}相关采购客户及项目配套客户。`, 60)}`,
+        `采购建议：${clamp(`如需采购，请先确认规格、数量、交期与包装要求；优势：${pick(input.strengths)}。`, 70)}`
+      ].join('\n');
+    }
+    if (skillId === 'quote-summary') {
+      return [
+        `报价摘要：${clamp(`${pick(input.productName)} 的报价需要结合材料、工艺和数量确认。`, 70)}`,
+        `影响价格因素：${clamp(`材料：${pick(input.material)}；数量：${pick(input.quantity)}；工艺：${pick(input.process)}。`, 80)}`,
+        `交期说明：${clamp(`交期为${pick(input.delivery)}，若有加急或特殊要求需提前确认。`, 60)}`,
+        `需要补充的信息：${clamp(`${pick(input.requirements)}；如有图纸、样件或包装要求请一并提供。`, 80)}`,
+        `下一步建议：${clamp('先确认规格、数量、图纸和交期，再安排正式报价。', 60)}`
+      ].join('\n');
+    }
+    if (skillId === 'inquiry-reply') {
+      return [
+        `回复内容：您好，关于${pick(input.product)}的需求我们已收到，可按您的数量和交期进一步确认。`,
+        `需要确认的问题：${clamp(`请确认${pick(input.material)}、数量${pick(input.quantity)}、交期${pick(input.delivery)}及图纸要求。`, 80)}`,
+        `建议发送方式：微信或邮件回复更方便，必要时可附上联系方式 ${pick(input.contact)}。`
+      ].join('\n');
+    }
+    if (skillId === 'ocr-summary') {
+      return [
+        `内容摘要：${clamp(`文件类型为${pick(input.fileType)}，OCR 结果已整理。`, 60)}`,
+        `关键信息：${clamp(`${pick(input.userGoal)}；OCR 原文已接收，关键字段请继续确认。`, 80)}`,
+        `可能问题：${clamp('部分字符可能存在疑似识别偏差，建议人工核对。', 60)}`,
+        `下一步建议：${clamp('若用于发货、报价或归档，请先核对数量、日期和单号。', 60)}`
+      ].join('\n');
+    }
+    if (skillId === 'error-summary') {
+      return [
+        `问题摘要：${clamp(`${pick(input.moduleName)} 出现 ${pick(input.count)} 次异常记录。`, 60)}`,
+        `可能原因：${clamp('可能与配置、数据输入或前端交互有关。', 60)}`,
+        `影响范围：${clamp('仅影响当前模块或相关页面，不代表系统整体故障。', 60)}`,
+        `处理建议：${clamp(`请查看 ${pick(input.recentTime)} 附近的日志并逐项核对。`, 60)}`
+      ].join('\n');
+    }
+    return '';
   },
 
   async handleFileInput(type, files) {
@@ -1519,6 +1848,7 @@ const App = {
   recordAiError(error, context = '') {
     const message = AIService.friendlyMessage(error) || Utils.friendlyErrorMessage(error?.message || error);
     Store.state.aiErrors = Store.state.aiErrors || [];
+    const signature = this.bugAlertSignature({ module: context || 'AI', feature: 'AI 调用', type: 'AI错误', message });
     Store.state.aiErrors.unshift({
       id: uid(),
       message,
@@ -1526,6 +1856,7 @@ const App = {
       context,
       requestId: error?.requestId || '',
       rawError: String(error?.rawError || error?.message || error || ''),
+      signature,
       time: Date.now()
     });
     Store.state.aiErrors = Store.state.aiErrors.slice(0, 50);
@@ -1533,12 +1864,13 @@ const App = {
     Store.state.errorLog.unshift({
       id: uid(),
       time: Date.now(),
-      module: module || 'system',
+      module: context || 'AI',
       feature: context,
       message,
       requestId: error?.requestId || '',
       suggestion: this.suggestFix(error),
-      rawError: String(error?.rawError || error?.message || error || '')
+      rawError: String(error?.rawError || error?.message || error || ''),
+      signature
     });
     Store.state.errorLog = Store.state.errorLog.slice(0, 100);
     syncGlobalSystemState({ errorLog: Store.state.errorLog });
@@ -1587,6 +1919,7 @@ const App = {
 
   recordSystemError(error, context = '', module = 'system') {
     const message = Utils.friendlyErrorMessage(error?.message || error);
+    const signature = this.bugAlertSignature({ module, feature: context, type: '系统错误', message });
     Store.state.aiErrors = Store.state.aiErrors || [];
     Store.state.aiErrors.unshift({
       id: uid(),
@@ -1598,6 +1931,7 @@ const App = {
       module,
       severity: /PDF|OCR|fetch|AI/i.test(String(error?.message || error)) ? '中' : '高',
       fixed: false,
+      signature,
       suggestion: this.suggestFix(error),
       time: Date.now()
     });
@@ -1611,7 +1945,8 @@ const App = {
       message,
       requestId: error?.requestId || '',
       suggestion: this.suggestFix(error),
-      rawError: String(error?.rawError || error?.message || error || '')
+      rawError: String(error?.rawError || error?.message || error || ''),
+      signature
     });
     Store.state.errorLog = Store.state.errorLog.slice(0, 100);
     syncGlobalSystemState({ errorLog: Store.state.errorLog });
@@ -1686,10 +2021,11 @@ const App = {
     };
     const latestFix = (Store.state.repairRecords || []).length
       ? Store.state.repairRecords[0]
-      : (Store.state.bugAlerts || []).filter(item => item.confirmed).sort((a, b) => (b.confirmedAt || b.time || 0) - (a.confirmedAt || a.time || 0))[0] || null;
-    const unresolvedErrors = (Store.state.aiErrors || []).filter(item => !item.fixed);
-    const hasRecentChatFetchError = unresolvedErrors.some(item => /ai-chat|chat/i.test(`${item.context || ''} ${item.module || ''}`) && /Failed to fetch|Network Error|AI 后端连接失败|Timeout/i.test(`${item.message || ''} ${item.detail || ''}`));
-    const hasRecentPdfError = unresolvedErrors.some(item => /PDF Worker|pdf/i.test(`${item.context || ''} ${item.module || ''}`) && /Failed to fetch|worker|路径|加载失败|PDF/i.test(`${item.message || ''} ${item.detail || ''}`));
+      : normalizedBugAlerts.filter(item => item.status === '已修复').sort((a, b) => (b.confirmedAt || b.lastAt || b.time || 0) - (a.confirmedAt || a.lastAt || a.time || 0))[0] || null;
+    const normalizedBugAlerts = this.getVisibleBugAlerts();
+    const unresolvedErrors = normalizedBugAlerts.filter(item => item.status !== '已修复' && item.status !== '已忽略');
+    const hasRecentChatFetchError = unresolvedErrors.some(item => /ai-chat|chat/i.test(`${item.feature || ''} ${item.module || ''}`) && /Failed to fetch|Network Error|AI 后端连接失败|Timeout/i.test(`${item.message || ''} ${item.description || ''}`));
+    const hasRecentPdfError = unresolvedErrors.some(item => /PDF Worker|pdf/i.test(`${item.feature || ''} ${item.module || ''}`) && /Failed to fetch|worker|路径|加载失败|PDF/i.test(`${item.message || ''} ${item.description || ''}`));
     const localStorageOk = (() => {
       try {
         const key = `__eaos_health_${now}`;
@@ -1794,14 +2130,26 @@ const App = {
     }
 
     if (hasRecentChatFetchError) {
-      gatewayStatus = displayMode ? '🟡 Mock 演示' : '🟡 近期存在网络错误';
-      gatewayReason = '存在未确认的 ai-chat Failed to fetch / 网络错误记录，需先排查后端连通性。';
-      gatewaySuggestion = '请先查看 Error Center 并确认最近网络错误已修复。';
+      if (displayMode) {
+        gatewayStatus = '🟡 展示模式历史提示';
+        gatewayReason = '检测到 ai-chat Failed to fetch 历史记录，但当前为 GitHub Pages 展示模式，不作为 STEP 5 阻塞。';
+        gatewaySuggestion = '如需真实 AI，请部署后端后再进行在线验证。';
+      } else {
+        gatewayStatus = '🟡 近期存在网络错误';
+        gatewayReason = '存在未确认的 ai-chat Failed to fetch / 网络错误记录，需先排查后端连通性。';
+        gatewaySuggestion = '请先查看 Error Center 并确认最近网络错误已修复。';
+      }
     }
     if (hasRecentPdfError) {
-      backendStatus = displayMode ? '🟡 展示模式 / 后端不可用' : '🟡 降级可用';
-      backendReason = '存在未确认的 PDF Worker 失败记录，文件处理不能视为绿色。';
-      backendSuggestion = '请先排查 PDF Worker / 路径问题并确认最近错误已修复。';
+      if (displayMode) {
+        backendStatus = '🟡 展示模式历史提示';
+        backendReason = '检测到 PDF Worker 历史失败记录，但当前为 GitHub Pages 展示模式，不作为 STEP 5 阻塞。';
+        backendSuggestion = '如需真实 PDF Worker，请在后端版本继续排查。';
+      } else {
+        backendStatus = '🟡 降级可用';
+        backendReason = '存在未确认的 PDF Worker 失败记录，文件处理不能视为绿色。';
+        backendSuggestion = '请先排查 PDF Worker / 路径问题并确认最近错误已修复。';
+      }
     }
 
     const pushState = [
@@ -1815,6 +2163,8 @@ const App = {
       ['Excel', displayMode ? '🟡 仅前端能力可用' : (excelProbe ? '🟢 正常' : '🔴 异常'), displayMode ? 'GitHub Pages 仅提供前端能力。' : (excelProbe ? 'Excel 解析规则通过样例验证。' : 'Excel 解析样例未通过。'), displayMode ? '部署本地/服务器版后继续使用真实文件。' : '请检查 Excel 解析逻辑。'],
       ['localStorage', localStorageOk ? '🟢 正常' : '🔴 异常', localStorageOk ? '读写正常。' : '本地存储读写失败。', localStorageOk ? '可继续保存本地数据。' : '请检查浏览器隐私设置。'],
       ['Connector 状态', Array.isArray(Store.state.connectors) ? (Store.state.connectors.some(item => item.status === '已连接') ? '🟢 已连接' : Store.state.connectors.every(item => item.status === '未配置' || !item.enabled) ? '⚪ 未配置' : Store.state.connectors.some(item => item.status === '连接失败') ? '🔴 连接失败' : '🟡 待验证') : '🔴 异常', Array.isArray(Store.state.connectors) ? `未配置 ${Store.state.connectors.filter(item => item.status === '未配置' || !item.enabled).length} 个；已连接 ${Store.state.connectors.filter(item => item.status === '已连接').length} 个；连接失败 ${Store.state.connectors.filter(item => item.status === '连接失败').length} 个。` : '连接器数据缺失。', '请在 Integration Center 中按真实配置逐个启用。'],
+      ['Bug Monitor', unresolvedErrors.length ? '🟡 待确认' : '🟢 正常', `${normalizedBugAlerts.length} 条聚合错误，${normalizedBugAlerts.filter(item => item.status === '已忽略').length} 条已忽略。`, '重复错误会自动合并，忽略项不再影响健康状态。'],
+      ['Error Center', unresolvedErrors.length ? '🟡 待处理' : '🟢 正常', `${unresolvedErrors.length} 条待处理错误，${Store.state.repairRecords?.length || 0} 条最近修复。`, '保留历史错误并持续追踪。'],
       ['最近错误', unresolvedErrors.length ? `${unresolvedErrors[0].message || '错误'}` : '暂无', unresolvedErrors.length ? `来源：${unresolvedErrors[0].context || unresolvedErrors[0].module || 'system'}` : '暂无最近错误记录。', unresolvedErrors.length ? '查看 Error Center 并确认修复。' : '暂无需要处理的问题。'],
       ['最近修复', latestFix ? `${latestFix.module || 'system'} · ${latestFix.feature || latestFix.type || '已确认修复'}` : '暂无已确认修复记录', latestFix ? `${latestFix.message || latestFix.description || ''}` : '暂无用户点击“确认修复”的记录。', latestFix ? '可在 Bug Monitor 查看确认修复记录。' : '点击 Bug Monitor 的“确认修复”后会出现在这里。'],
       ['Agent 任务总数', String((Store.state.runtimeMonitor?.totalTasks || 0)), `成功 ${(Store.state.runtimeMonitor?.successTasks || 0)} / 失败 ${(Store.state.runtimeMonitor?.failedTasks || 0)} / 超时 ${(Store.state.runtimeMonitor?.timeoutTasks || 0)}`, '继续执行 Agent Runtime 任务会自动更新。'],
@@ -1833,7 +2183,7 @@ const App = {
       updatedAt: now,
       source: displayMode ? 'GitHub Pages' : (apiUrl ? '本地/服务器' : '未配置'),
       gateway: Store.state.aiGatewayStatus,
-      errors: (Store.state.aiErrors || []).slice(0, 20)
+      errors: normalizedBugAlerts.slice(0, 20)
     };
     Store.state.runtimeMonitor.lastSelfCheckAt = now;
     Store.state.runtimeMonitor.lastSelfCheckSource = displayMode ? 'GitHub Pages' : (apiUrl ? '本地/服务器' : '未配置');
@@ -5753,30 +6103,58 @@ const App = {
       `最近邮件：${(Store.state.mailInbox || []).slice(0, 3).map(item => `${item.subject}/${item.from}`).join('；') || '无'}`,
       `知识条目：${(Store.state.knowledge || []).length}`
     ].join('\n');
+    const normalizedPrompt = String(prompt || '').trim();
+    const skillMap = [
+      [/企业介绍|公司介绍|企业简介/, 'enterprise-intro'],
+      [/产品介绍|产品说明/, 'product-intro'],
+      [/报价说明|报价单|报价/, 'quote-summary'],
+      [/询盘回复|客户回复|询盘/, 'inquiry-reply'],
+      [/OCR.*总结|识别结果总结|图片总结/, 'ocr-summary'],
+      [/错误中心|错误总结|Bug总结/, 'error-summary']
+    ];
+    const matchedSkillId = skillMap.find(([pattern]) => pattern.test(normalizedPrompt))?.[1] || '';
     let result = '';
-    if (/优先|订单/.test(prompt)) {
+    if (!matchedSkillId && /优先|订单/.test(prompt)) {
       result += `优先订单：\n${orders.slice().sort((a, b) => String(a.delivery_date || '').localeCompare(String(b.delivery_date || ''))).slice(0, 5).map(item => `${item.order_no} / ${item.customer} / ${item.delivery_date}`).join('\n') || '暂无订单'}\n\n`;
     }
-    if (/库存|不足/.test(prompt)) {
+    if (!matchedSkillId && /库存|不足/.test(prompt)) {
       const low = inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0));
       result += `库存不足：\n${low.map(item => `${item.product_name} / 当前 ${item.stock_quantity} / 安全 ${item.safety_stock}`).join('\n') || '暂无低库存'}\n\n`;
     }
-    if (/延期|风险/.test(prompt)) {
+    if (!matchedSkillId && /延期|风险/.test(prompt)) {
       const delayed = orders.filter(item => item.delivery_date && new Date(item.delivery_date) < new Date() && item.status !== '已完成');
       result += `延期风险：\n${delayed.map(item => `${item.order_no} / ${item.customer} / ${item.delivery_date}`).join('\n') || '暂无延期风险'}\n\n`;
     }
-    if (/邮件/.test(prompt)) {
+    if (!matchedSkillId && /邮件/.test(prompt)) {
       result += `待回复邮件：\n${Store.state.mailInbox.map(item => `${item.subject} / ${item.from}`).join('\n') || '暂无邮件'}\n\n`;
     }
-    if (/计划/.test(prompt)) {
+    if (!matchedSkillId && /计划/.test(prompt)) {
       await this.planGenerate();
       const planWs = this.getPlanWorkspace();
       result += `今日生产计划：\n${planWs.planResult || planWs.dailyReport || '暂无计划'}\n\n`;
     }
-    if (/日报/.test(prompt)) {
+    if (!matchedSkillId && /日报/.test(prompt)) {
       result += `日报建议：\n订单 ${orders.length} 条；低库存 ${inventory.filter(item => Number(item.stock_quantity || 0) <= Number(item.safety_stock || 0)).length} 条；请人工确认后导出。\n\n`;
     }
-    if (Store.state.settings.accessMode !== 'local') {
+    if (Store.state.settings.accessMode !== 'local' && matchedSkillId) {
+      const skillInput = {
+        enterpriseName: Store.state.settings.enterpriseName || '',
+        customerRequest: normalizedPrompt,
+        product: normalizedPrompt,
+        quantity: '',
+        material: '',
+        delivery: '',
+        contact: Store.state.settings.agentMail?.mailbox || ''
+      };
+      const ai = await AIService.complete('', {
+        mode: 'skill',
+        module: 'assistant',
+        skillId: matchedSkillId,
+        skillInput,
+        mockFallback: () => this.skillMockOutput(matchedSkillId, skillInput)
+      });
+      result = this.skillMockOutput(matchedSkillId, skillInput) || ai.text;
+    } else if (Store.state.settings.accessMode !== 'local') {
       const ai = await AIService.complete(`你是企业 AI 助手中心，请根据上下文完成任务。\n\n系统上下文：\n${context}\n\n用户任务：${prompt}`, {
         mode: 'chat',
         module: 'assistant'
