@@ -1,3 +1,25 @@
+## 2026-07-07 — OCR AI 修复结果为空修复
+
+### 修复
+
+- 修复 OCR 页面“AI 自动纠错”在原文存在时仍显示 `0` 的问题。
+- 纠错结果改为优先读取 `GlobalSystemState.ocrResult.text`，并在必要时回收本地 OCR 原文作为安全兜底，避免空结果。
+- Mock 纠错结果改为基于原文的保守修复，不再返回空字符串。
+- 导出 AI 修复 TXT / Word / Excel 继续使用修复后的内容。
+
+### 验证
+
+- 浏览器实测：OCR 原文存在时，AI 修复结果字数显示为非 0，且内容可见。
+- `node --check app.js core.js ui.js server.js`：通过
+- `node --check skills.js`：通过
+- `node --check step5-final-polish.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮仅修 OCR 自动纠错链路。
+- 未修改 STEP 5、Error Center / Bug Monitor、AI Chat、成本核算助手、Skill 模板和真实 AI 接入。
+
 ## 2026-07-03 — AI Chat 底部裁切与 Bug 监测收口
 
 ### 修复
@@ -717,3 +739,10 @@
 
 - GitHub Pages 自动进入展示模式，避免错误请求真实后端。
 - 本地 / 后端模式继续走真实 DeepSeek。
+# 2026-07-06
+
+- 新增 Skill 模板化系统，统一企业介绍、产品介绍、报价说明、客户询盘回复、OCR 总结、错误总结的固定输出模板
+- Skill 结果记录补充 `skillId`、`skillName`、`input`、`output`
+- 首页增加 Skill 模板入口卡片，支持一键生成企业介绍
+- AI History 增加 Skill 相关展示字段
+- 本轮未修改 STEP 5、Error Center 聚合逻辑和真实 AI 接入

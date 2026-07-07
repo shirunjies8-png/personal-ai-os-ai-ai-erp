@@ -3176,30 +3176,40 @@ const App = {
 
   async ocrAIFix(btn) {
     const o = this.temp.ocr;
-    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
+    const stateOcr = window.GlobalSystemState?.ocrResult || {};
+    const source = String(stateOcr.text || o.result || o.original || '').trim();
     if (!source) throw new Error('暂无可纠错的 OCR 结果');
+    if (String(stateOcr.text || '').trim() !== source) {
+      const structured = OCRService.structure(source);
+      const synced = {
+        ...stateOcr,
+        text: source,
+        table: stateOcr.table ?? (structured.pairs.length ? structured.pairs : null),
+        imageMeta: stateOcr.imageMeta || (o.file ? { name: o.file.name, size: o.file.size, type: o.file.type } : {}),
+        status: stateOcr.status === 'failed' ? 'success' : (stateOcr.status || 'success')
+      };
+      window.GlobalSystemState.ocrResult = synced;
+      if (typeof emit === 'function') emit('ocr:completed', synced);
+    }
     const quality = o.quality || OCRService.assessQuality(source);
     const buildMock = reason => {
+      const structured = OCRService.structure(source);
+      const structuredLines = structured.pairs.length
+        ? structured.pairs.map(([key, value]) => `${key}：${String(value || '').trim() || '待确认'}`)
+        : structured.lines;
+      const repairedLines = structuredLines.length
+        ? structuredLines
+        : source.split('\n').map(line => line.trim()).filter(Boolean);
       return [
+        'AI 修复内容仅供参考，请人工核对后使用。',
         'OCR 原文：',
         source,
         '',
         'AI 修复结果：',
-        'AI 修复内容仅供参考，请人工核对后使用。',
-        '发货单号：SO-2026-015',
-        '客户名称：常州新能源科技有限公司',
-        '发货日期：无法确认',
-        '联系人：无法确认',
-        '电话：无法确认',
-        '产品编码：无法确认',
-        '产品名称：304不锈钢连接件',
-        '规格型号：无法确认',
-        '数量：760',
-        '单价：无法确认',
-        '金额：9710.00',
+        repairedLines.join('\n') || '待确认',
         '',
-        `Mock 说明：${reason}`
-      ].join('\n');
+        `Mock 说明：${reason || '已基于原文生成保守纠错结果，缺失信息标记为待确认。'}`
+      ].join('\n').trim();
     };
     const confirmText = '当前 OCR 内容将发送至第三方 AI 进行纠错，请确认不包含企业机密或已完成脱敏。';
     const remoteReady = Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled && Store.state.settings.apiUrl;
@@ -3233,9 +3243,10 @@ const App = {
           temperature: 0.1,
           mockFallback: buildMock
         });
-        o.aiFix = ai.text || buildMock('AI 返回为空');
-        o.aiMode = ai.mode || 'mock';
-        o.aiError = ai.error || '';
+        const repaired = String(ai.text || '').trim();
+        o.aiFix = repaired || buildMock('AI 返回为空');
+        o.aiMode = ai.mode || (repaired ? 'api' : 'mock');
+        o.aiError = repaired ? (ai.error || '') : '模型返回为空，已使用 Mock 纠错。';
       } catch (error) {
         o.aiFix = buildMock(AIService.friendlyMessage?.(error) || error.message);
         o.aiMode = 'mock';
