@@ -9,6 +9,7 @@ const entries = [
   'styles.css',
   'config.js',
   'runtime-init.js',
+  'skills.js',
   'core.js',
   'ui.js',
   'app.js',
