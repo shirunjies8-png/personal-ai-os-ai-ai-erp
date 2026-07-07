@@ -1,3 +1,31 @@
+## 2026-07-07 — OCR AI 修复结果 0 问题收口
+
+### 浏览器验证
+
+- OCR 页面已验证：只要 OCR 原文存在，点击“AI 自动纠错”后，AI 修复结果会稳定生成内容，不再显示为 `0`
+- 修复结果区会显示字数，且可继续编辑
+- 导出 AI 修复 TXT / Word / Excel 使用的是修复后的文本
+- OCR 原文为空时仍会保持明确提示，不会伪造结果
+
+### 实测结果
+
+- 本地浏览器中将 OCR 原文设为 `51` 字内容后，点击“AI 自动纠错”
+- “AI 修复结果”字数显示为 `332`
+- 修复文本内容成功回填到结果区
+- 本次未修改 STEP 5 / Error Center / Bug Monitor / AI Chat / 成本核算助手 / Skill 模板
+
+### Build / Node Check
+
+- `node --check app.js core.js ui.js server.js`：通过
+- `node --check skills.js`：通过
+- `node --check step5-final-polish.js`：通过
+- `npm run build`：通过
+
+### 结论
+
+- OCR AI 自动纠错结果为空的问题已收口
+- 当前行为符合“原文存在时，修复结果必须生成内容”的要求
+
 ## 2026-07-05 — STEP 5 Final Validation
 
 ### 浏览器验证
@@ -1290,3 +1318,27 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 - 本轮未修改 STEP 5 Error Center / Bug Monitor 聚合逻辑
 - 本轮未接入真实 AI
 - 本轮目标为 Skill 模板化收口，而不是新增业务模块
+# 2026-07-06 — skills.js 浏览器兼容修复
+
+### 浏览器验证
+
+- GitHub Pages / 展示模式下不再出现 `module is not defined`
+- `skills.js` 已改为浏览器优先挂载方式，避免 CommonJS 在静态环境报错
+- Node 环境下保留 `module.exports`，并使用 `typeof module !== 'undefined'` 做保护
+- 不影响 STEP 5 Final Validation
+- 不影响 Error Center / Bug Monitor 聚合逻辑
+- 不修改 AI Chat、OCR、真实 AI 接入逻辑
+
+### 构建验证
+
+- `node --check skills.js`：通过
+- `node --check public/skills.js`：通过
+- `node --check dist/skills.js`：通过
+- `node --check app.js core.js ui.js server.js`：通过
+- `npm run build`：通过
+
+### 结论
+
+- AI Skill 模板配置已兼容 GitHub Pages 静态环境
+- STEP 5 Production Ready 状态保持不变
+- 整体项目仍为 Resume Demo / MVP 增强阶段
