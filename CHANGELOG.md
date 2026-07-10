@@ -1,3 +1,170 @@
+## 2026-07-08 — OCR 乱码后的结构化字段保护
+
+### Added
+
+- OCR 质量判断：good / medium / poor
+- OCR 字段过滤与乱码保护，避免乱码原文直接进入关键业务字段
+- OCR 可编辑字段表
+- OCR 人工确认后保存，并写入 `personal-ai-os-ocr-confirmed-fields`
+- 原始 OCR 与人工确认字段分开导出
+
+### Changed
+
+- OCR 页面结构从“原文 + 拆表”升级为“可信字段表 + 原始拆行结果”
+- 加载示例时可直接展示演示字段，不再依赖低质量 OCR 原文
+
+### Notes
+
+- 当前仍为本地演示版 / Mock AI，未接真实 AI
+- 本轮未修改成本核算助手、AI Chat、Skill 模板、Error Center / Bug Monitor 与真实 AI 接入
+
+## 2026-07-08 — Resume Demo 最终收口
+
+### Added
+
+- 版本冻结说明，明确当前版本名称为 `Industrial AI OS · Resume Demo Version`
+- 面向简历、面试、作品集展示的版本定位说明
+- 核心模块说明：AI Chat、OCR、成本核算助手、Skill 模板、Error Center / Bug Monitor
+- 推荐演示路线，便于演示时按步骤串联
+- 简历可用项目描述与 GitHub Pages 展示链接
+
+### Notes
+
+- 当前版本保持本地演示版 / Mock AI / 未接入真实 AI 的诚实口径
+- 所有数据仍以浏览器 localStorage 保存为主
+- 本轮未修改 AI Chat、OCR、成本核算助手、Skill 模板、Error Center / Bug Monitor 的核心业务逻辑
+
+## 2026-07-07 — 成本核算助手收口
+
+### Changed
+
+- `ui.js`
+  - 将成本核算助手改造成结构化报价页面，增加产品信息、材料信息、加工/人工/其他成本、利润设置和结果卡片。
+  - 新增“一键填充示例”“清空数据”“导出报价单”按钮。
+- `app.js`
+  - 新增本地成本核算引擎，支持材料成本、加工成本、人工成本、其他成本、总成本、建议利润、建议报价、单件报价、最低可接受报价和风险提示。
+  - 新增成本示例填充、清空、打印导出逻辑。
+  - 成本输入继续保存在本地工作区，刷新后可回显。
+
+### Verified
+
+- `node --check app.js core.js ui.js server.js`
+- `node --check skills.js`
+- `node --check step5-final-polish.js`
+- `npm run build`
+- 浏览器验证示例填充 / 清空 / 打印导出链路可用，计算结果正确
+
+### Notes
+
+- 本轮未修改 STEP 5、Error Center / Bug Monitor、AI Chat、OCR、Skill 模板和真实 AI 接入。
+- 当前成本核算助手为本地纯前端计算演示版，面向制造业快速报价场景。
+
+## 2026-07-07 — Skill 模板 / 工厂场景模板
+
+### Changed
+
+- `skills.js`
+  - 扩展为制造业常用工作模板库，新增 21 个本地模板。
+  - 模板字段统一包含：模板名称、使用场景、适合岗位、输入字段、输出格式、示例内容、使用建议。
+  - 保留浏览器兼容导出方式，继续支持 `window.AISkills` 与 `module.exports`。
+- `ui.js`
+  - 新增 `#/skills` 技能模板页。
+  - 支持分类筛选、搜索、查看模板详情、一键复制和模板预览。
+  - 首页新增 Skill 模板入口卡片。
+- `app.js`
+  - 新增 Skill 模板页的本地状态保存，包括最近使用、最近复制、当前分类、搜索关键词和预览内容。
+  - 新增模板复制、使用、筛选和重置动作。
+
+### Verified
+
+- `node --check app.js core.js ui.js server.js`
+- `node --check skills.js`
+- `node --check step5-final-polish.js`
+- `npm run build`
+- 浏览器验证 `#/skills` 可用，筛选 / 搜索 / 复制 / 预览链路正常
+
+### Notes
+
+- 本轮未修改 STEP 5、Error Center / Bug Monitor、OCR、AI Chat、成本核算助手和真实 AI 接入。
+- 当前 Skill 模板模块为本地模板演示版，后续可再接真实 AI。
+
+## 2026-07-07 — STEP 5 最终验收（Error Center / Bug Monitor）
+
+### 增强
+
+- 监控页新增“运行错误中心自检”按钮。
+- 自检可模拟并验证：
+  - 错误聚合
+  - 查看详情
+  - 忽略
+  - 恢复
+  - 确认修复
+  - 健康统计
+  - 新增 JS 错误检测
+- 自检结果以页面卡片展示，不混入真实错误列表。
+
+### 验证
+
+- `node --check app.js core.js ui.js server.js`：通过
+- `node --check skills.js`：通过
+- `node --check step5-final-polish.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮未修改 AI Chat、OCR、成本核算助手、Skill 模板、真实 AI 接入
+- 本轮仅用于 STEP 5 最终验收收口
+
+## 2026-07-07 — STEP 5 Error Center / Bug Monitor 收口
+
+### 修复
+
+- 将错误生命周期收口为 `active / ignored / resolved` 三态。
+- 同类错误继续按 signature 聚合，不再重复刷屏。
+- Bug Monitor 现在支持：
+  - 查看详情
+  - 忽略
+  - 确认修复
+  - 恢复忽略项
+- 系统监控健康状态仅统计 active 错误；ignored / resolved 不再计入当前异常。
+- Error Center 增加错误总数 / Active / Ignored / Resolved 汇总。
+
+### 验证
+
+- `node --check app.js core.js ui.js server.js`：通过
+- `node --check skills.js`：通过
+- `node --check step5-final-polish.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮未修改 AI Chat、OCR、成本核算助手、Skill 模板、真实 AI 接入逻辑
+- 本轮仅收口 Error Center / Bug Monitor 的展示与生命周期
+
+## 2026-07-07 — OCR 结构化字段提取收口
+
+### 修复
+
+- OCR 结构化结果从“拆行乱码”升级为“字段识别表 + 原始拆行结果”双块展示。
+- 优先从 AI 修复结果提取固定业务字段；若 AI 修复结果为空，则回退原始 OCR 文本。
+- 支持字段：
+  - 单据类型、企业名称、单据编号、客户名称、产品名称、产品编码、材料、规格型号、数量、单位、交货日期、电话、地址、网址、备注、可信度、缺失字段
+- 缺失字段统一显示 `待补充`，不编造数量、材料、客户等关键信息。
+
+### 验证
+
+- 浏览器实测 OCR 页面可显示字段识别表
+- `识别字段表` 与 `原始 OCR 拆行结果` 已分区展示
+- `node --check app.js core.js ui.js server.js`：通过
+- `node --check skills.js`：通过
+- `node --check step5-final-polish.js`：通过
+- `npm run build`：通过
+
+### 说明
+
+- 本轮仅修 OCR 结构化字段提取
+- 未修改 STEP 5、Error Center / Bug Monitor、AI Chat、成本核算助手、Skill 模板、真实 AI 接入和 OCR 引擎 CSP
+
 ## 2026-07-07 — OCR AI 修复结果为空修复
 
 ### 修复
@@ -746,3 +913,29 @@
 - 首页增加 Skill 模板入口卡片，支持一键生成企业介绍
 - AI History 增加 Skill 相关展示字段
 - 本轮未修改 STEP 5、Error Center 聚合逻辑和真实 AI 接入
+# 2026-07-08 — AI Chat 体验收口
+
+- 将 AI Chat 收口为本地规则演示模式，明确显示 Mock AI 状态。
+- 新增 8 个快捷提示词：识别发货单、做成本报价、生成客户回复、查看错误中心、找生产日报模板、生成 CNC 招聘文案、分析质量异常、生成设备维修记录。
+- 新增本地意图识别与模块推荐：
+  - OCR 单据识别 `#/ocr`
+  - 成本核算助手 `#/cost`
+  - Skill 模板 `#/skills`
+  - Error Center `#/monitoring`
+  - 生产计划助手 `#/productionplan`
+  - 工作日志 `#/worklog`
+- 新增“模块推荐卡片”与可点击跳转入口。
+- 新增“一键填充演示对话”，支持三轮本地演示会话与 localStorage 保存。
+- 聊天消息支持更贴近制造业场景的本地演示回复，不接真实 AI。
+# 2026-07-08 — Resume Demo 最终收口
+
+- 首页定位改为 `Industrial AI OS · Manufacturing AI Office Demo`，一句话说明补齐为面向小工厂的 AI 办公演示系统。
+- 首页增加 `推荐演示路线`，用于从 AI Chat → 成本核算助手 → Skill 模板 → Error Center / Bug Monitor 的现场演示路径。
+- 统一页面口径为 `本地演示版 / Mock AI`，避免误导为真实 AI 已接入。
+- 入口与文案更适合作品集、简历投递和面试展示。
+## 2026-07-08
+
+- 修复 OCR 页面在 Mock / 本地演示模式下，AI 自动纠错、AI 总结、AI 翻译、OCR 问答和 AI 还原表格反复写入 active error 的问题。
+- 增加 OCR AI Mock 兜底分支：未连接真实 AI 后端或未启用远程 AI 时，直接返回可读的本地演示结果。
+- OCR Mock 结果不再进入 Error Center / Bug Monitor 的 active 告警链路。
+- 保持 OCR 结构化字段表、人工确认保存、本地演示版说明不变。
