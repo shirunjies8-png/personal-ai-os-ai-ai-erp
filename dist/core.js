@@ -1313,6 +1313,61 @@ const OCRService = {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   },
+  isLikelyGarbage(value = '') {
+    const text = String(value || '').trim();
+    if (!text) return true;
+    if (['undefined', 'null', 'NaN', 'Infinity'].includes(text)) return true;
+    if (text.length > 80) return true;
+    if (/^[A-Z]{6,}$/.test(text)) return true;
+    if (/(.)\1{5,}/.test(text)) return true;
+    const chineseRatio = (text.match(/[\u4e00-\u9fa5]/g) || []).length / Math.max(1, text.length);
+    const junkRatio = (text.match(/[^ \u4e00-\u9fa5A-Za-z0-9。，、；：:,.%（）()\-_/&·]/g) || []).length / Math.max(1, text.length);
+    return chineseRatio < 0.08 || junkRatio > 0.18;
+  },
+  normalizeFieldValue(field, value, source = '', quality = {}) {
+    const text = String(value || '').trim();
+    if (!text) return '待补充';
+    const sourceText = String(source || '');
+    const hasKeyword = keyword => sourceText.includes(keyword);
+    const goodEnough = quality?.level === 'good' || quality?.score >= 70;
+    if (this.isLikelyGarbage(text)) return '待补充';
+    switch (field) {
+      case '单据类型':
+        return /发货|送货/.test(text) ? '发货单' : /采购/.test(text) ? '采购单' : /生产|日报/.test(text) ? '生产日报' : /合同/.test(text) ? '合同' : /报价/.test(text) ? '报价单' : /订单/.test(text) ? '订单' : text;
+      case '企业名称':
+        return /(公司|厂|有限|集团|店|部)/.test(text) ? text : '待补充';
+      case '单据编号':
+        return /^[A-Za-z0-9][A-Za-z0-9\-_/]{2,}$/.test(text) ? text : '待补充';
+      case '客户名称':
+        return /(公司|厂|集团|学校|医院|店|部|有限公司|有限责任公司)/.test(text) || (goodEnough && text.length <= 30) ? text : '待补充';
+      case '产品名称':
+        return /[\u4e00-\u9fa5A-Za-z0-9]/.test(text) && text.length <= 40 ? text : '待补充';
+      case '产品编码':
+        return /^[A-Za-z0-9][A-Za-z0-9\-_/]{2,}$/.test(text) ? text : '待补充';
+      case '材料':
+        return /(不锈钢|铝|钢|铜|塑料|板材|型材|304|316|45#|碳钢)/.test(text) ? text : '待补充';
+      case '规格型号':
+        return /[\u4e00-\u9fa5A-Za-z0-9\-_/()]+/.test(text) && text.length <= 50 ? text : '待补充';
+      case '数量':
+        return /^-?\d+(?:\.\d+)?$/.test(text) ? text : '待补充';
+      case '单位':
+        return /^(件|个|箱|套|台|批|米|kg|公斤|吨|只|张|pcs|PCs|条|支|包|卷)$/.test(text) ? text : (text.length <= 6 ? text : '待补充');
+      case '交货日期':
+        return /(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?)/.test(text) ? text : '待补充';
+      case '电话':
+        return /(?:\d{3,4}-\d{7,8}|\d{11}|\d{2,4}\s?\d{6,8})/.test(text) ? text : '待补充';
+      case '地址':
+        return text.length >= 4 ? text : '待补充';
+      case '网址':
+        return /(?:https?:\/\/|www\.)[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\/\S*)?/i.test(text) ? text : '待补充';
+      case '备注':
+        return text.length <= 120 ? text : '待补充';
+      case '可信度':
+        return ['低', '中', '高'].includes(text) ? text : '低';
+      default:
+        return text || '待补充';
+    }
+  },
   assessQuality(text = '') {
     const source = String(text || '');
     const lines = source.split('\n').map(line => line.trim()).filter(Boolean);
@@ -1329,13 +1384,37 @@ const OCRService = {
       table: tableMisalign / Math.max(1, lines.length),
       missing: keyMissing / 10
     };
-    const low = ratio.junk > 0.18 || ratio.broken > 1.5 || ratio.digit > 1 || ratio.table > 0.35 || keyMissing >= 4 || source.length < 40;
+    const score = Math.max(0, Math.min(100,
+      100
+      - Math.round(ratio.junk * 120)
+      - Math.round(ratio.broken * 10)
+      - Math.round(ratio.digit * 10)
+      - Math.round(ratio.table * 25)
+      - keyMissing * 4
+      - (source.length < 40 ? 25 : 0)
+    ));
+    const level = score >= 75 ? 'good' : score >= 45 ? 'medium' : 'poor';
+    const low = level === 'poor';
+    const reasons = [];
+    if (ratio.junk > 0.18) reasons.push('乱码符号比例较高');
+    if (ratio.broken > 1.5) reasons.push('中文断字较多');
+    if (ratio.digit > 1) reasons.push('数字格式异常');
+    if (ratio.table > 0.35) reasons.push('表格列疑似错位');
+    if (keyMissing >= 4) reasons.push('关键字段缺失较多');
+    if (source.length < 40) reasons.push('文本过短');
     return {
+      level,
+      score,
+      reasons,
       low,
       ratio,
       keyMissing,
       lines,
-      summary: low ? '检测到 OCR 结果可能存在乱码，建议使用 AI 纠错。' : 'OCR 质量正常，可直接编辑或导出。'
+      summary: level === 'poor'
+        ? '当前 OCR 原文质量较差，可能由图片模糊、表格线干扰、文字过小、图片压缩或生成图片导致。请以结构化字段表和人工确认结果为准。'
+        : level === 'medium'
+          ? 'OCR 已识别部分内容，但仍需人工核对关键字段。'
+          : 'OCR 识别质量较好，但仍建议人工核对后使用。'
     };
   },
   detectTemplate(text = '') {
@@ -1355,7 +1434,60 @@ const OCRService = {
       const match = line.match(/^([^:：]{1,20})(?:[:：]\s*|\s+)(.+)$/);
       if (match) pairs.push([match[1], match[2]]);
     });
-    return { template, lines, pairs };
+    const source = String(text || '');
+    const pairText = pairs.map(([key, value]) => `${key}：${value}`).join('\n');
+    const basis = pairText || source;
+    const quality = this.assessQuality(source);
+    const lookup = (...patterns) => {
+      for (const pattern of patterns) {
+        const match = basis.match(pattern) || source.match(pattern);
+        if (match && match[1]) {
+          const value = String(match[1]).trim().replace(/[，,。；;]+$/g, '');
+          if (value) return value;
+        }
+      }
+      return '';
+    };
+    const pick = (field, value) => this.normalizeFieldValue(field, value, source, quality);
+    const detectDocType = () => {
+      if (/发货|送货/.test(source)) return '发货单';
+      if (/采购/.test(source)) return '采购单';
+      if (/生产|日报/.test(source)) return '生产日报';
+      if (/合同/.test(source)) return '合同';
+      if (/报价/.test(source)) return '报价单';
+      if (/订单/.test(source)) return '订单';
+      return template || '待补充';
+    };
+    const fields = {
+      '单据类型': pick('单据类型', detectDocType()),
+      '企业名称': pick('企业名称', lookup(/(?:企业名称|公司名称|公司|单位名称)[:：\s]*([^\n，,；;]+)/, /([A-Za-z\u4e00-\u9fa5（）()&·\-]{4,}(?:有限公司|股份有限公司|科技有限公司|集团有限公司|集团|公司))/)),
+      '单据编号': pick('单据编号', lookup(/(?:单据编号|发货单号|单号|订单号|采购单号|合同编号|报价单号)[:：\s]*([A-Za-z0-9\-_/]+[A-Za-z0-9])/i, /([A-Z]{1,6}-?\d{4,}-?\d{0,6})/)),
+      '客户名称': pick('客户名称', lookup(/(?:客户名称|客户|购方|甲方)[:：\s]*([^\n，,；;]+)/)),
+      '产品名称': pick('产品名称', lookup(/(?:产品名称|产品|货物名称|品名|名称)[:：\s]*([^\n，,；;]+)/)),
+      '产品编码': pick('产品编码', lookup(/(?:产品编码|编码|物料编码|料号)[:：\s]*([A-Za-z0-9\-_/]+)/i)),
+      '材料': pick('材料', lookup(/(?:材料|材质)[:：\s]*([^\n，,；;]+)/)),
+      '规格型号': pick('规格型号', lookup(/(?:规格型号|规格|型号)[:：\s]*([^\n，,；;]+)/)),
+      '数量': pick('数量', lookup(/(?:数量|发货数量|订单数量|采购数量|件数|总数量)[:：\s]*([0-9]+(?:\.[0-9]+)?)/)),
+      '单位': pick('单位', lookup(/(?:单位)[:：\s]*([^\n，,；;]+)/)),
+      '交货日期': pick('交货日期', lookup(/(?:交货日期|发货日期|日期|交期|送货日期)[:：\s]*([0-9]{4}[年\-\/.][0-9]{1,2}[月\-\/.][0-9]{1,2}(?:日)?|[0-9]{4}-[0-9]{2}-[0-9]{2})/)),
+      '电话': pick('电话', lookup(/(?:电话|联系电话|手机号|联系号码)[:：\s]*([0-9()\-\s]{6,})/)),
+      '地址': pick('地址', lookup(/(?:地址|收货地址|送货地址|联系地址)[:：\s]*([^\n，,；;]+)/)),
+      '网址': pick('网址', lookup(/(?:网址|网站|官网)[:：\s]*((?:https?:\/\/)?(?:www\.)?[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\/[^\s]*)?)/i)),
+      '备注': pick('备注', lookup(/(?:备注|说明|附注|备注信息)[:：\s]*([^\n，,；;]+)/)),
+      '可信度': quality.level === 'poor' ? '低' : quality.level === 'medium' ? '中' : '高'
+    };
+    const missingFields = Object.entries(fields)
+      .filter(([key, value]) => key !== '可信度' && !String(value || '').trim())
+      .map(([key]) => key);
+    fields['缺失字段'] = missingFields.length ? missingFields.join('、') : '无';
+    const fieldRows = Object.entries(fields).map(([field, value]) => ({
+      field,
+      value: String(value || '').trim() || '待补充',
+      status: field === '可信度'
+        ? String(value || '').trim() || '低'
+        : (String(value || '').trim() && String(value || '').trim() !== '待补充' ? '已识别' : '未识别')
+    }));
+    return { template, lines, pairs, fields, fieldRows, quality };
   },
   async recognize(file, onProgress = () => {}) {
     try {

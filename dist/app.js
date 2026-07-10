@@ -89,7 +89,10 @@ const App = {
       edited: false,
       qaQuestion: '',
       qaAnswer: '',
-      analysis: ''
+      analysis: '',
+      fieldDrafts: [],
+      confirmedFields: JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null'),
+      demoFields: null
     },
     sql: { dialect: 'MySQL', prompt: '', output: '', explanation: '' },
     writing: JSON.parse(localStorage.getItem('personal-ai-os-writing-draft') || '{"type":"日报","prompt":"","output":""}'),
@@ -104,6 +107,7 @@ const App = {
     chatSearch: '',
     chatSending: false,
     chatContextFiles: [],
+    skillHub: JSON.parse(localStorage.getItem('personal-ai-os-skill-hub') || '{"category":"全部","query":"","selectedId":"","recent":[],"copied":[],"preview":""}'),
     downloadCache: {},
     taskSelectedId: '',
     downloadSelectedId: '',
@@ -318,8 +322,22 @@ const App = {
     ].join('|');
   },
 
+  bugAlertLifecycle(item = {}) {
+    if (item.lifecycle === 'ignored' || item.status === '已忽略' || item.ignored) return 'ignored';
+    if (item.lifecycle === 'resolved' || item.status === '已修复' || item.confirmed || item.fixed) return 'resolved';
+    return 'active';
+  },
+
+  bugAlertStatusLabel(item = {}) {
+    const lifecycle = this.bugAlertLifecycle(item);
+    if (lifecycle === 'ignored') return '已忽略';
+    if (lifecycle === 'resolved') return '已修复';
+    return item.status === '待修复' ? '待修复' : '待确认';
+  },
+
   normalizeBugAlert(item = {}) {
-    const status = item.status || (item.ignored ? '已忽略' : item.confirmed ? '已修复' : item.fixed ? '已修复' : '待确认');
+    const lifecycle = this.bugAlertLifecycle(item);
+    const status = this.bugAlertStatusLabel({ ...item, lifecycle });
     const firstAt = Number(item.firstAt || item.time || Date.now());
     const lastAt = Number(item.lastAt || item.time || firstAt);
     const count = Math.max(1, Number(item.count || 1));
@@ -334,17 +352,18 @@ const App = {
       suggestion: item.suggestion || '请根据错误信息修复',
       requestId: item.requestId || '',
       source: item.source || 'frontend',
+      lifecycle,
       status,
       count,
       firstAt,
       lastAt,
       time: item.time || lastAt,
-      confirmed: status === '已修复',
-      confirmedAt: Number(item.confirmedAt || (status === '已修复' ? lastAt : 0)),
-      ignored: status === '已忽略',
-      ignoredAt: Number(item.ignoredAt || (status === '已忽略' ? lastAt : 0)),
-      fixed: status === '已修复',
-      fixedAt: Number(item.fixedAt || (status === '已修复' ? lastAt : 0)),
+      confirmed: lifecycle === 'resolved',
+      confirmedAt: Number(item.confirmedAt || (lifecycle === 'resolved' ? lastAt : 0)),
+      ignored: lifecycle === 'ignored',
+      ignoredAt: Number(item.ignoredAt || (lifecycle === 'ignored' ? lastAt : 0)),
+      fixed: lifecycle === 'resolved',
+      fixedAt: Number(item.fixedAt || (lifecycle === 'resolved' ? lastAt : 0)),
       rawError: item.rawError || ''
     };
     return normalized;
@@ -368,17 +387,18 @@ const App = {
       existing.suggestion = item.suggestion || existing.suggestion;
       existing.requestId = item.requestId || existing.requestId;
       existing.rawError = item.rawError || existing.rawError;
-      const priority = { '已修复': 3, '待修复': 2, '待确认': 1, '已忽略': 0 };
-      const currentPriority = priority[existing.status] ?? 1;
-      const nextPriority = priority[item.status] ?? 1;
+      const priority = { active: 2, resolved: 1, ignored: 0 };
+      const currentPriority = priority[existing.lifecycle || this.bugAlertLifecycle(existing)] ?? 1;
+      const nextPriority = priority[item.lifecycle || this.bugAlertLifecycle(item)] ?? 1;
       if (nextPriority > currentPriority) {
-        existing.status = item.status;
-        existing.confirmed = item.confirmed;
-        existing.confirmedAt = item.confirmedAt;
-        existing.fixed = item.fixed;
-        existing.fixedAt = item.fixedAt;
-        existing.ignored = item.ignored;
-        existing.ignoredAt = item.ignoredAt;
+        existing.lifecycle = item.lifecycle || this.bugAlertLifecycle(item);
+        existing.status = this.bugAlertStatusLabel({ ...existing, ...item, lifecycle: existing.lifecycle });
+        existing.confirmed = existing.lifecycle === 'resolved';
+        existing.confirmedAt = item.confirmedAt || existing.confirmedAt || (existing.lifecycle === 'resolved' ? existing.lastAt : 0);
+        existing.fixed = existing.lifecycle === 'resolved';
+        existing.fixedAt = item.fixedAt || existing.fixedAt || (existing.lifecycle === 'resolved' ? existing.lastAt : 0);
+        existing.ignored = existing.lifecycle === 'ignored';
+        existing.ignoredAt = item.ignoredAt || existing.ignoredAt || (existing.lifecycle === 'ignored' ? existing.lastAt : 0);
       }
     });
     return Array.from(merged.values()).sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0));
@@ -406,6 +426,17 @@ const App = {
       existing.suggestion = item.suggestion || existing.suggestion;
       existing.requestId = item.requestId || existing.requestId;
       existing.rawError = item.rawError || existing.rawError;
+      const priority = { active: 2, resolved: 1, ignored: 0 };
+      if ((priority[item.lifecycle] ?? 1) > (priority[existing.lifecycle] ?? 1)) {
+        existing.lifecycle = item.lifecycle;
+        existing.status = this.bugAlertStatusLabel({ ...existing, ...item, lifecycle: item.lifecycle });
+        existing.confirmed = item.lifecycle === 'resolved';
+        existing.confirmedAt = item.confirmedAt || existing.confirmedAt || (item.lifecycle === 'resolved' ? existing.lastAt : 0);
+        existing.fixed = item.lifecycle === 'resolved';
+        existing.fixedAt = item.fixedAt || existing.fixedAt || (item.lifecycle === 'resolved' ? existing.lastAt : 0);
+        existing.ignored = item.lifecycle === 'ignored';
+        existing.ignoredAt = item.ignoredAt || existing.ignoredAt || (item.lifecycle === 'ignored' ? existing.lastAt : 0);
+      }
     });
     Store.state.bugAlerts = Array.from(merged.values())
       .sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0))
@@ -415,19 +446,14 @@ const App = {
   },
 
   renderBugAlertCard(item, compact = false) {
-    const statusLabel = item.status === '已修复'
-      ? '已修复'
-      : item.status === '已忽略'
-        ? '已忽略'
-        : item.status === '待修复'
-          ? '待修复'
-          : '待确认';
-    const badgeClass = item.status === '已修复'
+    const lifecycle = item.lifecycle || this.bugAlertLifecycle(item);
+    const statusLabel = lifecycle === 'resolved' ? '已修复' : lifecycle === 'ignored' ? '已忽略' : '待确认';
+    const badgeClass = lifecycle === 'resolved'
       ? 'success'
-      : item.status === '已忽略'
+      : lifecycle === 'ignored'
         ? ''
         : 'warning';
-    return `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">首次：${Utils.formatDate(item.firstAt || item.time, true)} · 最近：${Utils.formatDate(item.lastAt || item.time, true)} · 次数：${item.count || 1}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-detail" data-id="${item.id}">查看详情</button>${item.status === '已修复' || item.status === '已忽略' ? '' : `<button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">确认修复</button><button class="secondary-btn compact" data-action="bug-ignore" data-id="${item.id}">忽略</button>`}</div><div class="table-actions"><span class="status-pill${badgeClass ? ` ${badgeClass}` : ''}">${statusLabel}</span></div></div>`;
+    return `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">首次：${Utils.formatDate(item.firstAt || item.time, true)} · 最近：${Utils.formatDate(item.lastAt || item.time, true)} · 次数：${item.count || 1}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-detail" data-id="${item.id}">查看详情</button>${lifecycle === 'resolved' ? '' : lifecycle === 'ignored' ? `<button class="secondary-btn compact" data-action="bug-restore" data-id="${item.id}">恢复</button>` : `<button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">确认修复</button><button class="secondary-btn compact" data-action="bug-ignore" data-id="${item.id}">忽略</button>`}</div><div class="table-actions"><span class="status-pill${badgeClass ? ` ${badgeClass}` : ''}">${statusLabel}</span></div></div>`;
   },
 
   reportBug(payload = {}) {
@@ -448,7 +474,8 @@ const App = {
       existing.suggestion = record.suggestion || existing.suggestion;
       existing.requestId = record.requestId || existing.requestId;
       existing.rawError = record.rawError || existing.rawError;
-      if (existing.status !== '已忽略') {
+      if ((existing.lifecycle || this.bugAlertLifecycle(existing)) !== 'ignored') {
+        existing.lifecycle = 'active';
         existing.status = '待确认';
         existing.confirmed = false;
         existing.confirmedAt = 0;
@@ -476,6 +503,7 @@ const App = {
     const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
     if (!item) return;
     const now = Date.now();
+    item.lifecycle = 'resolved';
     item.status = '已修复';
     item.confirmed = true;
     item.fixed = true;
@@ -521,6 +549,7 @@ const App = {
     const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
     if (!item) return;
     const now = Date.now();
+    item.lifecycle = 'ignored';
     item.status = '已忽略';
     item.ignored = true;
     item.ignoredAt = now;
@@ -548,6 +577,130 @@ const App = {
     else this.renderBugMonitor();
   },
 
+  restoreBugAlert(id) {
+    const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
+    if (!item) return;
+    const now = Date.now();
+    item.lifecycle = 'active';
+    item.status = '待确认';
+    item.ignored = false;
+    item.ignoredAt = 0;
+    item.confirmed = false;
+    item.confirmedAt = 0;
+    item.fixed = false;
+    item.fixedAt = 0;
+    (Store.state.aiErrors || []).forEach(error => {
+      if ((error.requestId && error.requestId === item.requestId) || `${error.message || ''}` === `${item.message || ''}`) {
+        error.ignored = false;
+        error.ignoredAt = 0;
+        error.status = '待确认';
+      }
+    });
+    (Store.state.errorLog || []).forEach(entry => {
+      if ((entry.requestId && entry.requestId === item.requestId) || `${entry.message || ''}` === `${item.message || ''}`) {
+        entry.ignored = false;
+        entry.ignoredAt = 0;
+        entry.status = '待确认';
+      }
+    });
+    Store.save();
+    this.toast('已恢复该问题，重新计入待处理。');
+    if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+    else this.renderBugMonitor();
+  },
+
+  runErrorCenterSelfTest() {
+    const signature = 'SelfTest|error-center-lifecycle|JavaScript Error|Error Center lifecycle self test';
+    const before = {
+      bugAlerts: Array.isArray(Store.state.bugAlerts) ? Store.state.bugAlerts.length : 0,
+      aiErrors: Array.isArray(Store.state.aiErrors) ? Store.state.aiErrors.length : 0,
+      errorLog: Array.isArray(Store.state.errorLog) ? Store.state.errorLog.length : 0,
+      repairRecords: Array.isArray(Store.state.repairRecords) ? Store.state.repairRecords.length : 0
+    };
+    const cleanup = () => {
+      Store.state.bugAlerts = (Store.state.bugAlerts || []).filter(item => item.signature !== signature);
+      Store.state.aiErrors = (Store.state.aiErrors || []).filter(item => item.signature !== signature);
+      Store.state.errorLog = (Store.state.errorLog || []).filter(item => item.signature !== signature);
+      Store.state.repairRecords = (Store.state.repairRecords || []).filter(item => item.signature !== signature && item.bugId !== `selftest-${signature}`);
+    };
+    cleanup();
+    const now = Date.now();
+    const first = this.reportBug({
+      id: `selftest-${signature}`,
+      module: 'SelfTest',
+      feature: 'error-center-lifecycle',
+      type: 'JavaScript Error',
+      message: 'Error Center lifecycle self test',
+      detail: 'Self test detail for error center lifecycle.',
+      description: 'Error Center lifecycle self test',
+      suggestion: '检查查看详情、忽略、恢复和确认修复按钮。',
+      stack: 'SelfTestStack',
+      source: 'self-test',
+      signature,
+      requestId: 'STEP5-SELFTEST-001',
+      time: now
+    });
+    const second = this.reportBug({
+      id: `selftest-${signature}-2`,
+      module: 'SelfTest',
+      feature: 'error-center-lifecycle',
+      type: 'JavaScript Error',
+      message: 'Error Center lifecycle self test',
+      detail: 'Self test detail for error center lifecycle repeated.',
+      description: 'Error Center lifecycle self test',
+      suggestion: '检查查看详情、忽略、恢复和确认修复按钮。',
+      stack: 'SelfTestStack',
+      source: 'self-test',
+      signature,
+      requestId: 'STEP5-SELFTEST-002',
+      time: now + 1
+    });
+    const merged = (Store.state.bugAlerts || []).find(item => item.signature === signature);
+    const beforeErrorCount = before.errorLog;
+    let detailOk = false;
+    try {
+      this.openBugDetail(merged?.id || first?.id || second?.id);
+      detailOk = Array.isArray(Store.state.errorLog) && Store.state.errorLog.length === beforeErrorCount;
+    } catch {
+      detailOk = false;
+    }
+    this.ignoreBugAlert(merged?.id || first?.id || second?.id);
+    const afterIgnore = (Store.state.bugAlerts || []).find(item => item.signature === signature);
+    const ignoreOk = Boolean(afterIgnore && afterIgnore.lifecycle === 'ignored' && afterIgnore.ignored);
+    const activeAfterIgnore = (Store.state.bugAlerts || []).filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'active' && item.signature === signature).length === 0;
+    this.restoreBugAlert(merged?.id || first?.id || second?.id);
+    const afterRestore = (Store.state.bugAlerts || []).find(item => item.signature === signature);
+    const restoreOk = Boolean(afterRestore && (afterRestore.lifecycle || this.bugAlertLifecycle(afterRestore)) === 'active');
+    this.confirmBugAlert(merged?.id || first?.id || second?.id);
+    const afterConfirm = (Store.state.bugAlerts || []).find(item => item.signature === signature);
+    const confirmOk = Boolean(afterConfirm && (afterConfirm.lifecycle || this.bugAlertLifecycle(afterConfirm)) === 'resolved');
+    const healthChecks = Array.isArray(Store.state.systemHealth?.checks) ? Store.state.systemHealth.checks : [];
+    const healthItem = healthChecks.find(item => item.name === 'STEP 5 Bug Monitor');
+    const healthOk = Boolean(healthItem && healthItem.status && !/待处理|异常/.test(healthItem.status));
+    const aggregationOk = Boolean(afterConfirm && Number(afterConfirm.count || 0) >= 2 && afterConfirm.firstAt <= afterConfirm.lastAt);
+    const jsErrorOk = Array.isArray(Store.state.errorLog) && Store.state.errorLog.length >= beforeErrorCount;
+    const report = [
+      { label: '查看详情', ok: detailOk },
+      { label: '忽略', ok: ignoreOk && activeAfterIgnore },
+      { label: '恢复', ok: restoreOk },
+      { label: '确认修复', ok: confirmOk },
+      { label: '健康统计', ok: healthOk },
+      { label: '错误聚合', ok: aggregationOk },
+      { label: '是否产生新增 JS 报错', ok: jsErrorOk }
+    ];
+    cleanup();
+    Store.save();
+    App.temp.errorCenterSelfTest = {
+      time: now,
+      signature,
+      report,
+      passed: report.every(item => item.ok),
+      note: '本自检仅用于演示和开发验证，不影响真实 Bug Monitor 数据。'
+    };
+    this.rerender();
+    return App.temp.errorCenterSelfTest;
+  },
+
   openBugDetail(id) {
     const bugAlerts = Array.isArray(Store.state.bugAlerts) ? Store.state.bugAlerts : [];
     const aiErrors = Array.isArray(Store.state.aiErrors) ? Store.state.aiErrors : [];
@@ -572,6 +725,8 @@ const App = {
       `requestId：${item.requestId || '无'}`,
       `错误说明：${item.description || item.message || '已检测到问题'}`,
       `修复建议：${item.suggestion || '请根据错误信息修复'}`,
+      item.detail ? `detail：${item.detail}` : '',
+      item.stack ? `stack：${item.stack}` : '',
       `确认时间：${confirmedAt ? Utils.formatDate(confirmedAt, true) : '无'}`,
       item.rawError ? `Raw Error：${item.rawError}` : '',
       repairRecords.some(entry => entry.id === item.id || entry.bugId === item.id) ? '来源：最近修复' : ''
@@ -685,6 +840,24 @@ const App = {
     if (target.id === 'sqlOutput') this.temp.sql.output = target.value;
     if (target.id === 'ocrResult') this.temp.ocr.result = target.value;
     if (target.id === 'ocrFixResult') this.temp.ocr.aiFix = target.value;
+    if (target.dataset.ocrField) {
+      this.temp.ocr.fieldDrafts = this.temp.ocr.fieldDrafts || this.buildOcrFieldDrafts(window.GlobalSystemState?.ocrResult?.text || this.temp.ocr.result || '', this.temp.ocr.quality || OCRService.assessQuality(window.GlobalSystemState?.ocrResult?.text || this.temp.ocr.result || ''), this.temp.ocr.demoFields?.fields || {});
+      this.temp.ocr.fieldDrafts.fields = this.temp.ocr.fieldDrafts.fields || {};
+      this.temp.ocr.fieldDrafts.fields[target.dataset.ocrField] = target.value;
+      this.temp.ocr.fieldDrafts.rows = this.getOcrFieldOrder().map(field => ({
+        field,
+        value: this.temp.ocr.fieldDrafts.fields[field] || '待补充',
+        status: field === '可信度'
+          ? this.temp.ocr.fieldDrafts.fields[field] || '低'
+          : (this.temp.ocr.fieldDrafts.fields[field] && this.temp.ocr.fieldDrafts.fields[field] !== '待补充' ? '已识别' : '未识别')
+      }));
+      if (target.dataset.ocrField !== '缺失字段' && target.dataset.ocrField !== '可信度') {
+        const missing = this.getOcrFieldOrder()
+          .filter(field => field !== '可信度' && field !== '缺失字段')
+          .filter(field => String(this.temp.ocr.fieldDrafts.fields[field] || '待补充').trim() === '待补充');
+        this.temp.ocr.fieldDrafts.fields['缺失字段'] = missing.length ? missing.join('、') : '无';
+      }
+    }
     if (target.id === 'agentGoal') this.temp.agent.goal = target.value;
     if (target.id === 'kbQuestion') this.temp.kbQuestion = target.value;
     if (target.id === 'pdfQuestion') this.temp.pdf.qaQuestion = target.value;
@@ -702,6 +875,13 @@ const App = {
         document.getElementById('fileSearch')?.focus();
       }, 180);
     }
+    if (target.id === 'skillSearch') {
+      this.temp.skillHub = this.temp.skillHub || {};
+      this.temp.skillHub.query = target.value;
+      localStorage.setItem('personal-ai-os-skill-hub', JSON.stringify(this.temp.skillHub));
+      clearTimeout(this.searchTimer);
+      this.searchTimer = setTimeout(() => this.rerender(), 160);
+    }
     if (target.id === 'kbSearch') {
       this.temp.kbSearch = target.value;
       clearTimeout(this.searchTimer);
@@ -713,26 +893,24 @@ const App = {
     if (target.dataset.wsField && target.dataset.module) {
       const ws = this.getWorkspace(target.dataset.module);
       ws[target.dataset.wsField] = target.value;
-      if (target.dataset.module === 'cost' && ['quantity', 'materialFee', 'laborCost', 'processFee', 'quoteAmount', 'unitPrice', 'prompt'].includes(target.dataset.wsField)) {
-        const numericKeys = ['quantity', 'unitPrice', 'materialFee', 'laborCost', 'processFee', 'quoteAmount'];
-        const values = Object.fromEntries(numericKeys.map(key => [key, Utils.number(ws[key])]));
-        const hasNegative = Object.values(values).some(value => Number.isFinite(value) && value < 0);
-        if (hasNegative) {
-          ws.result = '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。';
+      if (target.dataset.module === 'cost' && ['productName', 'productCode', 'customerName', 'quoteDate', 'quantity', 'unit', 'materialName', 'materialUnitPrice', 'materialUsage', 'materialLossRate', 'processType', 'unitProcessTime', 'equipmentHourCost', 'processLossRate', 'laborWage', 'unitLaborTime', 'packagingCost', 'transportCost', 'managementFee', 'otherFee', 'targetProfitRate', 'minimumProfitRate', 'rush', 'rushMultiplier'].includes(target.dataset.wsField)) {
+        const plan = this.buildCostPlan(ws);
+        ws.costPlan = plan;
+        ws.result = plan.summary;
+        if (plan.error) {
           ws.costStatus = '⚠️ 输入异常';
           this.reportBug({
             module: '成本核算助手',
             feature: '输入校验',
             type: '输入异常',
-            message: '检测到负数输入，请先修正后再计算。',
-            description: '成本核算助手不接受负数价格或数量。',
-            suggestion: '请将数量、材料费、工时成本、加工费、报价金额修正为非负数。',
+            message: plan.error,
+            description: '成本核算助手检测到异常输入，请修正后再计算。',
+            suggestion: '请检查数量、单价、材料用量、损耗率、利润率和加急倍率是否为有效数字。',
             source: 'business-detection'
           });
         } else {
-          ws.result = this.computeCostResult(ws);
           ws.costStatus = '✅ Production Ready';
-          this.detectCostCalculationBug(ws);
+          this.detectCostCalculationBug({ ...ws, costPlan: plan });
         }
       }
       Store.save();
@@ -758,6 +936,19 @@ const App = {
       'chat-new': () => { this.createChat(); this.rerender(); },
       'chat-open': () => { Store.state.activeChatId = el.dataset.id; Store.save(); this.rerender(); },
       'chat-clear': () => this.clearChat(),
+      'chat-demo-fill': () => {
+        if (el.dataset.prompt) {
+          const input = document.getElementById('chatInput');
+          if (input) {
+            input.value = el.dataset.prompt;
+            input.focus();
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          this.toast('已填入快捷提示词');
+          return;
+        }
+        this.chatFillDemoConversation();
+      },
       'chat-copy': () => this.copy(decodeURIComponent(el.dataset.text || '')),
       'chat-attach-file': () => this.openChatFilePicker(),
       'copy-text': () => this.copy(decodeURIComponent(el.dataset.text || '')),
@@ -794,10 +985,15 @@ const App = {
       'ocr-copy': () => this.ocrCopy(el),
       'ocr-txt': () => this.ocrTxt(el),
       'ocr-ai-txt': () => this.ocrAiTxt(el),
+      'ocr-confirmed-txt': () => this.ocrConfirmedTxt(el),
       'ocr-excel': () => this.ocrExcel(el),
       'ocr-ai-excel': () => this.ocrAiExcel(el),
+      'ocr-confirmed-excel': () => this.ocrConfirmedExcel(el),
       'ocr-word': () => this.ocrWord(el),
       'ocr-ai-word': () => this.ocrAiWord(el),
+      'ocr-confirmed-word': () => this.ocrConfirmedWord(el),
+      'ocr-confirm-fields': () => this.ocrConfirmFields(el),
+      'ocr-load-demo-fields': () => this.ocrLoadDemoFields(el),
       'ppt-generate': () => this.pptGenerate(el),
       'sql-generate': () => this.sqlGenerate(el),
       'sql-optimize': () => this.sqlOptimize(el),
@@ -849,9 +1045,16 @@ const App = {
       'quality-fix': () => this.qualityFix(el),
       'quality-export': () => this.qualityExport(el),
       'skill-enterprise-intro': () => this.skillEnterpriseIntro(),
+      'skills-filter': () => this.skillsSetFilter(el.dataset.category),
+      'skills-select': () => this.skillsSelect(el.dataset.id),
+      'skills-copy': () => this.skillsCopy(el.dataset.id),
+      'skills-use': () => this.skillsUse(el.dataset.id),
+      'skills-reset': () => this.skillsReset(),
       'bug-confirm': () => this.confirmBugAlert(el.dataset.id),
       'bug-ignore': () => this.ignoreBugAlert(el.dataset.id),
+      'bug-restore': () => this.restoreBugAlert(el.dataset.id),
       'bug-detail': () => this.openBugDetail(el.dataset.id),
+      'error-center-self-test': () => this.runErrorCenterSelfTest(),
       'mail-generate': () => this.mailGenerate(el),
       'mail-polish': () => this.mailPolish(el),
       'mail-translate': () => this.mailTranslate(el),
@@ -869,6 +1072,9 @@ const App = {
       'mail-approve': () => this.mailApprove(),
       'bidding-mail': () => this.biddingMail(),
       'cost-calc': () => this.costCalc(el),
+      'cost-sample': () => this.costFillSample(),
+      'cost-clear': () => this.costClear(),
+      'cost-print': () => this.costPrint(),
       'exception-add': () => this.exceptionAdd(),
       'exception-report': () => this.exceptionReport(),
       'inspection-add': () => this.inspectionAdd(),
@@ -1014,7 +1220,198 @@ const App = {
     });
   },
 
+  getSkillHubState() {
+    this.temp.skillHub = this.temp.skillHub || {};
+    const defaults = { category: '全部', query: '', selectedId: '', recent: [], copied: [], preview: '' };
+    this.temp.skillHub = { ...defaults, ...this.temp.skillHub };
+    return this.temp.skillHub;
+  },
+
+  getChatDemoMode() {
+    return {
+      label: '本地演示模式 / Mock AI',
+      note: '当前未接入真实 AI，回复由本地规则生成，用于演示系统工作流。后续可接入 DeepSeek / OpenAI Compatible API。'
+    };
+  },
+
+  chatSuggestModules(text = '') {
+    const content = String(text || '').toLowerCase();
+    const cards = [];
+    const push = (route, title, description, nextStep) => {
+      if (!cards.some(card => card.route === route)) cards.push({ route, title, description, nextStep });
+    };
+    if (/(识别|发货单|单据|ocr|采购单|标签|图片)/i.test(content)) {
+      push('ocr', 'OCR 单据识别', '上传发货单、采购单或图片，自动识别文字并整理字段。', '打开 OCR 页面：#/ocr');
+    }
+    if (/(报价|成本|利润|单价|算价|核算)/i.test(content)) {
+      push('cost', '成本核算助手', '输入材料、加工、人工和利润率，快速生成建议报价。', '打开成本核算助手：#/cost');
+    }
+    if (/(模板|话术|招聘|日报|维修|质量|返工|客户跟进|回访)/i.test(content)) {
+      push('skills', 'Skill 模板', '使用制造业固定模板生成报价、日报、维修、招聘和回访内容。', '打开 Skill 模板：#/skills');
+    }
+    if (/(错误|报错|监控|bug|异常|健康|日志)/i.test(content)) {
+      push('monitoring', 'Error Center', '查看错误聚合、状态、最近修复和健康统计。', '打开错误中心：#/monitoring');
+    }
+    if (/(生产|日报|计划|排产|工单|设备|维修|工艺|质量)/i.test(content)) {
+      push('productionplan', '生产计划助手', '拆解订单、查看设备负载、提醒交期风险。', '打开生产计划助手：#/productionplan');
+      push('worklog', '工作日志', '记录今天的生产、质量和问题处理情况。', '打开工作日志：#/worklog');
+    }
+    if (!cards.length) {
+      push('assistant', '企业 AI 助手中心', '输入自然语言，系统会推荐对应模块和下一步操作。', '打开企业 AI 助手中心：#/assistant');
+      push('skills', 'Skill 模板', '用固定模板把常见工厂场景先走通。', '打开 Skill 模板：#/skills');
+    }
+    return cards.slice(0, 4);
+  },
+
+  chatBuildDemoReply(text = '', chat = null) {
+    const raw = String(text || '').trim();
+    const cards = this.chatSuggestModules(raw);
+    const first = cards[0] || { title: '企业 AI 助手中心', nextStep: '打开企业 AI 助手中心：#/assistant' };
+    const lower = raw.toLowerCase();
+    const lines = [];
+    if (/(识别|发货单|单据|ocr|采购单|标签|图片)/i.test(lower)) {
+      lines.push('我建议你先用【OCR 单据识别】处理图片或单据，再把识别结果转到后续模块。');
+      lines.push('如果图片里有发货单、采购单或标签，我会优先帮你识别单号、客户、产品、数量、日期和电话。');
+    } else if (/(报价|成本|利润|单价|算价|核算)/i.test(lower)) {
+      lines.push('我建议你使用【成本核算助手】。');
+      lines.push('你可以输入产品名称、材料单价、加工时间、人工成本、损耗率和目标利润率，系统会自动计算材料成本、加工成本、人工成本、总成本、建议报价和单件报价。');
+    } else if (/(模板|话术|招聘|日报|维修|质量|返工|客户跟进|回访)/i.test(lower)) {
+      lines.push('我建议你使用【Skill 模板】。');
+      lines.push('这里有报价、生产计划、质量异常、设备维修、客户跟进和招聘等固定模板，适合直接复制或快速预览。');
+    } else if (/(错误|报错|监控|bug|异常|健康|日志)/i.test(lower)) {
+      lines.push('我建议你查看【Error Center / Bug Monitor】。');
+      lines.push('你可以看到错误聚合、忽略、确认修复和最近修复记录，方便快速定位问题。');
+    } else if (/(生产|日报|计划|排产|工单|设备|维修|工艺|质量)/i.test(lower)) {
+      lines.push('我建议你先打开【生产计划助手】或【工作日志】。');
+      lines.push('这些模块更适合处理订单拆解、设备负载、交期风险和当日生产问题。');
+    } else {
+      lines.push('我建议你从【企业 AI 助手中心】或【Skill 模板】开始。');
+      lines.push('这样可以先把问题落到具体模块，再一步步完成识别、分析和输出。');
+    }
+    const fileHint = chat?.files?.length
+      ? `当前会话已挂载 ${chat.files.length} 个文件，你也可以继续追问这些文件中的内容。`
+      : '如果你有文件，可以先挂载文件再继续问我。';
+    const response = [
+      `已收到你的问题：${raw || '（空）'}`,
+      '',
+      ...lines,
+      '',
+      '推荐模块：',
+      ...cards.map(card => `- ${card.title}：${card.nextStep}`),
+      '',
+      '下一步：',
+      first.nextStep,
+      '',
+      fileHint,
+      '',
+      '当前为本地演示模式 / Mock AI。'
+    ].join('\n');
+    return { text: response, cards, summaryLines: lines, mode: 'mock', intent: cards[0]?.title || '通用制造业助手' };
+  },
+
+  chatFillDemoConversation() {
+    const chat = Store.state.chats.find(c => c.id === Store.state.activeChatId) || this.createChat(false);
+    const questions = ['你能做什么', '继续', '帮我生成一份生产日报'];
+    const messages = [];
+    questions.forEach((question, index) => {
+      const demo = this.chatBuildDemoReply(question, chat);
+      messages.push({ role: 'user', content: question, time: Date.now() + index * 1200 });
+      messages.push({
+        id: uid(),
+        role: 'assistant',
+        content: demo.text,
+        time: Date.now() + index * 1200 + 1,
+        mode: 'mock',
+        recommendations: demo.cards,
+        requestId: `demo-chat-${index + 1}`
+      });
+    });
+    chat.title = 'AI Chat 演示对话';
+    chat.messages = messages;
+    chat.files = chat.files || [];
+    chat.updatedAt = Date.now();
+    Store.save();
+    this.renderNav();
+    this.rerender();
+    this.toast('已填充 AI Chat 演示对话');
+    this.scrollChatToBottom('auto');
+  },
+
+  saveSkillHubState() {
+    localStorage.setItem('personal-ai-os-skill-hub', JSON.stringify(this.getSkillHubState()));
+  },
+
+  skillsSetFilter(category = '全部') {
+    const hub = this.getSkillHubState();
+    hub.category = category || '全部';
+    this.saveSkillHubState();
+    this.rerender();
+  },
+
+  skillsSelect(id = '') {
+    const hub = this.getSkillHubState();
+    hub.selectedId = id || hub.selectedId;
+    if (id && !hub.recent.includes(id)) hub.recent = [id, ...hub.recent].slice(0, 8);
+    this.saveSkillHubState();
+    this.rerender();
+  },
+
+  async skillsCopy(id = '') {
+    const skill = (globalThis.AISkills?.get?.(id) || globalThis.AISkills?.list?.().find(item => item.id === id));
+    if (!skill) {
+      this.toast('未找到模板', 'error');
+      return;
+    }
+    const text = [
+      `模板名称：${skill.name}`,
+      `使用场景：${skill.scenario || '待补充'}`,
+      `适合岗位：${skill.role || '待补充'}`,
+      `输入字段：${(skill.inputFields || []).join('、') || '待补充'}`,
+      `输出格式：${(skill.outputFormat || []).join(' + ') || '待补充'}`,
+      `示例内容：${skill.example || '待补充'}`,
+      `使用建议：${skill.suggestion || '待补充'}`
+    ].join('\n');
+    await this.copy(text);
+    const hub = this.getSkillHubState();
+    hub.copied = [id, ...hub.copied.filter(item => item !== id)].slice(0, 8);
+    this.saveSkillHubState();
+    this.toast('模板内容已复制');
+  },
+
+  skillsUse(id = '') {
+    const skill = globalThis.AISkills?.get?.(id);
+    if (!skill) {
+      this.toast('未找到模板', 'error');
+      return;
+    }
+    const hub = this.getSkillHubState();
+    hub.selectedId = id;
+    const mock = skill.mockOutput ? skill.mockOutput({}) : '待接入 AI 后可自动生成结果';
+    hub.preview = `待接入 AI 后可自动生成结果\n\n${mock}`;
+    if (!hub.copied.includes(id)) hub.copied = hub.copied.filter(item => item !== id);
+    if (!hub.recent.includes(id)) hub.recent = [id, ...hub.recent].slice(0, 8);
+    this.saveSkillHubState();
+    this.rerender();
+    this.toast('已加载模板预览');
+  },
+
+  skillsReset() {
+    this.temp.skillHub = {
+      category: '全部',
+      query: '',
+      selectedId: '',
+      recent: [],
+      copied: [],
+      preview: ''
+    };
+    this.saveSkillHubState();
+    this.rerender();
+    this.toast('已重置模板筛选');
+  },
+
   skillMockOutput(skillId, input = {}) {
+    const builtIn = globalThis.AISkills?.mockOutput?.(skillId, input);
+    if (builtIn) return builtIn;
     const pick = value => String(value || '').trim() || '待补充';
     const clamp = (text, max = 200) => {
       const value = String(text || '').trim();
@@ -1186,6 +1583,226 @@ const App = {
       if (match) map[match[1].trim()] = match[2].trim();
     });
     return map;
+  },
+
+  getOcrFieldOrder() {
+    return ['单据类型', '企业名称', '单据编号', '客户名称', '产品名称', '产品编码', '材料', '规格型号', '数量', '单位', '交货日期', '电话', '地址', '网址', '备注', '可信度', '缺失字段'];
+  },
+
+  isLikelyOcrNoise(value = '') {
+    const text = String(value || '').trim();
+    if (!text) return true;
+    if (['待补充', '未识别', 'undefined', 'null', 'NaN', 'Infinity'].includes(text)) return true;
+    if (text.length > 80) return true;
+    if (/^[A-Z]{6,}$/.test(text)) return true;
+    if (/(.)\1{5,}/.test(text)) return true;
+    const chinese = (text.match(/[\u4e00-\u9fa5]/g) || []).length;
+    const letters = (text.match(/[A-Za-z]/g) || []).length;
+    const digits = (text.match(/\d/g) || []).length;
+    const junk = (text.match(/[^ \u4e00-\u9fa5A-Za-z0-9。，、；：:,.%（）()\-_/&·]/g) || []).length;
+    const ratio = chinese / Math.max(1, text.length);
+    return ratio < 0.08 && letters > digits * 2 || junk / Math.max(1, text.length) > 0.18;
+  },
+
+  normalizeOcrField(field, value, source = '', quality = {}) {
+    let text = String(value || '').trim();
+    if (!text || this.isLikelyOcrNoise(text)) return '待补充';
+    if (field === '单据类型') {
+      if (/发货|送货/.test(text)) return '发货单';
+      if (/采购/.test(text)) return '采购单';
+      if (/生产|日报/.test(text)) return '生产日报';
+      if (/合同/.test(text)) return '合同';
+      if (/报价/.test(text)) return '报价单';
+      if (/订单/.test(text)) return '订单';
+      return quality.level === 'poor' ? '待补充' : text;
+    }
+    if (field === '企业名称') {
+      return /(公司|厂|有限|集团|店|部)/.test(text) ? text : '待补充';
+    }
+    if (field === '单据编号') {
+      return /^[A-Za-z0-9][A-Za-z0-9\-_/]{2,}$/.test(text) ? text : '待补充';
+    }
+    if (field === '客户名称') {
+      return /(公司|厂|集团|学校|医院|店|部|有限公司|有限责任公司)/.test(text) || quality.level !== 'poor' ? text : '待补充';
+    }
+    if (field === '产品名称') {
+      return text.length <= 40 && /[\u4e00-\u9fa5A-Za-z0-9]/.test(text) ? text : '待补充';
+    }
+    if (field === '产品编码') {
+      return /^[A-Za-z0-9][A-Za-z0-9\-_/]{2,}$/.test(text) ? text : '待补充';
+    }
+    if (field === '材料') {
+      return /(不锈钢|铝|钢|铜|塑料|板材|型材|304|316|45#|碳钢)/.test(text) ? text : '待补充';
+    }
+    if (field === '规格型号') {
+      return text.length <= 50 ? text : '待补充';
+    }
+    if (field === '数量') {
+      return /^-?\d+(?:\.\d+)?$/.test(text) ? String(Number(text)) : '待补充';
+    }
+    if (field === '单位') {
+      return /^(件|个|箱|套|台|批|米|kg|公斤|吨|只|张|pcs|PCs|条|支|包|卷)$/.test(text) ? text : (text.length <= 6 ? text : '待补充');
+    }
+    if (field === '交货日期') {
+      return /(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}(?:日)?)/.test(text) ? text : '待补充';
+    }
+    if (field === '电话') {
+      return /(?:\d{3,4}-\d{7,8}|\d{11}|\d{2,4}\s?\d{6,8})/.test(text) ? text : '待补充';
+    }
+    if (field === '地址') {
+      return text.length >= 4 ? text : '待补充';
+    }
+    if (field === '网址') {
+      return /(?:https?:\/\/|www\.)[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?:\/\S*)?/i.test(text) ? text : '待补充';
+    }
+    if (field === '备注') {
+      return text.length <= 120 ? text : '待补充';
+    }
+    if (field === '可信度') {
+      return ['低', '中', '高'].includes(text) ? text : (quality.level === 'good' ? '高' : quality.level === 'medium' ? '中' : '低');
+    }
+    return text || '待补充';
+  },
+
+  buildOcrFieldDrafts(source = '', quality = {}, preferred = {}) {
+    const base = OCRService.structure(source || '');
+    const sourceText = String(source || '');
+    const pick = (field) => {
+      const prefer = preferred[field];
+      const raw = prefer != null && String(prefer).trim() ? prefer : base.fields?.[field];
+      return this.normalizeOcrField(field, raw, sourceText, quality);
+    };
+    const fields = this.getOcrFieldOrder().reduce((acc, field) => {
+      acc[field] = pick(field);
+      return acc;
+    }, {});
+    const missing = Object.entries(fields)
+      .filter(([field, value]) => field !== '可信度' && field !== '缺失字段' && String(value || '').trim() === '待补充')
+      .map(([field]) => field);
+    fields['缺失字段'] = missing.length ? missing.join('、') : '无';
+    return {
+      fields,
+      rows: this.getOcrFieldOrder().map(field => ({
+        field,
+        value: fields[field],
+        status: field === '可信度'
+          ? fields[field]
+          : (fields[field] && fields[field] !== '待补充' ? '已识别' : '未识别')
+      })),
+      quality,
+      confirmed: false,
+      confirmedAt: 0,
+      source: 'ocr'
+    };
+  },
+
+  buildOcrDemoFields() {
+    const fields = {
+      '单据类型': '发货单',
+      '企业名称': '溧阳五四不锈钢有限公司',
+      '单据编号': 'FH-20240627-001',
+      '客户名称': '新能源设备客户',
+      '产品名称': '304不锈钢连接件',
+      '产品编码': 'WUSI-CNC-001',
+      '材料': '304不锈钢',
+      '规格型号': 'CNC加工件',
+      '数量': '500',
+      '单位': '件',
+      '交货日期': '2026-06-27',
+      '电话': '0519-87654321',
+      '地址': '江苏省溧阳市',
+      '网址': 'www.wusi-stainless.com',
+      '备注': '示例数据，仅用于系统演示',
+      '可信度': '中',
+      '缺失字段': '无'
+    };
+    const rawText = [
+      '发货单',
+      '单据编号：FH-20240627-001',
+      '企业名称：溧阳五四不锈钢有限公司',
+      '客户名称：新能源设备客户',
+      '产品名称：304不锈钢连接件',
+      '产品编码：WUSI-CNC-001',
+      '材料：304不锈钢',
+      '规格型号：CNC加工件',
+      '数量：500',
+      '单位：件',
+      '交货日期：2026-06-27',
+      '电话：0519-87654321',
+      '地址：江苏省溧阳市',
+      '网址：www.wusi-stainless.com',
+      '备注：示例数据，仅用于系统演示'
+    ].join('\n');
+    return {
+      fields,
+      rawText,
+      rows: this.getOcrFieldOrder().map(field => ({
+        field,
+        value: fields[field] || '待补充',
+        status: field === '可信度' ? fields[field] : (fields[field] && fields[field] !== '待补充' ? '已识别' : '未识别')
+      })),
+      quality: {
+        level: 'medium',
+        score: 68,
+        reasons: ['这是演示样例字段，不代表真实 OCR 百分百识别成功']
+      },
+      confirmed: false,
+      confirmedAt: 0,
+      source: 'demo'
+    };
+  },
+
+  getOcrSourceText() {
+    const o = this.temp.ocr || {};
+    return String(window.GlobalSystemState?.ocrResult?.text || o.result || o.aiFix || o.demoFields?.rawText || '').trim();
+  },
+
+  syncOcrSourceState(sourceText) {
+    const text = String(sourceText || '').trim();
+    if (!text) return null;
+    const current = window.GlobalSystemState?.ocrResult && typeof window.GlobalSystemState.ocrResult === 'object'
+      ? window.GlobalSystemState.ocrResult
+      : {};
+    if (String(current.text || '').trim() === text) return current;
+    const synced = {
+      ...current,
+      text,
+      status: current.status && current.status !== 'idle' ? current.status : 'success'
+    };
+    window.GlobalSystemState.ocrResult = synced;
+    if (typeof emit === 'function') emit('ocr:completed', synced);
+    syncGlobalSystemState({ ocrResult: synced });
+    return synced;
+  },
+
+  shouldUseOcrMockAi() {
+    const settings = Store.state.settings || {};
+    return Utils.isDisplayMode()
+      || settings.accessMode === 'local'
+      || !settings.apiEnabled
+      || !settings.apiUrl;
+  },
+
+  renderOcrFieldTable(mode = 'current') {
+    const o = this.temp.ocr || {};
+    const source = this.getOcrSourceText();
+    const quality = o.quality || OCRService.assessQuality(source);
+    let draft = mode === 'confirmed' ? o.confirmedFields : (o.fieldDrafts && o.fieldDrafts.fields ? o.fieldDrafts : null);
+    if (!draft) {
+      draft = this.buildOcrFieldDrafts(source, quality, o.demoFields?.fields || o.confirmedFields?.fields || {});
+      o.fieldDrafts = draft;
+    }
+    const rows = this.getOcrFieldOrder().map(field => {
+      const value = String(draft.fields?.[field] || '待补充').trim() || '待补充';
+      return `<tr data-ocr-field-row="${Utils.escape(field)}"><td>${Utils.escape(field)}</td><td><input class="input" data-ocr-field="${Utils.escape(field)}" value="${Utils.escape(value)}" placeholder="待补充"></td><td><span class="status-pill ${value === '待补充' ? 'warning' : 'success'}">${value === '待补充' ? '未识别' : '已识别'}</span></td></tr>`;
+    }).join('');
+    const qualityLabel = quality.level === 'poor' ? '当前 OCR 原文质量较差，可能由图片模糊、表格线干扰、文字过小、图片压缩或生成图片导致。请以结构化字段表和人工确认结果为准。'
+      : quality.level === 'medium' ? 'OCR 已识别部分内容，但仍需人工核对关键字段。'
+        : 'OCR 识别质量较好，但仍建议人工核对后使用。';
+    const reasons = (quality.reasons || []).length ? `<div class="privacy-note warning">${icon('scan')}<span>${Utils.escape(quality.reasons.join('；'))}</span></div>` : '';
+    const demoNote = o.demoFields ? `<div class="privacy-note">${icon('info')}<span>这是演示样例字段，不代表真实 OCR 已百分百识别成功。</span></div>` : '';
+    const confirmedNote = o.confirmedFields?.confirmed ? `<div class="privacy-note success">${icon('check')}<span>字段已保存，请在后续报价、模板或导出前再次核对。</span></div>` : '';
+    return `<section class="panel"><div class="panel-head"><div><h3>识别字段表</h3></div><span class="badge">${quality.level.toUpperCase()} · ${Math.round(quality.score || 0)}分</span></div><div class="panel-body">${reasons}<div class="privacy-note">${icon('shield')}<span>${Utils.escape(qualityLabel)}</span></div>${demoNote}${confirmedNote}<div class="table-wrap"><table class="data-table"><thead><tr><th>字段</th><th>结果</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table></div><div class="button-row"><button class="primary-btn" data-action="ocr-confirm-fields">${icon('check')}人工确认后保存</button><button class="secondary-btn" data-action="ocr-load-demo-fields">${icon('image')}加载演示字段</button></div></div></section><section class="panel"><div class="panel-head"><h3>原始 OCR 拆行结果</h3><span class="badge">${(source || '').length}</span></div><div class="panel-body">${UI.result(source, 'OCR 原文仅供参考，请以字段表和人工确认结果为准。', true)}</div></section>`;
   },
 
   async addWorkspaceFiles(route, files) {
@@ -1846,6 +2463,9 @@ const App = {
   },
 
   recordAiError(error, context = '') {
+    if (/^ocr-(summary|translate|qa|ai-fix|ai-table|table-restore)$/i.test(context || '') && this.shouldUseOcrMockAi()) {
+      return AIService.friendlyMessage(error) || Utils.friendlyErrorMessage(error?.message || error);
+    }
     const message = AIService.friendlyMessage(error) || Utils.friendlyErrorMessage(error?.message || error);
     Store.state.aiErrors = Store.state.aiErrors || [];
     const signature = this.bugAlertSignature({ module: context || 'AI', feature: 'AI 调用', type: 'AI错误', message });
@@ -2019,11 +2639,11 @@ const App = {
     const push = (name, status, reason, suggestion) => {
       report.push({ name, status, reason: reason || '', suggestion: suggestion || '', time: now });
     };
+    const normalizedBugAlerts = this.getVisibleBugAlerts();
+    const unresolvedErrors = normalizedBugAlerts.filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'active');
     const latestFix = (Store.state.repairRecords || []).length
       ? Store.state.repairRecords[0]
-      : normalizedBugAlerts.filter(item => item.status === '已修复').sort((a, b) => (b.confirmedAt || b.lastAt || b.time || 0) - (a.confirmedAt || a.lastAt || a.time || 0))[0] || null;
-    const normalizedBugAlerts = this.getVisibleBugAlerts();
-    const unresolvedErrors = normalizedBugAlerts.filter(item => item.status !== '已修复' && item.status !== '已忽略');
+      : normalizedBugAlerts.filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'resolved').sort((a, b) => (b.confirmedAt || b.fixedAt || b.lastAt || b.time || 0) - (a.confirmedAt || a.fixedAt || a.lastAt || a.time || 0))[0] || null;
     const hasRecentChatFetchError = unresolvedErrors.some(item => /ai-chat|chat/i.test(`${item.feature || ''} ${item.module || ''}`) && /Failed to fetch|Network Error|AI 后端连接失败|Timeout/i.test(`${item.message || ''} ${item.description || ''}`));
     const hasRecentPdfError = unresolvedErrors.some(item => /PDF Worker|pdf/i.test(`${item.feature || ''} ${item.module || ''}`) && /Failed to fetch|worker|路径|加载失败|PDF/i.test(`${item.message || ''} ${item.description || ''}`));
     const localStorageOk = (() => {
@@ -2099,7 +2719,7 @@ const App = {
               : 'AI 调用已降级。';
             gatewaySuggestion = probe.mode === 'api' ? 'AI Gateway 正常。' : '请检查模型配置。';
             deepseekStatus = probe.mode === 'api' ? '🟢 已连接' : '🟡 降级';
-            deepseekReason = probe.mode === 'api' ? 'DeepSeek 真实调用成功。' : (probe.error || '模型返回为空或已降级。');
+            deepseekReason = probe.mode === 'api' ? 'DeepSeek 真实调用成功。' : (probe.error || '暂未获得有效响应，当前可能已降级。');
             deepseekSuggestion = probe.mode === 'api' ? 'DeepSeek 可用。' : '请检查模型名称、Key 权限或配额。';
           } catch (error) {
             const friendly = AIService.friendlyMessage(error);
@@ -2163,7 +2783,7 @@ const App = {
       ['Excel', displayMode ? '🟡 仅前端能力可用' : (excelProbe ? '🟢 正常' : '🔴 异常'), displayMode ? 'GitHub Pages 仅提供前端能力。' : (excelProbe ? 'Excel 解析规则通过样例验证。' : 'Excel 解析样例未通过。'), displayMode ? '部署本地/服务器版后继续使用真实文件。' : '请检查 Excel 解析逻辑。'],
       ['localStorage', localStorageOk ? '🟢 正常' : '🔴 异常', localStorageOk ? '读写正常。' : '本地存储读写失败。', localStorageOk ? '可继续保存本地数据。' : '请检查浏览器隐私设置。'],
       ['Connector 状态', Array.isArray(Store.state.connectors) ? (Store.state.connectors.some(item => item.status === '已连接') ? '🟢 已连接' : Store.state.connectors.every(item => item.status === '未配置' || !item.enabled) ? '⚪ 未配置' : Store.state.connectors.some(item => item.status === '连接失败') ? '🔴 连接失败' : '🟡 待验证') : '🔴 异常', Array.isArray(Store.state.connectors) ? `未配置 ${Store.state.connectors.filter(item => item.status === '未配置' || !item.enabled).length} 个；已连接 ${Store.state.connectors.filter(item => item.status === '已连接').length} 个；连接失败 ${Store.state.connectors.filter(item => item.status === '连接失败').length} 个。` : '连接器数据缺失。', '请在 Integration Center 中按真实配置逐个启用。'],
-      ['Bug Monitor', unresolvedErrors.length ? '🟡 待确认' : '🟢 正常', `${normalizedBugAlerts.length} 条聚合错误，${normalizedBugAlerts.filter(item => item.status === '已忽略').length} 条已忽略。`, '重复错误会自动合并，忽略项不再影响健康状态。'],
+      ['Bug Monitor', unresolvedErrors.length ? '🟡 待确认' : '🟢 正常', `${normalizedBugAlerts.length} 条聚合错误，${normalizedBugAlerts.filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'ignored').length} 条已忽略，${normalizedBugAlerts.filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'resolved').length} 条已修复。`, '重复错误会自动合并，忽略项不再影响健康状态。'],
       ['Error Center', unresolvedErrors.length ? '🟡 待处理' : '🟢 正常', `${unresolvedErrors.length} 条待处理错误，${Store.state.repairRecords?.length || 0} 条最近修复。`, '保留历史错误并持续追踪。'],
       ['最近错误', unresolvedErrors.length ? `${unresolvedErrors[0].message || '错误'}` : '暂无', unresolvedErrors.length ? `来源：${unresolvedErrors[0].context || unresolvedErrors[0].module || 'system'}` : '暂无最近错误记录。', unresolvedErrors.length ? '查看 Error Center 并确认修复。' : '暂无需要处理的问题。'],
       ['最近修复', latestFix ? `${latestFix.module || 'system'} · ${latestFix.feature || latestFix.type || '已确认修复'}` : '暂无已确认修复记录', latestFix ? `${latestFix.message || latestFix.description || ''}` : '暂无用户点击“确认修复”的记录。', latestFix ? '可在 Bug Monitor 查看确认修复记录。' : '点击 Bug Monitor 的“确认修复”后会出现在这里。'],
@@ -2236,28 +2856,50 @@ const App = {
     chat.updatedAt = Date.now();
     Store.save();
     this.rerender();
-    const prompt = `${commandHint}${fileContext ? `相关文件：\n${fileContext}\n\n` : ''}${history ? `历史上下文：\n${history}\n\n` : ''}当前问题：${text}`;
     try {
-      const res = await AIService.streamChat(prompt, {
-        mode: 'chat',
+      const demo = this.chatBuildDemoReply(`${text}${fileContext ? `\n${fileContext.slice(0, 800)}` : ''}`, chat);
+      const prompt = `${commandHint}${fileContext ? `相关文件：\n${fileContext}\n\n` : ''}${history ? `历史上下文：\n${history}\n\n` : ''}当前问题：${text}`;
+      const loadingMessage = chat.messages.find(item => item.id === loadingId);
+      if (loadingMessage) {
+        loadingMessage.content = '正在生成中...';
+        loadingMessage.mode = 'streaming';
+        loadingMessage.streaming = true;
+      }
+      Store.logAiHistory({
         module: 'ai-chat',
-        onUpdate: (current, done, payload) => {
-          chat = Store.state.chats.find(c => c.id === chat.id);
-          const msg = chat.messages.find(item => item.id === loadingId);
-          if (msg) {
-            msg.content = current || '正在生成中...';
-            msg.mode = done ? (payload?.mode || 'assistant') : 'streaming';
-            msg.streaming = !done;
-          }
-          chat.updatedAt = Date.now();
-          Store.save();
-          if (done) this.renderNav();
-          this.rerender();
-        }
+        skillId: 'chat-demo',
+        skillName: 'AI Chat 本地演示',
+        provider: 'mock',
+        model: 'local-rule',
+        success: true,
+        mock: true,
+        duration: 0,
+        input: prompt,
+        output: demo.text,
+        error: '',
+        rawError: '',
+        requestId: `chat-${Date.now()}`
       });
       chat = Store.state.chats.find(c => c.id === chat.id);
+      const msg = chat.messages.find(item => item.id === loadingId);
+      if (msg) {
+        msg.content = demo.text;
+        msg.mode = demo.mode;
+        msg.streaming = false;
+        msg.recommendations = demo.cards;
+        msg.intent = demo.intent;
+      }
+      chat = Store.state.chats.find(c => c.id === chat.id);
       chat.messages = chat.messages.filter(item => item.id !== loadingId);
-      chat.messages.push({ role: 'assistant', content: res.text, time: Date.now(), mode: res.mode, requestId: res.requestId || '' });
+      chat.messages.push({
+        role: 'assistant',
+        content: demo.text,
+        time: Date.now(),
+        mode: demo.mode,
+        requestId: `chat-${Date.now()}`,
+        recommendations: demo.cards,
+        intent: demo.intent
+      });
       chat.updatedAt = Date.now();
       Store.addActivity(`AI聊天：${chat.title}`, 'ai');
       if (input) input.value = '';
@@ -2962,6 +3604,7 @@ const App = {
     if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
     if (this.temp.ocr.url) URL.revokeObjectURL(this.temp.ocr.url);
     const engine = typeof OCRService.health === 'function' ? OCRService.health() : {};
+    const demoFields = /OCR示例发货单/i.test(file.name) || /示例/i.test(file.name) ? this.buildOcrDemoFields() : null;
     this.temp.ocr = {
       file,
       url: URL.createObjectURL(file),
@@ -2975,7 +3618,10 @@ const App = {
       qaQuestion: '',
       qaAnswer: '',
       mock: false,
-      mockReason: ''
+      mockReason: '',
+      fieldDrafts: [],
+      confirmedFields: JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null'),
+      demoFields
     };
     this.recordTask({
       type: 'OCR载入',
@@ -2986,6 +3632,25 @@ const App = {
     });
     this.rerender();
     this.toast(`图片已加载：${file.name}，请点击“开始识别”`);
+  },
+
+  formatOcrStructuredView(structured = {}, sourceText = '') {
+    const rows = Array.isArray(structured.fieldRows) ? structured.fieldRows : [];
+    const fieldTable = [
+      '识别字段表',
+      '字段 | 结果 | 状态',
+      '---|---|---',
+      ...rows.map(row => `${row.field || '待补充'} | ${String(row.value || '待补充').trim() || '待补充'} | ${row.status || '未识别'}`)
+    ];
+    const rawLines = Array.isArray(structured.lines) && structured.lines.length
+      ? structured.lines
+      : String(sourceText || '').split('\n').map(line => line.trim()).filter(Boolean);
+    return [
+      ...fieldTable,
+      '',
+      '原始 OCR 拆行结果',
+      ...rawLines
+    ].join('\n').trim();
   },
 
   async ocrSample(btn) {
@@ -3063,9 +3728,8 @@ const App = {
       o.quality = quality;
       const structured = OCRService.structure(o.result);
       o.template = structured.template;
-      o.structured = structured.pairs.length
-        ? structured.pairs.map(([key, value]) => `${key}\t${value}`).join('\n')
-        : structured.lines.join('\n');
+      o.fieldDrafts = this.buildOcrFieldDrafts(o.result, quality, o.demoFields?.fields || o.confirmedFields?.fields || {});
+      o.structured = this.renderOcrFieldTable('current');
       o.aiFix = '';
       o.aiMode = 'mock';
       o.aiError = '';
@@ -3077,7 +3741,8 @@ const App = {
         text: o.result || '',
         table: structured.pairs.length ? structured.pairs : null,
         imageMeta: { name: o.file.name, size: o.file.size, type: o.file.type },
-        status: o.result ? 'success' : 'failed'
+        status: o.result ? 'success' : 'failed',
+        quality
       };
       Store.state.ocrResult = ocrState;
       if (typeof emit === 'function') emit('ocr:completed', ocrState);
@@ -3097,21 +3762,37 @@ const App = {
 
   async ocrSummary(btn) {
     const o = this.temp.ocr;
-    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
-    if (!source) throw new Error('请先完成 OCR 识别');
     await this.busy(btn, async () => {
-      const ai = await AIService.complete(
-        `请总结以下 OCR 识别内容，提取文件类型、关键字段、风险和建议。\n模板：${o.template || '通用'}\nOCR内容：\n${source.slice(0, 12000)}`,
-        { mode: 'ocr-summary', module: 'ocr', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(source)}` }
-      );
-      o.analysis = ai.text;
+      const source = this.getOcrSourceText();
+      this.syncOcrSourceState(source);
+      if (!source) {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        o.analysis = '【Mock OCR 总结】\n当前未检测到可总结的 OCR 原文，请先上传图片或确认字段表。\n请以结构化字段表为准。';
+      } else if (this.shouldUseOcrMockAi()) {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        o.analysis = [
+          '【Mock OCR 总结】',
+          '当前为本地演示版 / Mock AI，真实 AI 后端未连接。',
+          `文件类型：${o.template || '通用'}`,
+          `内容摘要：${KnowledgeEngine.summary(source)}`,
+          '请重点核对单据类型、企业名称、单据编号、产品名称、数量、电话和地址等字段。'
+        ].join('\n');
+      } else {
+        const ai = await AIService.complete(
+          `请总结以下 OCR 识别内容，提取文件类型、关键字段、风险和建议。\n模板：${o.template || '通用'}\nOCR内容：\n${source.slice(0, 12000)}`,
+          { mode: 'ocr-summary', module: 'ocr', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(source)}` }
+        );
+        o.analysis = ai.text;
+      }
       this.recordTask({
         type: 'OCR总结',
         fileName: o.file?.name || '图片',
         module: 'ocr',
         status: '完成',
-        summary: ai.text.slice(0, 160),
-        result: ai.text
+        summary: String(o.analysis || '').slice(0, 160),
+        result: o.analysis
       });
       Store.addActivity(`OCR AI总结：${o.file?.name || '图片'}`, 'ai');
       this.rerender();
@@ -3120,21 +3801,35 @@ const App = {
 
   async ocrTranslate(btn) {
     const o = this.temp.ocr;
-    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
-    if (!source) throw new Error('请先完成 OCR 识别');
     await this.busy(btn, async () => {
-      const ai = await AIService.complete(
-        `请将以下 OCR 识别内容翻译成正式英文，保留单号、客户、产品、数量、金额、交期等关键字段。\n模板：${o.template || '通用'}\nOCR内容：\n${source.slice(0, 12000)}`,
-        { mode: 'ocr-translate', module: 'ocr', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(source)}` }
-      );
-      o.analysis = ai.text;
+      const source = this.getOcrSourceText();
+      this.syncOcrSourceState(source);
+      if (!source) {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        o.analysis = '【Mock AI 翻译】\n当前未检测到可翻译的 OCR 原文，请先上传图片或确认字段表。';
+      } else if (this.shouldUseOcrMockAi()) {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        o.analysis = [
+          '【Mock AI 翻译】',
+          '当前未连接真实 AI，翻译功能为演示状态。',
+          `英文演示摘要：${KnowledgeEngine.summary(source)}`
+        ].join('\n');
+      } else {
+        const ai = await AIService.complete(
+          `请将以下 OCR 识别内容翻译成正式英文，保留单号、客户、产品、数量、金额、交期等关键字段。\n模板：${o.template || '通用'}\nOCR内容：\n${source.slice(0, 12000)}`,
+          { mode: 'ocr-translate', module: 'ocr', mockFallback: reason => `Mock 兜底：${reason}\n\n${KnowledgeEngine.summary(source)}` }
+        );
+        o.analysis = ai.text;
+      }
       this.recordTask({
         type: 'OCR翻译',
         fileName: o.file?.name || '图片',
         module: 'ocr',
         status: '完成',
-        summary: ai.text.slice(0, 160),
-        result: ai.text
+        summary: String(o.analysis || '').slice(0, 160),
+        result: o.analysis
       });
       Store.addActivity(`OCR AI翻译：${o.file?.name || '图片'}`, 'ai');
       this.rerender();
@@ -3143,21 +3838,27 @@ const App = {
 
   async ocrAsk(btn) {
     const o = this.temp.ocr;
-    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
     const question = document.getElementById('ocrQuestion')?.value.trim() || o.qaQuestion || '';
-    if (!source) throw new Error('请先完成 OCR 识别');
     if (!question) throw new Error('请输入 OCR 问题');
     await this.busy(btn, async () => {
       o.qaQuestion = question;
+      const source = this.getOcrSourceText();
+      this.syncOcrSourceState(source);
       let answerText = '';
-      if (Store.state.settings.accessMode !== 'local') {
+      if (this.shouldUseOcrMockAi() || !source) {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        answerText = [
+          '【Mock OCR 问答】',
+          '当前未连接真实 AI，无法进行真实语义问答。',
+          '你可以先查看结构化字段表，或人工确认关键字段后再用于报价、导出或后续处理。'
+        ].join('\n');
+      } else {
         const ai = await AIService.complete(
           `你是 OCR 问答助手。请仅根据以下 OCR 内容回答问题，不确定时输出“无法确认”。\n\n问题：${question}\n\nOCR内容：\n${source.slice(0, 12000)}`,
           { mode: 'ocr-qa', module: 'ocr', mockFallback: () => KnowledgeEngine.answer(question, [KnowledgeEngine.buildEntry({ title: o.file?.name || 'OCR文件', content: source, sourceType: 'ocr' })]).text }
         );
         answerText = ai.text;
-      } else {
-        answerText = KnowledgeEngine.answer(question, [KnowledgeEngine.buildEntry({ title: o.file?.name || 'OCR文件', content: source, sourceType: 'ocr' })]).text;
       }
       o.qaAnswer = answerText;
       o.analysis = `OCR问答\n问题：${question}\n回答：${answerText}`;
@@ -3177,8 +3878,34 @@ const App = {
   async ocrAIFix(btn) {
     const o = this.temp.ocr;
     const stateOcr = window.GlobalSystemState?.ocrResult || {};
-    const source = String(stateOcr.text || o.result || o.original || '').trim();
-    if (!source) throw new Error('暂无可纠错的 OCR 结果');
+    const source = this.getOcrSourceText();
+    if (!source) {
+      await this.busy(btn, async () => {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        o.aiFix = [
+          '【Mock AI 纠错结果】',
+          '当前为本地演示模式，系统未连接真实 AI。',
+          '已保留 OCR 原文，并尝试按行整理。',
+          '请以人工确认字段表为准。'
+        ].join('\n');
+        o.status = 'AI 纠错完成';
+        o.edited = false;
+        o.fieldDrafts = this.buildOcrFieldDrafts(o.aiFix, OCRService.assessQuality(o.aiFix), o.confirmedFields?.fields || o.demoFields?.fields || {});
+        o.structured = this.renderOcrFieldTable('current');
+        this.recordTask({
+          type: 'OCR纠错',
+          fileName: o.file?.name || '图片',
+          module: 'ocr',
+          status: '完成',
+          summary: 'ocr_ai_fix_mock',
+          result: o.aiFix
+        });
+        this.rerender();
+        this.toast('当前未检测到 OCR 原文，已使用 Mock 纠错结果。');
+      });
+      return;
+    }
     if (String(stateOcr.text || '').trim() !== source) {
       const structured = OCRService.structure(source);
       const synced = {
@@ -3213,6 +3940,29 @@ const App = {
     };
     const confirmText = '当前 OCR 内容将发送至第三方 AI 进行纠错，请确认不包含企业机密或已完成脱敏。';
     const remoteReady = Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled && Store.state.settings.apiUrl;
+    if (!remoteReady || this.shouldUseOcrMockAi()) {
+      await this.busy(btn, async () => {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        o.aiFix = buildMock('当前未连接真实 AI，已使用 Mock 纠错结果。');
+        o.status = '已使用 Mock 纠错';
+        o.edited = false;
+        o.fieldDrafts = this.buildOcrFieldDrafts(o.aiFix || source, quality, o.confirmedFields?.fields || o.demoFields?.fields || {});
+        o.structured = this.renderOcrFieldTable('current');
+        this.recordTask({
+          type: 'OCR纠错',
+          fileName: o.file?.name || '图片',
+          module: 'ocr',
+          status: '完成',
+          summary: 'ocr_ai_fix_mock',
+          result: o.aiFix
+        });
+        Store.addActivity(`OCR AI 纠错：${o.file?.name || '图片'}`, 'ai');
+        this.rerender();
+        this.toast('当前为本地演示版 / Mock AI，已使用 Mock 纠错结果。');
+      });
+      return;
+    }
     if (remoteReady) {
       if (!confirm(confirmText)) {
         await this.busy(btn, async () => {
@@ -3244,9 +3994,9 @@ const App = {
           mockFallback: buildMock
         });
         const repaired = String(ai.text || '').trim();
-        o.aiFix = repaired || buildMock('AI 返回为空');
+        o.aiFix = repaired || buildMock('暂未获得有效纠错结果');
         o.aiMode = ai.mode || (repaired ? 'api' : 'mock');
-        o.aiError = repaired ? (ai.error || '') : '模型返回为空，已使用 Mock 纠错。';
+        o.aiError = repaired ? (ai.error || '') : '暂未获得有效纠错结果，已使用本地规则清洗。';
       } catch (error) {
         o.aiFix = buildMock(AIService.friendlyMessage?.(error) || error.message);
         o.aiMode = 'mock';
@@ -3254,6 +4004,9 @@ const App = {
       }
       o.edited = false;
       o.status = 'AI 纠错完成';
+      const structured = OCRService.structure(o.aiFix || source);
+      o.fieldDrafts = this.buildOcrFieldDrafts(o.aiFix || source, quality, o.confirmedFields?.fields || o.demoFields?.fields || {});
+      o.structured = this.renderOcrFieldTable('current');
       this.recordTask({
         type: 'OCR纠错',
         fileName: o.file?.name || '图片',
@@ -3270,14 +4023,23 @@ const App = {
 
   async ocrAITable(btn) {
     const o = this.temp.ocr;
-    const source = String(window.GlobalSystemState?.ocrResult?.text || '').trim();
-    if (!source) throw new Error('暂无可还原的 OCR 结果');
+    const source = this.getOcrSourceText();
     await this.busy(btn, async () => {
-      const structured = OCRService.structure(source);
-      const lines = structured.pairs.length ? structured.pairs.map(([key, value]) => `${key}\t${value}`) : structured.lines;
-      o.aiFix = ['AI 修复内容仅供参考，请人工核对后使用。', ...lines].join('\n');
+      if (!source || this.shouldUseOcrMockAi()) {
+        o.aiMode = 'mock';
+        o.aiError = '';
+        const structured = OCRService.structure(source || o.demoFields?.rawText || '');
+        const lines = structured.pairs.length ? structured.pairs.map(([key, value]) => `${key}：${String(value || '').trim() || '待确认'}`) : structured.lines;
+        o.aiFix = ['【Mock AI 表格还原】', '当前未连接真实 AI，表格还原仅为演示模式。建议优先使用人工确认字段表。', ...lines].join('\n');
+      } else {
+        const structured = OCRService.structure(source);
+        const lines = structured.pairs.length ? structured.pairs.map(([key, value]) => `${key}：${value}`) : structured.lines;
+        o.aiFix = ['AI 修复内容仅供参考，请人工核对后使用。', ...lines].join('\n');
+      }
       o.edited = true;
       o.status = '表格还原完成';
+      o.fieldDrafts = this.buildOcrFieldDrafts(o.aiFix || source, o.quality || OCRService.assessQuality(source), o.confirmedFields?.fields || o.demoFields?.fields || {});
+      o.structured = this.renderOcrFieldTable('current');
       this.recordTask({
         type: 'OCR表格还原',
         fileName: o.file?.name || '图片',
@@ -3296,12 +4058,25 @@ const App = {
     const text = String(o.aiFix || '').trim();
     if (!text) throw new Error('暂无可保存的 AI 修复结果');
     await this.busy(btn, async () => {
-      o.result = text;
+      const sourceText = String(window.GlobalSystemState?.ocrResult?.text || o.result || o.demoFields?.rawText || '').trim();
+      const quality = o.quality || OCRService.assessQuality(sourceText || text);
+      const saved = o.fieldDrafts && o.fieldDrafts.fields ? o.fieldDrafts.fields : this.buildOcrFieldDrafts(text || sourceText, quality, o.demoFields?.fields || {}).fields;
+      const confirmed = {
+        confirmed: true,
+        confirmedAt: Date.now(),
+        fields: saved,
+        quality,
+        source: 'ocr'
+      };
+      o.confirmedFields = confirmed;
+      localStorage.setItem('personal-ai-os-ocr-confirmed-fields', JSON.stringify(confirmed));
+      o.result = sourceText || text;
       Store.state.ocrResult = {
-        text,
+        text: sourceText || text,
         table: Store.state.ocrResult?.table ?? null,
         imageMeta: Store.state.ocrResult?.imageMeta || {},
-        status: 'success'
+        status: 'success',
+        quality
       };
       if (typeof emit === 'function') emit('ocr:completed', Store.state.ocrResult);
       if (typeof globalThis !== 'undefined') {
@@ -3318,7 +4093,56 @@ const App = {
         result: text
       });
       this.rerender();
-      this.toast('已保存人工确认后的 OCR 结果');
+      this.toast('字段已保存，请在后续报价、模板或导出前再次核对。');
+    });
+  },
+
+  async ocrConfirmFields(btn) {
+    const o = this.temp.ocr;
+    const sourceText = String(window.GlobalSystemState?.ocrResult?.text || o.result || o.aiFix || o.demoFields?.rawText || '').trim();
+    if (!sourceText) throw new Error('暂无可确认字段');
+    await this.busy(btn, async () => {
+      const quality = o.quality || OCRService.assessQuality(sourceText);
+      const fields = this.getOcrFieldOrder().reduce((acc, field) => {
+        if (field === '缺失字段' || field === '可信度') return acc;
+        const input = document.querySelector(`[data-ocr-field="${CSS.escape(field)}"]`);
+        acc[field] = this.normalizeOcrField(field, input?.value ?? o.fieldDrafts?.fields?.[field] ?? '', sourceText, quality);
+        return acc;
+      }, {});
+      const missing = this.getOcrFieldOrder()
+        .filter(field => field !== '可信度' && field !== '缺失字段')
+        .filter(field => String(fields[field] || '待补充').trim() === '待补充');
+      fields['可信度'] = quality.level === 'good' ? '高' : quality.level === 'medium' ? '中' : '低';
+      fields['缺失字段'] = missing.length ? missing.join('、') : '无';
+      const confirmed = {
+        confirmed: true,
+        confirmedAt: Date.now(),
+        fields,
+        quality,
+        source: 'ocr'
+      };
+      o.confirmedFields = confirmed;
+      o.fieldDrafts = { fields, rows: this.getOcrFieldOrder().map(field => ({
+        field,
+        value: fields[field] || '待补充',
+        status: field === '可信度' ? fields[field] : (fields[field] && fields[field] !== '待补充' ? '已识别' : '未识别')
+      })), quality, confirmed: true, confirmedAt: confirmed.confirmedAt, source: 'ocr' };
+      localStorage.setItem('personal-ai-os-ocr-confirmed-fields', JSON.stringify(confirmed));
+      this.toast('字段已保存，请在后续报价、模板或导出前再次核对。');
+      this.rerender();
+    });
+  },
+
+  async ocrLoadDemoFields(btn) {
+    await this.busy(btn, async () => {
+      const demo = this.buildOcrDemoFields();
+      this.temp.ocr.demoFields = demo;
+      this.temp.ocr.fieldDrafts = demo;
+      this.temp.ocr.structured = this.renderOcrFieldTable('current');
+      this.temp.ocr.quality = demo.quality;
+      this.temp.ocr.status = '演示样例字段已加载';
+      this.toast('已加载演示样例字段，不代表真实 OCR 已百分百识别成功。');
+      this.rerender();
     });
   },
 
@@ -3435,6 +4259,74 @@ const App = {
         blob
       });
       this.toast('AI 修复 Word 已导出');
+    });
+  },
+
+  getOcrConfirmedFieldMap() {
+    const saved = this.temp.ocr?.confirmedFields || JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null');
+    return saved && typeof saved === 'object' ? saved : null;
+  },
+
+  async ocrConfirmedTxt(btn) {
+    const confirmed = this.getOcrConfirmedFieldMap();
+    if (!confirmed?.fields) throw new Error('暂无人工确认字段');
+    await this.busy(btn, async () => {
+      const content = this.getOcrFieldOrder().map(field => `${field}：${confirmed.fields[field] || '待补充'}`).join('\n');
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      Utils.download(blob, 'OCR人工确认字段.txt');
+      this.recordDownload({
+        filename: 'OCR人工确认字段.txt',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'txt',
+        status: '已生成',
+        summary: 'OCR 人工确认字段 TXT 导出',
+        blob
+      });
+      this.toast('人工确认字段 TXT 已导出');
+    });
+  },
+
+  async ocrConfirmedWord(btn) {
+    const confirmed = this.getOcrConfirmedFieldMap();
+    if (!confirmed?.fields) throw new Error('暂无人工确认字段');
+    await this.busy(btn, async () => {
+      const content = this.getOcrFieldOrder().map(field => `${field}：${confirmed.fields[field] || '待补充'}`).join('\n');
+      const blob = await Utils.exportDocx('OCR人工确认字段', content, 'OCR人工确认字段');
+      this.recordDownload({
+        filename: 'OCR人工确认字段.docx',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'docx',
+        status: '已生成',
+        summary: 'OCR 人工确认字段 Word 导出',
+        blob
+      });
+      this.toast('人工确认字段 Word 已导出');
+    });
+  },
+
+  async ocrConfirmedExcel(btn) {
+    const confirmed = this.getOcrConfirmedFieldMap();
+    if (!confirmed?.fields) throw new Error('暂无人工确认字段');
+    await this.busy(btn, async () => {
+      const rows = [['字段', '值', '状态'], ...this.getOcrFieldOrder().map(field => [
+        field,
+        confirmed.fields[field] || '待补充',
+        confirmed.fields[field] && confirmed.fields[field] !== '待补充' ? '已识别' : '未识别'
+      ])];
+      const book = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(rows), '人工确认字段');
+      XLSX.writeFile(book, 'OCR人工确认字段.xlsx');
+      this.recordDownload({
+        filename: 'OCR人工确认字段.xlsx',
+        sourceModule: 'ocr',
+        sourceName: this.temp.ocr.file?.name || 'OCR文件',
+        fileType: 'xlsx',
+        status: '已生成',
+        summary: 'OCR 人工确认字段 Excel 导出'
+      });
+      this.toast('人工确认字段 Excel 已导出');
     });
   },
 
@@ -4394,8 +5286,9 @@ const App = {
           ws.result = this.buildMailContent(ws.selected || '商务邮件', ws.prompt || '');
           break;
         case 'cost':
-          ws.result = this.computeCostResult(ws);
-          this.detectCostCalculationBug(ws);
+          ws.costPlan = this.buildCostPlan(ws);
+          ws.result = ws.costPlan.summary;
+          this.detectCostCalculationBug({ ...ws, costPlan: ws.costPlan, result: ws.result });
           break;
         case 'prodexception':
           this.exceptionReport();
@@ -4989,7 +5882,7 @@ const App = {
     this.navigate('mail');
   },
 
-  computeCostResult(source = '') {
+  buildCostPlan(source = '') {
     const startedAt = Date.now();
     const parsed = typeof source === 'string' ? this.parseKeyValueText(source) : this.parseKeyValueText(source?.prompt || '');
     const kv = typeof source === 'object' && source ? { ...source, ...parsed } : parsed;
@@ -5001,88 +5894,179 @@ const App = {
       return '';
     };
     const qty = Utils.number(pick('quantity', '数量', 'qty'));
-    const unitPrice = Utils.number(pick('unitPrice', '单价', 'price'));
-    const material = Utils.number(pick('materialFee', '材料费'));
-    const laborCost = Utils.number(pick('laborCost', '工时成本'));
-    const hours = Utils.number(pick('hours', '工时'));
-    const hourPrice = Utils.number(pick('hourPrice', '工时单价'));
-    const processFee = Utils.number(pick('processFee', '加工费'));
-    const quote = Utils.number(pick('quoteAmount', '报价金额', 'quote'));
-    const hasNegative = [qty, unitPrice, material, laborCost, hours, hourPrice, processFee, quote].some(value => Number.isFinite(value) && value < 0);
+    const unit = String(pick('unit', '单位') || '件');
+    const materialUnitPrice = Utils.number(pick('materialUnitPrice', '材料单价'));
+    const materialUsage = Utils.number(pick('materialUsage', '单件材料用量'));
+    const materialLossRate = Utils.number(pick('materialLossRate', '材料损耗率'));
+    const processType = String(pick('processType', '工艺类型') || '');
+    const unitProcessTime = Utils.number(pick('unitProcessTime', '单件加工时间'));
+    const equipmentHourCost = Utils.number(pick('equipmentHourCost', '设备小时成本'));
+    const processLossRate = Utils.number(pick('processLossRate', '加工损耗率'));
+    const laborWage = Utils.number(pick('laborWage', '人工小时工资'));
+    const unitLaborTime = Utils.number(pick('unitLaborTime', '单件人工时间'));
+    const packagingCost = Utils.number(pick('packagingCost', '包装成本'));
+    const transportCost = Utils.number(pick('transportCost', '运输成本'));
+    const managementFee = Utils.number(pick('managementFee', '管理费'));
+    const otherFee = Utils.number(pick('otherFee', '其他杂费'));
+    const targetProfitRate = Utils.number(pick('targetProfitRate', '目标利润率'));
+    const minimumProfitRate = Utils.number(pick('minimumProfitRate', '最低利润率'));
+    const rush = String(pick('rush', '是否加急') || '否');
+    const rushMultiplier = Utils.number(pick('rushMultiplier', '加急倍率')) || 1;
+    const hasNegative = [qty, materialUnitPrice, materialUsage, materialLossRate, unitProcessTime, equipmentHourCost, processLossRate, laborWage, unitLaborTime, packagingCost, transportCost, managementFee, otherFee, targetProfitRate, minimumProfitRate, rushMultiplier].some(value => Number.isFinite(value) && value < 0);
+    const safeQty = Number.isFinite(qty) && qty > 0 ? qty : 0;
+    const safeMaterialUnitPrice = Number.isFinite(materialUnitPrice) ? materialUnitPrice : 0;
+    const safeMaterialUsage = Number.isFinite(materialUsage) ? materialUsage : 0;
+    const safeMaterialLossRate = Number.isFinite(materialLossRate) ? materialLossRate : 0;
+    const safeUnitProcessTime = Number.isFinite(unitProcessTime) ? unitProcessTime : 0;
+    const safeEquipmentHourCost = Number.isFinite(equipmentHourCost) ? equipmentHourCost : 0;
+    const safeProcessLossRate = Number.isFinite(processLossRate) ? processLossRate : 0;
+    const safeLaborWage = Number.isFinite(laborWage) ? laborWage : 0;
+    const safeUnitLaborTime = Number.isFinite(unitLaborTime) ? unitLaborTime : 0;
+    const safePackagingCost = Number.isFinite(packagingCost) ? packagingCost : 0;
+    const safeTransportCost = Number.isFinite(transportCost) ? transportCost : 0;
+    const safeManagementFee = Number.isFinite(managementFee) ? managementFee : 0;
+    const safeOtherFee = Number.isFinite(otherFee) ? otherFee : 0;
+    const safeTargetProfitRate = Number.isFinite(targetProfitRate) ? targetProfitRate : 0;
+    const safeMinimumProfitRate = Number.isFinite(minimumProfitRate) ? minimumProfitRate : 0;
+    const safeRushMultiplier = Number.isFinite(rushMultiplier) && rushMultiplier > 0 ? rushMultiplier : 1;
+    const materialCost = safeMaterialUnitPrice * safeMaterialUsage * safeQty * (1 + safeMaterialLossRate / 100);
+    const processCost = safeEquipmentHourCost * safeUnitProcessTime * safeQty * (1 + safeProcessLossRate / 100);
+    const laborCost = safeLaborWage * safeUnitLaborTime * safeQty;
+    const otherCost = safePackagingCost + safeTransportCost + safeManagementFee + safeOtherFee;
+    const totalCost = materialCost + processCost + laborCost + otherCost;
+    const suggestedProfit = totalCost * safeTargetProfitRate / 100;
+    const quoteBeforeRush = totalCost + suggestedProfit;
+    const finalQuote = rush === '是' ? quoteBeforeRush * safeRushMultiplier : quoteBeforeRush;
+    const unitQuote = safeQty > 0 ? finalQuote / safeQty : NaN;
+    const lowestAcceptableQuote = totalCost * (1 + safeMinimumProfitRate / 100);
+    const profit = finalQuote - totalCost;
+    const margin = finalQuote > 0 ? profit / finalQuote * 100 : NaN;
+    const calcTime = Math.max(1, Date.now() - startedAt);
+    const risks = [];
+    if (safeMaterialLossRate > 10) risks.push('材料损耗率较高，建议复核图纸和下料方案。');
+    if (safeTargetProfitRate < safeMinimumProfitRate) risks.push('当前目标利润率低于最低利润率，可能不适合接单。');
+    if (safeQty > 0 && safeQty < 50) risks.push('数量较少，单件加工成本可能偏高。');
+    if (rush === '是') risks.push('加急订单建议确认设备排产和交期风险。');
+    if (Number.isFinite(unitQuote) && unitQuote < (safeQty > 0 ? totalCost / safeQty : Infinity)) risks.push('当前报价可能亏损。');
     if (hasNegative) {
-      return [
-        '成本核算结果',
-        '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。'
-      ].join('\n');
+      return {
+        error: '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。',
+        summary: [
+          '成本核算结果',
+          '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。'
+        ].join('\n'),
+        calcTime,
+        fields: { qty, unit, materialUnitPrice, materialUsage, materialLossRate, processType, unitProcessTime, equipmentHourCost, processLossRate, laborWage, unitLaborTime, packagingCost, transportCost, managementFee, otherFee, targetProfitRate, minimumProfitRate, rush, rushMultiplier: safeRushMultiplier },
+        costs: { materialCost, processCost, laborCost, otherCost, totalCost, suggestedProfit, quoteBeforeRush, finalQuote, unitQuote, lowestAcceptableQuote, profit, margin },
+        risks: ['请先将所有数值修正为非负数。']
+      };
     }
-    const resolvedLabor = Number.isFinite(laborCost)
-      ? laborCost
-      : (Number.isFinite(hours) && Number.isFinite(hourPrice) ? hours * hourPrice : 0);
-    const qtyUnitCost = Number.isFinite(qty) && Number.isFinite(unitPrice) ? qty * unitPrice : NaN;
-    const totalCost = (Number.isFinite(material) ? material : 0) + resolvedLabor + (Number.isFinite(processFee) ? processFee : 0);
-    const profit = Number.isFinite(quote) ? quote - totalCost : NaN;
-    const margin = Number.isFinite(profit) && Number.isFinite(quote) && quote ? profit / quote * 100 : NaN;
     const durationMs = Math.max(1, Date.now() - startedAt);
     const risk = Number.isFinite(margin)
-      ? (margin < 10 ? '风险提示：利润率低于 10%，请复核材料费、工时成本、加工费与报价金额。' : '利润率正常：可继续保留当前报价策略。')
+      ? (margin < safeMinimumProfitRate ? '风险提示：利润率低于最低利润率，请复核材料费、工时成本、加工费与报价金额。' : '利润率正常：可继续保留当前报价策略。')
       : '利润率未计算：报价金额为空或为 0。';
-    const materialLine = Number.isFinite(material) ? `材料：${material.toFixed(2)}` : '材料：0.00';
-    const laborLine = Number.isFinite(resolvedLabor) ? `工时：${resolvedLabor.toFixed(2)}` : '工时：0.00';
-    const processLine = Number.isFinite(processFee) ? `加工：${processFee.toFixed(2)}` : '加工：0.00';
+    const materialLine = `材料成本：${materialCost.toFixed(2)}`;
+    const processLine = `加工成本：${processCost.toFixed(2)}`;
+    const laborLine = `人工成本：${laborCost.toFixed(2)}`;
+    const otherLine = `其他成本：${otherCost.toFixed(2)}`;
     const totalLine = `总成本：${totalCost.toFixed(2)}`;
-    const quoteLine = `报价：${Number.isFinite(quote) ? quote.toFixed(2) : '0.00'}`;
-    const profitLine = `利润：${Number.isFinite(profit) ? profit.toFixed(2) : '未计算'}`;
+    const profitLine = `建议利润：${suggestedProfit.toFixed(2)}`;
+    const quoteLine = `建议报价：${finalQuote.toFixed(2)}`;
+    const unitQuoteLine = `单件报价：${Number.isFinite(unitQuote) ? unitQuote.toFixed(2) : '待补充'}`;
+    const lowestLine = `最低可接受报价：${lowestAcceptableQuote.toFixed(2)}`;
     const marginLine = `利润率：${Number.isFinite(margin) ? `${margin.toFixed(2)}%` : '未计算'}`;
-    const warningLine = Number.isFinite(margin) ? (margin < 10 ? '提示：利润率低于 10%' : '提示：利润率正常') : '提示：利润率未计算';
-    return [
+    const quantityLabel = safeQty > 0 ? `${safeQty}${unit}` : `待补充${unit}`;
+    const summary = [
       '成本核算结果',
-      `数量：${Number.isFinite(qty) ? qty : 0}`,
-      `数量×单价成本：${Number.isFinite(qtyUnitCost) ? qtyUnitCost.toFixed(2) : '0.00'}`,
-      '成本组成：',
+      `产品：${String(pick('productName', '产品名称') || '待补充')}`,
+      `数量：${quantityLabel}`,
       materialLine,
-      laborLine,
       processLine,
+      laborLine,
+      otherLine,
       '↓',
       totalLine,
       '↓',
-      quoteLine,
-      '↓',
       profitLine,
+      quoteLine,
+      unitQuoteLine,
+      lowestLine,
       marginLine,
-      `计算时间：${durationMs} ms`,
+      `计算时间：${calcTime} ms`,
       '',
-      warningLine,
-      risk
+      `报价说明：本次报价产品为【${String(pick('productName', '产品名称') || '待补充')}】, 数量为【${quantityLabel}】。主要材料为【${String(pick('materialName', '材料名称') || '待补充')}】, 加工工艺包含【${processType || '待补充'}】。系统根据材料成本、加工时间、人工成本、损耗率及目标利润率计算，建议总报价为【${finalQuote.toFixed(2)}】元，建议单价为【${Number.isFinite(unitQuote) ? unitQuote.toFixed(2) : '待补充'}】元/件。该报价仅供内部参考，最终价格需结合客户要求、图纸复杂度、交期和实际采购价格确认。`,
+      ...risks
     ].join('\n');
+    return {
+      error: '',
+      summary,
+      calcTime,
+      fields: {
+        productName: String(pick('productName', '产品名称') || '待补充'),
+        productCode: String(pick('productCode', '产品编码') || '待补充'),
+        customerName: String(pick('customerName', '客户名称') || '待补充'),
+        quoteDate: String(pick('quoteDate', '报价日期') || ''),
+        qty: safeQty,
+        unit,
+        materialName: String(pick('materialName', '材料名称') || '待补充'),
+        materialUnitPrice: safeMaterialUnitPrice,
+        materialUsage: safeMaterialUsage,
+        materialLossRate: safeMaterialLossRate,
+        processType,
+        unitProcessTime: safeUnitProcessTime,
+        equipmentHourCost: safeEquipmentHourCost,
+        processLossRate: safeProcessLossRate,
+        laborWage: safeLaborWage,
+        unitLaborTime: safeUnitLaborTime,
+        packagingCost: safePackagingCost,
+        transportCost: safeTransportCost,
+        managementFee: safeManagementFee,
+        otherFee: safeOtherFee,
+        targetProfitRate: safeTargetProfitRate,
+        minimumProfitRate: safeMinimumProfitRate,
+        rush,
+        rushMultiplier: safeRushMultiplier
+      },
+      costs: {
+        materialCost,
+        processCost,
+        laborCost,
+        otherCost,
+        totalCost,
+        suggestedProfit,
+        quoteBeforeRush,
+        finalQuote,
+        unitQuote,
+        lowestAcceptableQuote,
+        profit,
+        margin
+      },
+      risks,
+      risk,
+      durationMs: calcTime
+    };
+  },
+
+  computeCostResult(source = '') {
+    return this.buildCostPlan(source).summary;
   },
 
   detectCostCalculationBug(ws = {}) {
-    const quantity = Utils.number(ws.quantity);
-    const material = Utils.number(ws.materialFee);
-    const labor = Utils.number(ws.laborCost);
-    const processFee = Utils.number(ws.processFee);
-    const quote = Utils.number(ws.quoteAmount);
-    const hasInput = [quantity, material, labor, processFee, quote].some(value => Number.isFinite(value) && value > 0);
-    if (!hasInput || !ws.result) return;
-    const expectedTotal = (Number.isFinite(material) ? material : 0) + (Number.isFinite(labor) ? labor : 0) + (Number.isFinite(processFee) ? processFee : 0);
-    const totalMatch = String(ws.result).match(/总成本[:：]\s*([-\d.]+)/);
-    const profitMatch = String(ws.result).match(/利润[:：]\s*([-\d.]+)/);
-    const marginMatch = String(ws.result).match(/利润率[:：]\s*([-\d.]+)%/);
-    const totalValue = totalMatch ? Number(totalMatch[1]) : NaN;
-    const profitValue = profitMatch ? Number(profitMatch[1]) : NaN;
-    const marginValue = marginMatch ? Number(marginMatch[1]) : NaN;
-    const expectedProfit = Number.isFinite(quote) ? quote - expectedTotal : NaN;
-    const expectedMargin = Number.isFinite(expectedProfit) && Number.isFinite(quote) && quote ? expectedProfit / quote * 100 : NaN;
-    const mismatch = (Number.isFinite(expectedTotal) && (!Number.isFinite(totalValue) || Math.abs(totalValue - expectedTotal) > 0.01))
-      || (Number.isFinite(expectedProfit) && (!Number.isFinite(profitValue) || Math.abs(profitValue - expectedProfit) > 0.01))
-      || (Number.isFinite(expectedMargin) && (!Number.isFinite(marginValue) || Math.abs(marginValue - expectedMargin) > 0.05));
+    const plan = ws.costPlan || this.buildCostPlan(ws);
+    if (!plan || !ws.result) return;
+    const mismatch = [
+      ['totalCost', plan.costs?.totalCost, Number.isFinite(plan.costs?.totalCost) ? plan.costs.totalCost : NaN],
+      ['finalQuote', plan.costs?.finalQuote, Number.isFinite(plan.costs?.finalQuote) ? plan.costs.finalQuote : NaN],
+      ['unitQuote', plan.costs?.unitQuote, Number.isFinite(plan.costs?.unitQuote) ? plan.costs.unitQuote : NaN],
+      ['margin', plan.costs?.margin, Number.isFinite(plan.costs?.margin) ? plan.costs.margin : NaN]
+    ].some(([, actual, expected]) => Number.isFinite(expected) && (!Number.isFinite(actual) || Math.abs(actual - expected) > 0.01));
     if (!mismatch) return;
     const bug = this.reportBug({
       module: '成本核算助手',
       feature: '开始计算',
       type: '结果与输入不一致',
       message: '用户输入了数值，但结果区未按当前输入正确计算。',
-      description: `输入：数量=${Number.isFinite(quantity) ? quantity : 0}，材料费=${Number.isFinite(material) ? material : 0}，工时成本=${Number.isFinite(labor) ? labor : 0}，加工费=${Number.isFinite(processFee) ? processFee : 0}，报价金额=${Number.isFinite(quote) ? quote : 0}。`,
+      description: `输入：数量=${plan.fields?.qty || 0}，材料单价=${plan.fields?.materialUnitPrice || 0}，材料用量=${plan.fields?.materialUsage || 0}，加工时间=${plan.fields?.unitProcessTime || 0}，人工工时=${plan.fields?.unitLaborTime || 0}。`,
       suggestion: '检查输入字段 id/name 与 JS 读取逻辑，确保使用 input.value 读取当前值，并重新计算。',
       source: 'business-detection'
     });
@@ -5092,17 +6076,10 @@ const App = {
   costCalc(btn) {
     const started = Date.now();
     const ws = this.syncWorkspaceFromDom('cost');
-    const values = {
-      quantity: Utils.number(ws.quantity),
-      unitPrice: Utils.number(ws.unitPrice),
-      materialFee: Utils.number(ws.materialFee),
-      laborCost: Utils.number(ws.laborCost),
-      processFee: Utils.number(ws.processFee),
-      quoteAmount: Utils.number(ws.quoteAmount),
-      prompt: ws.prompt || ''
-    };
-    if ([values.quantity, values.unitPrice, values.materialFee, values.laborCost, values.processFee, values.quoteAmount].some(value => Number.isFinite(value) && value < 0)) {
-      ws.result = '输入异常：数量、单价、材料费、工时成本、加工费、报价金额不能为负数，请修正后再计算。';
+    const plan = this.buildCostPlan(ws);
+    if (plan.error) {
+      ws.costPlan = plan;
+      ws.result = plan.summary;
       ws.costStatus = '⚠️ 输入异常';
       ws.updatedAt = Date.now();
       Store.save();
@@ -5110,23 +6087,22 @@ const App = {
         module: '成本核算助手',
         feature: '开始计算',
         type: '输入异常',
-        message: '检测到负数输入，请先修正后再计算。',
+        message: plan.error,
         description: '成本核算助手不接受负数价格或数量。',
-        suggestion: '请将数量、材料费、工时成本、加工费、报价金额修正为非负数。',
+        suggestion: '请将数值修正为非负数后再重新计算。',
         source: 'business-detection'
       });
       this.rerender();
       this.toast('请先修正负数输入后再计算', 'error');
       return ws.result;
     }
-    ws.result = this.computeCostResult(values);
+    ws.costPlan = plan;
+    ws.result = plan.summary;
     ws.costStatus = '✅ Production Ready';
     ws.updatedAt = Date.now();
     Store.save();
-    this.detectCostCalculationBug({ ...ws, ...values, result: ws.result, computedAt: started });
-    ws.costStatus = Number.isFinite(Utils.number(values.quoteAmount)) && Number.isFinite(Utils.number(values.materialFee)) && Number.isFinite(Utils.number(values.laborCost)) && Number.isFinite(Utils.number(values.processFee))
-      ? '✅ Production Ready'
-      : ws.costStatus || '支持中文字段与自动计算';
+    this.detectCostCalculationBug({ ...ws, costPlan: plan, result: ws.result, computedAt: started });
+    ws.costStatus = '✅ Production Ready';
     this.rerender();
     this.toast('成本已重新计算');
     if (btn) {
@@ -5134,6 +6110,137 @@ const App = {
       btn.lastChild.textContent = '开始计算';
     }
     return ws.result;
+  },
+
+  costFillSample() {
+    const ws = this.getWorkspace('cost');
+    Object.assign(ws, {
+      productName: '304不锈钢连接件',
+      productCode: 'WUSI-CNC-001',
+      customerName: '新能源设备客户',
+      quoteDate: new Date().toISOString().slice(0, 10),
+      quantity: 500,
+      unit: '件',
+      materialName: '304不锈钢',
+      materialUnitPrice: 18,
+      materialUsage: 0.35,
+      materialLossRate: 8,
+      processType: 'CNC + 数控车',
+      unitProcessTime: 0.12,
+      equipmentHourCost: 80,
+      processLossRate: 5,
+      laborWage: 35,
+      unitLaborTime: 0.05,
+      packagingCost: 120,
+      transportCost: 300,
+      managementFee: 200,
+      otherFee: 100,
+      targetProfitRate: 25,
+      minimumProfitRate: 15,
+      rush: '否',
+      rushMultiplier: 1.2
+    });
+    ws.costPlan = this.buildCostPlan(ws);
+    ws.result = ws.costPlan.summary;
+    ws.costStatus = '✅ Production Ready';
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.rerender();
+    this.toast('已填充成本核算示例');
+  },
+
+  costClear() {
+    const ws = this.getWorkspace('cost');
+    Object.assign(ws, {
+      productName: '',
+      productCode: '',
+      customerName: '',
+      quoteDate: '',
+      quantity: '',
+      unit: '件',
+      materialName: '',
+      materialUnitPrice: '',
+      materialUsage: '',
+      materialLossRate: '',
+      processType: '',
+      unitProcessTime: '',
+      equipmentHourCost: '',
+      processLossRate: '',
+      laborWage: '',
+      unitLaborTime: '',
+      packagingCost: '',
+      transportCost: '',
+      managementFee: '',
+      otherFee: '',
+      targetProfitRate: '',
+      minimumProfitRate: '',
+      rush: '否',
+      rushMultiplier: '',
+      prompt: '',
+      costPlan: null,
+      result: '',
+      costStatus: '支持中文字段与自动计算'
+    });
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.rerender();
+    this.toast('成本核算数据已清空');
+  },
+
+  costPrint() {
+    const ws = this.syncWorkspaceFromDom('cost');
+    const plan = ws.costPlan || this.buildCostPlan(ws);
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${Utils.escape(ws.productName || '成本报价单')}</title><style>
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:32px;color:#111827}
+      h1,h2,h3,p{margin:0 0 12px}
+      .muted{color:#6b7280}
+      table{width:100%;border-collapse:collapse;margin:16px 0}
+      th,td{border:1px solid #d1d5db;padding:8px;text-align:left;font-size:14px}
+      th{background:#f9fafb}
+      .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+      .card{border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:16px}
+      .warn{color:#b45309}
+      .ok{color:#047857}
+    </style></head><body>
+      <h1>成本报价单</h1>
+      <p class="muted">本报价单由成本核算助手自动生成，仅供内部参考。</p>
+      <div class="card">
+        <div class="grid">
+          <div><h3>产品信息</h3><p>产品名称：${Utils.escape(plan.fields?.productName || '待补充')}</p><p>产品编码：${Utils.escape(plan.fields?.productCode || '待补充')}</p><p>客户名称：${Utils.escape(plan.fields?.customerName || '待补充')}</p><p>报价日期：${Utils.escape(plan.fields?.quoteDate || '待补充')}</p></div>
+          <div><h3>工艺信息</h3><p>工艺类型：${Utils.escape(plan.fields?.processType || '待补充')}</p><p>数量：${Utils.escape(String(plan.fields?.qty ?? 0))} ${Utils.escape(plan.fields?.unit || '件')}</p><p>加急：${Utils.escape(plan.fields?.rush || '否')}</p><p>加急倍率：${Utils.escape(String(plan.fields?.rushMultiplier ?? 1))}</p></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>成本拆分</h3>
+        <table><thead><tr><th>项目</th><th>金额</th></tr></thead><tbody>
+          <tr><td>材料成本</td><td>${plan.costs?.materialCost?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>加工成本</td><td>${plan.costs?.processCost?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>人工成本</td><td>${plan.costs?.laborCost?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>其他成本</td><td>${plan.costs?.otherCost?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>总成本</td><td>${plan.costs?.totalCost?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>建议利润</td><td>${plan.costs?.suggestedProfit?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>建议报价</td><td>${plan.costs?.finalQuote?.toFixed(2) || '0.00'}</td></tr>
+          <tr><td>单件报价</td><td>${Number.isFinite(plan.costs?.unitQuote) ? plan.costs.unitQuote.toFixed(2) : '待补充'}</td></tr>
+          <tr><td>最低可接受报价</td><td>${plan.costs?.lowestAcceptableQuote?.toFixed(2) || '0.00'}</td></tr>
+        </tbody></table>
+      </div>
+      <div class="card">
+        <h3>报价说明</h3>
+        <p>${Utils.escape(plan.summary || '')}</p>
+        <p class="${plan.risks?.length ? 'warn' : 'ok'}">${Utils.escape(plan.risks?.length ? plan.risks.join('；') : '当前参数下可继续保留报价策略。')}</p>
+      </div>
+    </body></html>`;
+    const win = window.open('', '_blank', 'width=1100,height=900');
+    if (!win) {
+      this.toast('浏览器阻止了打印窗口，请允许弹窗后重试', 'error');
+      return;
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 250);
+    this.toast('已打开报价单打印窗口');
   },
 
   exceptionAdd() {

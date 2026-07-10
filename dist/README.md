@@ -1,10 +1,31 @@
 # Industrial AI OS
 
-Industrial AI OS v1.3 Practical —— 可实际操作的 AI 企业办公工具，具备 Enterprise Agent Runtime V1 骨架。
+Industrial AI OS · Manufacturing AI Office Demo
+
+面向小工厂的 AI 办公演示系统，支持单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
 
 当前版本：`v1.3-practical`
 
-项目状态：v1.3 实用版 / 可实际操作 / 可持续迭代
+当前版本名称：`Industrial AI OS · Resume Demo Version`
+
+项目状态：Resume Demo / 本地演示版 / Mock AI
+
+## 版本冻结说明
+
+当前版本已冻结为适合简历、面试、作品集展示的稳定演示版。
+
+当前定位：
+
+面向小工厂的 AI 办公演示系统，支持单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
+
+当前状态：
+
+- 本地演示版
+- Mock AI
+- 未接入真实 AI
+- 不调用收费 API
+- 数据保存在浏览器 localStorage
+- 适合作品集、面试和功能演示
 
 推荐入口：
 
@@ -13,7 +34,7 @@ Industrial AI OS v1.3 Practical —— 可实际操作的 AI 企业办公工具�
 
 ## 项目定位
 
-Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，不是静态展示页，也不是单一聊天机器人。它保留企业软件常见的菜单、工作区、文件处理、任务队列、审批与监控能力，并通过统一 AI Gateway 连接真实 DeepSeek / OpenAI-compatible 模型。
+Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，不是静态展示页，也不是单一聊天机器人。当前版本更适合简历、面试、作品集和功能演示，保留了常见的菜单、工作区、文件处理、任务队列、审批与监控能力，并通过统一 AI Gateway 预留真实 DeepSeek / OpenAI-compatible 模型接入位。
 
 适用场景：
 
@@ -22,6 +43,23 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 - AI Chat、Agent Runtime、Tool Center、Task Queue、Human Approval
 - 面试演示、作品集展示、企业数字化原型验证
 
+## 核心模块说明
+
+1. AI Chat
+   本地规则助手，用于引导用户进入 OCR、成本核算、Skill 模板、Error Center 等模块。
+
+2. OCR
+   单据识别演示，支持结构化字段表和原始 OCR 拆行结果。
+
+3. 成本核算助手
+   适合小工厂报价场景，支持材料成本、加工成本、人工成本、利润、建议报价和风险提示。
+
+4. Skill 模板
+   沉淀制造业常用工作模板，支持分类筛选、搜索、查看详情、复制和使用模板预览。
+
+5. Error Center / Bug Monitor
+   支持错误聚合、active / ignored / resolved 三态生命周期、错误中心自检和健康统计。
+
 ## 当前版本能力
 
 真实闭环：
@@ -29,7 +67,7 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 - Excel：上传 → 解析 → 检测 → 建议 → 确认 → 导出 → 记录
 - OCR：上传 → 识别 → AI 校对/兜底 → 结构化 → 导出 → 记录
 - PDF：上传 → 读取/扫描件提示 → 总结/提取 → 导出 → 记录
-- AI Chat：连续对话、挂载文件、长回复完整显示
+- AI Chat：连续对话、挂载文件、长回复完整显示、本地规则演示入口
 - Agent Runtime：任务、状态、审批、监控、历史
 - 数据管理：历史、导出、清空、查看
 
@@ -48,6 +86,15 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 - Mock 只作为明确兜底
 - LangGraph / LlamaIndex / MCP 完整协议 / GraphRAG / 企业 Connector 仍是 V2
 - 当前不是完整企业级生产平台
+- 当前为本地演示版 / Mock AI，适合作品集、面试、功能演示使用
+
+## 推荐演示路线
+
+1. 打开 [AI Chat](http://127.0.0.1:3000/#/chat)，点击“做成本报价”
+2. 跳转 [成本核算助手](http://127.0.0.1:3000/#/cost)，点击“一键填充示例”
+3. 查看建议报价、单件报价和风险提示
+4. 打开 [Skill 模板](http://127.0.0.1:3000/#/skills)，搜索“CNC”
+5. 打开 [Error Center / Bug Monitor](http://127.0.0.1:3000/#/monitoring)，运行错误中心自检
 
 ## AI Mode
 
@@ -70,13 +117,21 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 - 安全：JWT、bcrypt、Helmet、CORS、输入校验、日志脱敏
 - 部署：GitHub Pages、Render、Vercel、Docker、VPS
 
+## 简历可用描述
+
+项目名称：
+Industrial AI OS · Manufacturing AI Office Demo
+
+项目描述：
+基于 HTML / CSS / JavaScript 构建的制造业 AI 办公演示系统，面向小工厂和加工企业，提供本地规则 AI 助手、单据 OCR 结构化识别、制造业成本核算、工厂工作模板和错误监控中心。项目当前为 Mock AI 演示版，所有数据保存在浏览器 localStorage，适合作品集、面试和功能演示。
+
 ## 安装与启动
 
 要求：Node.js 18+
 
 ```bash
 npm install
-npm start
+npm run dev
 ```
 
 浏览器打开：
@@ -84,6 +139,8 @@ npm start
 ```text
 http://127.0.0.1:3000
 ```
+
+如果本地项目当前使用的是现有启动命令，也可以继续按现有方式运行。
 
 ## 验证命令
 
@@ -135,6 +192,8 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 - 用于前端静态展示与演示
 - 适合面试、汇报、作品集
 - 不适合真实企业机密数据
+- 当前展示地址：
+  [https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/](https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/)
 
 ### Render / VPS / 云服务器
 
