@@ -1744,3 +1744,28 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 
 - RFQ 报价审批闭环已完成本地发布验收。
 - 该能力仍定位为 Resume Demo / 本地 MVP，不代表正式生产级报价、审批或企业审计系统。
+
+## 2026-07-13 — v1.4 RFQ Demo 版本收尾
+
+### 版本口径
+
+- 当前版本名称统一为 `v1.4 RFQ Demo`。
+- 当前项目状态统一为 `RFQ 闭环可交互 / Resume Demo / MVP`。
+- 当前不是正式生产系统。
+- GitHub Pages 模式统一描述为公网静态演示。
+- 数据模式统一描述为当前浏览器 `localStorage`。
+- AI 模式统一描述为本地规则 / Mock；真实模型接入属于后续服务器部署能力。
+
+### SQLite 运行时文件
+
+- `.gitignore` 已补充：
+  - `database/*.sqlite3-shm`
+  - `database/*.sqlite3-wal`
+  - `database/*.sqlite3-journal`
+- `database/personal-ai-os.sqlite3-shm` 与 `database/personal-ai-os.sqlite3-wal` 将从 Git 跟踪中移除，仅作为本地运行时文件保留。
+- 未删除或修改数据库主文件 `database/personal-ai-os.sqlite3`。
+
+### 本轮范围
+
+- 只做发布元数据和版本口径收尾。
+- 未修改 RFQ 风险、审批、报价、审计核心业务逻辑。

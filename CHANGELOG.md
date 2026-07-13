@@ -971,3 +971,17 @@
   - 手机尺寸下无明显按钮遮挡和横向溢出。
   - RFQ 页面无新增红色 JavaScript Error。
 - `npm run verify` 已通过，包含 node check、build、bug scan 与浏览器 E2E。
+
+## 2026-07-13 — v1.4 RFQ Demo 发布元数据收尾
+
+- 统一当前版本口径为 `v1.4 RFQ Demo`。
+- 统一项目状态为 `RFQ 闭环可交互 / Resume Demo / MVP / 非正式生产系统`。
+- GitHub Pages 模式统一描述为公网静态演示。
+- 数据模式统一描述为当前浏览器 `localStorage`。
+- AI 模式统一描述为本地规则 / Mock；真实模型接入归入后续服务器部署能力。
+- 首页、关于系统、README、TEST_REPORT 当前版本说明已同步。
+- `.gitignore` 补充 SQLite 运行时文件规则：
+  - `database/*.sqlite3-shm`
+  - `database/*.sqlite3-wal`
+  - `database/*.sqlite3-journal`
+- 本轮未修改 RFQ 风险、审批、报价和审计核心业务逻辑。
