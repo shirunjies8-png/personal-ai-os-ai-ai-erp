@@ -2,7 +2,7 @@ const { v4: uuidv4 } = require('uuid');
 const agentTaskModel = require('../models/agentTaskModel');
 const agentTaskLogModel = require('../models/agentTaskLogModel');
 const agentApprovalModel = require('../models/agentApprovalModel');
-const { executeTool, listTools, detectTool, mapRole } = require('./toolRegistry');
+const { executeTool, listTools, detectTool, mapRole, classifyFailure } = require('./toolRegistry');
 const { chat: gatewayChat } = require('./aiGateway');
 const memoryService = require('./memoryService');
 
@@ -90,11 +90,11 @@ async function createTask({ enterpriseId, userId, role, goal, input = {} }) {
 function getTask(taskId) {
   const task = agentTaskModel.findById(taskId);
   if (!task) return null;
-  return {
+  return decorateTask({
     ...task,
     logs: agentTaskLogModel.listByTask(taskId),
     approval: agentApprovalModel.findPendingByTask(taskId)
-  };
+  });
 }
 
 function listTasks(enterpriseId) {
@@ -102,7 +102,29 @@ function listTasks(enterpriseId) {
     ...task,
     logs: agentTaskLogModel.listByTask(task.id),
     approval: agentApprovalModel.findPendingByTask(task.id)
-  }));
+  })).map(decorateTask);
+}
+
+function decorateTask(task = {}) {
+  const logs = Array.isArray(task.logs) ? task.logs : [];
+  const startedAt = task.created_at ? new Date(task.created_at).getTime() : 0;
+  const updatedAt = task.updated_at ? new Date(task.updated_at).getTime() : startedAt;
+  const terminal = ['success', 'failed', 'timeout', 'cancelled'].includes(task.status);
+  const failedLog = logs.slice().reverse().find(log => log.error_message || ['failed', 'timeout', 'cancelled'].includes(log.status));
+  const tools = listTools();
+  const openCircuitTools = tools.filter(tool => tool.circuitState === 'open');
+  return {
+    ...task,
+    durationMs: startedAt && updatedAt ? Math.max(0, updatedAt - startedAt) : 0,
+    finishedAt: terminal ? updatedAt : 0,
+    retryCount: Number(task.retry_count || 0),
+    failureType: classifyFailure(task.error_message || failedLog?.error_message || task.error_code || ''),
+    circuitState: openCircuitTools.length ? 'open' : 'closed',
+    circuitSummary: {
+      openTools: openCircuitTools.map(tool => tool.toolName),
+      totalOpen: openCircuitTools.length
+    }
+  };
 }
 
 async function requestApproval(task, step) {
@@ -160,10 +182,11 @@ async function runTask(taskId) {
           return getTask(task.id);
         }
         if (!result.ok) {
+          const failureType = result.failureType || classifyFailure(result.error);
           agentTaskModel.update(task.id, {
             status: result.status === 'timeout' ? 'timeout' : 'failed',
             current_step: index,
-            error_code: result.status || 'failed',
+            error_code: failureType || result.status || 'failed',
             error_message: friendlyToolError(result.error),
             retry_count: result.retryCount || 0
           });
@@ -173,7 +196,7 @@ async function runTask(taskId) {
             requestId: result.requestId,
             durationMs: result.durationMs,
             retryCount: result.retryCount,
-            errorCode: result.status || 'failed',
+            errorCode: failureType || result.status || 'failed',
             errorMessage: friendlyToolError(result.error),
             detail: safeString(result.error)
           });
@@ -187,7 +210,10 @@ async function runTask(taskId) {
           toolName: result.toolName,
           requestId: result.requestId,
           status: result.status,
-          durationMs: result.durationMs
+          durationMs: result.durationMs,
+          retryCount: result.retryCount || 0,
+          failureType: result.failureType || '',
+          circuitState: result.circuitState || 'closed'
         });
         agentTaskModel.update(task.id, {
           current_step: index + 1,
@@ -364,20 +390,38 @@ function getMonitorStats(enterpriseId) {
     const success = own.filter(log => log.status === 'success').length;
     const failed = own.filter(log => ['failed', 'timeout', 'cancelled'].includes(log.status)).length;
     const avg = total ? Math.round(own.reduce((sum, log) => sum + Number(log.duration_ms || 0), 0) / total) : 0;
+    const lastFailure = own.slice().reverse().find(log => log.error_message || ['failed', 'timeout', 'cancelled'].includes(log.status));
     return {
       toolName: tool.toolName,
       total,
       successRate: total ? Number((success / total).toFixed(2)) : 0,
       failureRate: total ? Number((failed / total).toFixed(2)) : 0,
-      avgDurationMs: avg
+      avgDurationMs: avg,
+      retryPolicy: tool.retryPolicy,
+      circuitState: tool.circuitState || 'closed',
+      circuit: tool.circuit || {},
+      lastFailureAt: tool.lastFailureAt || (lastFailure?.created_at ? new Date(lastFailure.created_at).getTime() : 0),
+      lastFailureType: tool.lastFailureType || classifyFailure(lastFailure?.error_message || lastFailure?.error_code || ''),
+      lastFailureMessage: lastFailure?.error_message || ''
     };
   });
+  const failedItems = items.filter(item => ['failed', 'timeout', 'cancelled'].includes(item.status));
   return {
     totalTasks: items.length,
     successTasks: items.filter(item => item.status === 'success').length,
     failedTasks: items.filter(item => item.status === 'failed').length,
     timeoutTasks: items.filter(item => item.status === 'timeout').length,
     waitingHumanTasks: items.filter(item => item.status === 'waiting_human').length,
+    retryingTasks: items.filter(item => Number(item.retry_count || item.retryCount || 0) > 0 && ['pending', 'running'].includes(item.status)).length,
+    failureSummary: failedItems.reduce((acc, item) => {
+      const key = item.failureType || classifyFailure(item.error_message || item.error_code || '');
+      acc[key || 'runtime'] = (acc[key || 'runtime'] || 0) + 1;
+      return acc;
+    }, {}),
+    circuitSummary: {
+      openTools: toolStats.filter(tool => tool.circuitState === 'open').map(tool => tool.toolName),
+      halfOpenTools: toolStats.filter(tool => tool.circuitState === 'half_open').map(tool => tool.toolName)
+    },
     toolCallCount: logs.filter(log => log.tool_name).length,
     toolStats,
     recentLogs: logs.slice(-20).reverse()

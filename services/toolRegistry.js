@@ -34,14 +34,44 @@ function openCircuit(toolName) {
 }
 
 function registerFailure(toolName) {
-  const state = CIRCUIT_BREAKER.get(toolName) || { failures: 0, openUntil: 0 };
+  const state = CIRCUIT_BREAKER.get(toolName) || { failures: 0, openUntil: 0, lastFailureAt: 0, lastFailureType: '' };
   state.failures += 1;
+  state.lastFailureAt = now();
   if (state.failures >= 3) state.openUntil = now() + 60 * 1000;
   CIRCUIT_BREAKER.set(toolName, state);
 }
 
 function clearFailures(toolName) {
-  CIRCUIT_BREAKER.set(toolName, { failures: 0, openUntil: 0 });
+  CIRCUIT_BREAKER.set(toolName, { failures: 0, openUntil: 0, lastFailureAt: 0, lastFailureType: '' });
+}
+
+function classifyFailure(value = '') {
+  const text = String(value || '');
+  if (/TIMEOUT|timeout|超时|AbortError/i.test(text)) return 'timeout';
+  if (/NETWORK|fetch|network|ECONN|ENOTFOUND|连接/i.test(text)) return 'network';
+  if (/权限不足|unauthorized|401|forbidden|403/i.test(text)) return 'auth';
+  if (/参数缺失|类型错误|边界错误|格式不支持|VALIDATION/i.test(text)) return 'validation';
+  if (/工具不可用|熔断|circuit/i.test(text)) return 'circuit_open';
+  if (/文件过大|输入过大/i.test(text)) return 'input_too_large';
+  return text ? 'runtime' : '';
+}
+
+function setFailureType(toolName, failureType) {
+  const state = CIRCUIT_BREAKER.get(toolName) || { failures: 0, openUntil: 0, lastFailureAt: 0, lastFailureType: '' };
+  state.lastFailureType = failureType || state.lastFailureType || '';
+  state.lastFailureAt = state.lastFailureAt || now();
+  CIRCUIT_BREAKER.set(toolName, state);
+}
+
+function circuitState(toolName) {
+  const state = CIRCUIT_BREAKER.get(toolName) || { failures: 0, openUntil: 0, lastFailureAt: 0, lastFailureType: '' };
+  return {
+    state: state.openUntil > now() ? 'open' : state.failures > 0 ? 'half_open' : 'closed',
+    failures: Number(state.failures || 0),
+    openUntil: Number(state.openUntil || 0),
+    lastFailureAt: Number(state.lastFailureAt || 0),
+    lastFailureType: state.lastFailureType || ''
+  };
 }
 
 function validationError(message) {
@@ -380,11 +410,14 @@ async function executeTool(toolName, input = {}, context = {}) {
       requestId: reqId,
       toolName,
       durationMs: 0,
+      failureType: 'tool_missing',
+      circuitState: 'missing',
       status: 'failed',
       retryCount: 0
     };
   }
   if (openCircuit(toolName)) {
+    const circuit = circuitState(toolName);
     return {
       ok: false,
       data: null,
@@ -392,6 +425,9 @@ async function executeTool(toolName, input = {}, context = {}) {
       requestId: reqId,
       toolName,
       durationMs: 0,
+      failureType: 'circuit_open',
+      circuitState: circuit.state,
+      circuit,
       status: 'failed',
       retryCount: 0
     };
@@ -409,6 +445,9 @@ async function executeTool(toolName, input = {}, context = {}) {
         requestId: reqId,
         toolName,
         durationMs: now() - startedAt,
+        failureType: '',
+        circuitState: circuitState(toolName).state,
+        circuit: circuitState(toolName),
         status: 'waiting_human',
         retryCount: 0
       };
@@ -438,6 +477,9 @@ async function executeTool(toolName, input = {}, context = {}) {
           requestId: reqId,
           toolName,
           durationMs: now() - startedAt,
+          failureType: '',
+          circuitState: circuitState(toolName).state,
+          circuit: circuitState(toolName),
           status: result?.ok ? 'success' : 'failed',
           retryCount,
           confidence: Number(result?.confidence || 0),
@@ -451,6 +493,8 @@ async function executeTool(toolName, input = {}, context = {}) {
           continue;
         }
         registerFailure(toolName);
+        const failureType = classifyFailure(error.message || error.code || '');
+        setFailureType(toolName, failureType);
         logger.error('Tool 执行失败', {
           requestId: reqId,
           module: context.module || 'agent-runtime',
@@ -469,6 +513,9 @@ async function executeTool(toolName, input = {}, context = {}) {
           requestId: reqId,
           toolName,
           durationMs: now() - startedAt,
+          failureType,
+          circuitState: circuitState(toolName).state,
+          circuit: circuitState(toolName),
           status: error.status || 'failed',
           retryCount
         };
@@ -476,6 +523,8 @@ async function executeTool(toolName, input = {}, context = {}) {
     }
   } catch (error) {
     registerFailure(toolName);
+    const failureType = classifyFailure(error.message || error.code || '');
+    setFailureType(toolName, failureType);
     return {
       ok: false,
       data: null,
@@ -483,6 +532,9 @@ async function executeTool(toolName, input = {}, context = {}) {
       requestId: reqId,
       toolName,
       durationMs: now() - startedAt,
+      failureType,
+      circuitState: circuitState(toolName).state,
+      circuit: circuitState(toolName),
       status: error.status || 'failed',
       retryCount
     };
@@ -498,7 +550,11 @@ function listTools() {
     permissionLevel: tool.permissionLevel || 'viewer',
     timeoutMs: tool.timeoutMs || 30000,
     retryPolicy: tool.retryPolicy || { maxRetries: 0, retryOn: [] },
-    highRisk: Boolean(tool.highRisk)
+    highRisk: Boolean(tool.highRisk),
+    circuit: circuitState(tool.toolName),
+    circuitState: circuitState(tool.toolName).state,
+    lastFailureAt: circuitState(tool.toolName).lastFailureAt,
+    lastFailureType: circuitState(tool.toolName).lastFailureType
   }));
 }
 
@@ -540,5 +596,7 @@ module.exports = {
   executeTool,
   detectTool,
   maybeRunTool,
-  mapRole
+  mapRole,
+  classifyFailure,
+  circuitState
 };

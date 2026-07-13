@@ -30,3 +30,8 @@ body.dark{--bg:#14181f;--surface:#1d222b;--surface-2:#222832;--surface-3:#2a303a
 .chat-recommendation b{font-size:9px}
 .chat-recommendation small,.chat-recommendation span{font-size:7px;line-height:1.5;color:var(--muted)}
 .chat-recommendation span{color:var(--brand)}
+.stability-grid,.bug-center-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.summary-card{min-height:58px;padding:10px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);display:flex;flex-direction:column;justify-content:center}
+.summary-card b{font-size:15px;line-height:1.2}
+.summary-card small{margin-top:4px;color:var(--muted);font-size:7px}
+@media(max-width:650px){.stability-grid,.bug-center-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}

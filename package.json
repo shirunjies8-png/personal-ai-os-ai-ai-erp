@@ -6,7 +6,7 @@
   "scripts": {
     "prestart": "node scripts/sync-public.mjs",
     "prebuild": "node scripts/sync-public.mjs",
-    "check": "node --check app.js core.js ui.js services/aiGateway.js services/aiService.js services/aiQualityCheckService.js services/toolRegistry.js services/agentRuntimeService.js services/memoryService.js services/mcpAdapter.js controllers/agentController.js api/chat.js logger.js utils/logger.js routes/index.js",
+    "check": "node --check app.js core.js ui.js rfq-store.js rfq-validation.js rfq-risk.js services/aiGateway.js services/aiService.js services/aiQualityCheckService.js services/toolRegistry.js services/agentRuntimeService.js services/memoryService.js services/mcpAdapter.js controllers/agentController.js api/chat.js logger.js utils/logger.js routes/index.js",
     "build": "node scripts/build-static.mjs",
     "start": "node server.js",
     "dev": "node server.js",

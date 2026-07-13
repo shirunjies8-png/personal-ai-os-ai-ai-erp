@@ -172,6 +172,220 @@ const DefaultState = {
   ]
 };
 
+const Stability = {
+  limits: {
+    ai: { concurrency: 2, timeoutMs: 60000 },
+    ocr: { concurrency: 1, timeoutMs: 120000 },
+    pdf: { concurrency: 1, timeoutMs: 180000 },
+    excel: { concurrency: 2, timeoutMs: 30000 },
+    rag: { concurrency: 1, timeoutMs: 180000 },
+    agent: { concurrency: 2, timeoutMs: 180000 },
+    task: { concurrency: 3, timeoutMs: 30000 }
+  },
+  active: {},
+  taskStatusMap: {
+    pending: 'pending',
+    waiting: 'pending',
+    running: 'running',
+    processing: 'running',
+    interrupted: 'interrupted',
+    retrying: 'retrying',
+    cancelled: 'cancelled',
+    canceled: 'cancelled',
+    timeout: 'timeout',
+    failed: 'failed',
+    error: 'failed',
+    success: 'success',
+    done: 'success',
+    完成: 'success',
+    已完成: 'success',
+    处理中: 'running',
+    执行中: 'running',
+    失败: 'failed',
+    超时: 'timeout',
+    取消: 'cancelled',
+    已取消: 'cancelled',
+    中断: 'interrupted'
+  },
+  normalizeStatus(status = '') {
+    const text = String(status || '').trim();
+    const key = text.toLowerCase();
+    return this.taskStatusMap[key] || this.taskStatusMap[text] || (text ? key : 'pending');
+  },
+  limitFor(kind = 'task') {
+    return this.limits[kind] || this.limits.task;
+  },
+  canStart(kind = 'task') {
+    const limit = this.limitFor(kind);
+    return Number(this.active[kind] || 0) < Number(limit.concurrency || 1);
+  },
+  start(kind = 'task') {
+    this.active[kind] = Number(this.active[kind] || 0) + 1;
+  },
+  finish(kind = 'task') {
+    this.active[kind] = Math.max(0, Number(this.active[kind] || 0) - 1);
+  },
+  timeoutPromise(kind = 'task') {
+    const timeoutMs = this.limitFor(kind).timeoutMs;
+    let timer = null;
+    const promise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`${kind} task timeout after ${timeoutMs} ms`);
+        error.code = 'TIMEOUT';
+        error.status = 'timeout';
+        reject(error);
+      }, timeoutMs);
+    });
+    return { promise, clear: () => clearTimeout(timer), timeoutMs };
+  },
+  statusLabel(status = '') {
+    const normalized = this.normalizeStatus(status);
+    return {
+      pending: '等待中',
+      running: '处理中',
+      success: '完成',
+      failed: '失败',
+      timeout: '超时',
+      cancelled: '已取消',
+      interrupted: '已中断',
+      retrying: '重试中',
+      waiting_human: '等待审批'
+    }[normalized] || status || '等待中';
+  },
+  statusClass(status = '') {
+    const normalized = this.normalizeStatus(status);
+    if (normalized === 'success') return 'success';
+    if (['failed', 'timeout', 'cancelled', 'interrupted'].includes(normalized)) return 'warning';
+    return 'amber';
+  },
+  classifyFailure(value = '') {
+    const text = String(value || '');
+    if (/timeout|超时|AbortError/i.test(text)) return 'timeout';
+    if (/cancel|取消/i.test(text)) return 'cancelled';
+    if (/interrupt|中断/i.test(text)) return 'interrupted';
+    if (/fetch|network|ECONN|ENOTFOUND|连接/i.test(text)) return 'network';
+    if (/api key|unauthorized|401|权限|认证/i.test(text)) return 'auth';
+    if (/quota|balance|credit|429|额度|余额/i.test(text)) return 'quota';
+    if (/parse|JSON|格式|invalid/i.test(text)) return 'parse';
+    if (/worker|OCR|PDF|Excel|文件/i.test(text)) return 'file';
+    return text ? 'runtime' : '';
+  },
+  normalizeTask(entry = {}) {
+    const now = Date.now();
+    const status = this.normalizeStatus(entry.status || entry.state);
+    const startedAt = Number(entry.startedAt || entry.createdAt || entry.time || now);
+    const updatedAt = Number(entry.updatedAt || entry.finishedAt || entry.time || now);
+    const errorMessage = entry.errorMessage || entry.error || (['failed', 'timeout', 'interrupted'].includes(status) ? entry.result : '') || '';
+    return {
+      id: entry.id || uid(),
+      schemaVersion: 1,
+      time: Number(entry.time || updatedAt || now),
+      createdAt: startedAt,
+      updatedAt,
+      startedAt,
+      finishedAt: entry.finishedAt || (['success', 'failed', 'timeout', 'cancelled', 'interrupted'].includes(status) ? updatedAt : 0),
+      type: entry.type || entry.title || entry.action || '任务',
+      fileName: entry.fileName || entry.filename || '',
+      module: entry.module || entry.sourceModule || 'task',
+      status,
+      statusLabel: this.statusLabel(status),
+      failureType: entry.failureType || this.classifyFailure(errorMessage),
+      errorMessage,
+      summary: entry.summary || '',
+      result: entry.result || '',
+      sourceId: entry.sourceId || '',
+      route: entry.route || '',
+      runtime: Boolean(entry.runtime),
+      retryable: entry.retryable ?? ['failed', 'timeout', 'interrupted'].includes(status),
+      cancellable: entry.cancellable ?? ['pending', 'running', 'waiting_human'].includes(status),
+      retryCount: Number(entry.retryCount || entry.retry_count || 0),
+      requestId: entry.requestId || entry.request_id || '',
+      durationMs: Number(entry.durationMs || (updatedAt && startedAt ? Math.max(0, updatedAt - startedAt) : 0))
+    };
+  },
+  normalizeError(entry = {}) {
+    const now = Date.now();
+    const message = entry.message || entry.description || entry.error || '检测到异常';
+    const moduleName = entry.module || entry.context || 'system';
+    const feature = entry.feature || entry.context || '';
+    const type = entry.type || '系统错误';
+    const lifecycle = entry.lifecycle || (entry.ignored ? 'ignored' : entry.fixed || entry.confirmed ? 'resolved' : 'active');
+    const signature = entry.signature || [moduleName, feature, type, message].join('|');
+    return {
+      id: entry.id || uid(),
+      schemaVersion: 1,
+      signature,
+      module: moduleName,
+      feature,
+      type,
+      severity: entry.severity || (/TypeError|ReferenceError|Cannot read|undefined|null/i.test(message) ? 'high' : 'medium'),
+      failureType: entry.failureType || this.classifyFailure(`${message} ${entry.rawError || ''}`),
+      message,
+      description: entry.description || message,
+      suggestion: entry.suggestion || '请查看日志并重试。',
+      requestId: entry.requestId || entry.request_id || '',
+      source: entry.source || 'frontend',
+      lifecycle,
+      status: lifecycle === 'resolved' ? '已修复' : lifecycle === 'ignored' ? '已忽略' : entry.status || '待确认',
+      count: Math.max(1, Number(entry.count || 1)),
+      firstAt: Number(entry.firstAt || entry.time || now),
+      lastAt: Number(entry.lastAt || entry.time || now),
+      time: Number(entry.time || now),
+      confirmed: lifecycle === 'resolved',
+      confirmedAt: Number(entry.confirmedAt || (lifecycle === 'resolved' ? entry.time || now : 0)),
+      ignored: lifecycle === 'ignored',
+      ignoredAt: Number(entry.ignoredAt || (lifecycle === 'ignored' ? entry.time || now : 0)),
+      fixed: lifecycle === 'resolved',
+      fixedAt: Number(entry.fixedAt || (lifecycle === 'resolved' ? entry.time || now : 0)),
+      rawError: entry.rawError || entry.detail || ''
+    };
+  },
+  normalizeHealthCheck(entry = {}) {
+    const normalizedStatus = this.normalizeStatus(entry.state || entry.normalizedStatus || entry.status);
+    const status = entry.status || (normalizedStatus === 'success' ? '🟢 正常' : normalizedStatus === 'failed' ? '🔴 异常' : normalizedStatus === 'timeout' ? '🟡 超时' : normalizedStatus === 'cancelled' ? '🟡 已取消' : '🟡 待检测');
+    return {
+      id: entry.id || uid(),
+      schemaVersion: 1,
+      name: entry.name || '健康检查',
+      status,
+      normalizedStatus,
+      category: entry.category || 'system',
+      reason: entry.reason || '',
+      suggestion: entry.suggestion || '',
+      source: entry.source || 'frontend',
+      time: Number(entry.time || Date.now())
+    };
+  },
+  buildHealthSnapshot({ checks = [], tasks = [], errors = [], source = 'frontend', gateway = null } = {}) {
+    const normalizedChecks = checks.map(item => this.normalizeHealthCheck(item));
+    const normalizedTasks = tasks.map(item => this.normalizeTask(item));
+    const normalizedErrors = errors.map(item => this.normalizeError(item));
+    const activeErrors = normalizedErrors.filter(item => item.lifecycle === 'active');
+    const failedTasks = normalizedTasks.filter(item => ['failed', 'timeout', 'interrupted'].includes(item.status));
+    return {
+      schemaVersion: 1,
+      checks: normalizedChecks,
+      summary: normalizedChecks.map(item => `${item.name}：${item.status}`).join(' | '),
+      updatedAt: Date.now(),
+      source,
+      gateway,
+      errors: normalizedErrors.slice(0, 20),
+      taskSummary: {
+        total: normalizedTasks.length,
+        active: normalizedTasks.filter(item => ['pending', 'running', 'waiting_human'].includes(item.status)).length,
+        failed: failedTasks.length,
+        success: normalizedTasks.filter(item => item.status === 'success').length
+      },
+      errorSummary: {
+        total: normalizedErrors.length,
+        active: activeErrors.length,
+        resolved: normalizedErrors.filter(item => item.lifecycle === 'resolved').length,
+        ignored: normalizedErrors.filter(item => item.lifecycle === 'ignored').length
+      }
+    };
+  }
+};
+
 const AuthClient = {
   load() {
     try {
@@ -466,8 +680,18 @@ const Store = {
         this.state.settings.accessMode = 'cloud';
         this.state.settings.apiEnabled = true;
       }
-      this.state.systemHealth = this.state.systemHealth || {};
-      this.state.errorLog = Array.isArray(this.state.errorLog) ? this.state.errorLog : [];
+      this.state.taskRecords = this.state.taskRecords.map(item => Stability.normalizeTask(item));
+      this.state.bugAlerts = this.state.bugAlerts.map(item => Stability.normalizeError(item));
+      this.state.aiErrors = this.state.aiErrors.map(item => Stability.normalizeError({ ...item, type: item.type || 'AI错误', source: item.source || 'ai-error' }));
+      this.state.errorLog = this.state.errorLog.map(item => Stability.normalizeError(item));
+      this.state.systemHealth = Stability.buildHealthSnapshot({
+        ...(this.state.systemHealth || {}),
+        checks: Array.isArray(this.state.systemHealth?.checks) ? this.state.systemHealth.checks : [],
+        tasks: this.state.taskRecords,
+        errors: this.state.bugAlerts,
+        source: this.state.systemHealth?.source || 'local',
+        gateway: this.state.aiGatewayStatus
+      });
       this.syncGlobalState();
     } catch {
       this.state = structuredClone(DefaultState);
@@ -551,18 +775,11 @@ const Store = {
   },
   addTaskRecord(entry) {
     this.state.taskRecords = this.state.taskRecords || [];
-    this.state.taskRecords.unshift({
-      id: entry.id || uid(),
-      time: Date.now(),
-      type: entry.type || '',
-      fileName: entry.fileName || '',
-      module: entry.module || '',
-      status: entry.status || '完成',
-      summary: entry.summary || '',
-      result: entry.result || '',
-      sourceId: entry.sourceId || '',
-      route: entry.route || ''
-    });
+    this.state.taskRecords.unshift(Stability.normalizeTask({
+      ...entry,
+      time: entry.time || Date.now(),
+      status: entry.status || '完成'
+    }));
     this.state.taskRecords = this.state.taskRecords.slice(0, 200);
     this.save();
   },
