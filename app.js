@@ -1223,7 +1223,7 @@ const App = {
   getChatDemoMode() {
     return {
       label: '本地演示模式 / Mock AI',
-      note: '当前未接入真实 AI，回复由本地规则生成，用于演示系统工作流。后续可接入 DeepSeek / OpenAI Compatible API。'
+      note: '当前 v1.4 RFQ Demo 使用本地规则 / Mock 回复，用于演示系统工作流；真实模型接入属于后续服务器部署能力。'
     };
   },
 
@@ -1297,7 +1297,7 @@ const App = {
       '',
       fileHint,
       '',
-      '当前为本地演示模式 / Mock AI。'
+      '当前为 v1.4 RFQ Demo，本地规则 / Mock AI。'
     ].join('\n');
     return { text: response, cards, summaryLines: lines, mode: 'mock', intent: cards[0]?.title || '通用制造业助手' };
   },

@@ -1,30 +1,32 @@
 # Industrial AI OS
 
-Industrial AI OS · Manufacturing AI Office Demo
+Industrial AI OS · v1.4 RFQ Demo
 
-面向小工厂的 AI 办公演示系统，支持单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
+面向小工厂的 AI 办公演示系统，支持 RFQ 报价审批闭环、单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
 
-当前版本：`v1.3-practical`
+当前版本：`v1.4-rfq-demo`
 
-当前版本名称：`Industrial AI OS · Resume Demo Version`
+当前版本名称：`Industrial AI OS · v1.4 RFQ Demo`
 
-项目状态：Resume Demo / 本地演示版 / Mock AI
+项目状态：RFQ 闭环可交互 / Resume Demo / MVP / 非正式生产系统
 
 ## 版本冻结说明
 
-当前版本已冻结为适合简历、面试、作品集展示的稳定演示版。
+当前版本已冻结为适合简历、面试、作品集展示的 RFQ Demo 演示版。
 
 当前定位：
 
-面向小工厂的 AI 办公演示系统，支持单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
+面向小工厂的 AI 办公演示系统，支持 RFQ 报价审批闭环、单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
 
 当前状态：
 
-- 本地演示版
-- Mock AI
-- 未接入真实 AI
+- RFQ 闭环可交互
+- Resume Demo / MVP
+- GitHub Pages 公网静态演示
+- 本地规则 / Mock AI
 - 不调用收费 API
-- 数据保存在浏览器 localStorage
+- 数据保存在当前浏览器 localStorage
+- 非正式生产系统
 - 适合作品集、面试和功能演示
 
 推荐入口：
@@ -34,7 +36,7 @@ Industrial AI OS · Manufacturing AI Office Demo
 
 ## 项目定位
 
-Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，不是静态展示页，也不是单一聊天机器人。当前版本更适合简历、面试、作品集和功能演示，保留了常见的菜单、工作区、文件处理、任务队列、审批与监控能力，并通过统一 AI Gateway 预留真实 DeepSeek / OpenAI-compatible 模型接入位。
+Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，不是静态展示页，也不是单一聊天机器人。当前 v1.4 RFQ Demo 更适合简历、面试、作品集和功能演示，重点展示 RFQ 客户需求、风险处理、审批、报价草稿和审计记录的本地闭环；真实 DeepSeek / OpenAI-compatible 模型接入保留为后续部署能力。
 
 适用场景：
 
@@ -73,7 +75,8 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 
 已实现：
 
-- AI Gateway、DeepSeek 真调用、Hybrid / Mock 明确兜底
+- RFQ 报价审批闭环：客户需求 → 缺失项校验 → 风险处理 → 审批 → 报价草稿 → 审计记录
+- AI Gateway 与真实模型接入位保留；当前 GitHub Pages 演示默认使用本地规则 / Mock
 - AI Chat 长回复显示、流式输出、Markdown 渲染
 - OCR、PDF、Excel、CSV、PPT、Word、SQL 等办公入口
 - Agent Runtime V1 骨架、Tool Center V1、Task Queue、Human Approval
@@ -82,11 +85,12 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 
 诚实标注：
 
-- DeepSeek 真实调用可用
-- Mock 只作为明确兜底
+- 当前 GitHub Pages 为公网静态演示，不连接后端，不调用收费 API
+- 当前 AI 输出以本地规则 / Mock 为主
+- 本地或服务器部署后可继续接入 DeepSeek / OpenAI-compatible API
 - LangGraph / LlamaIndex / MCP 完整协议 / GraphRAG / 企业 Connector 仍是 V2
 - 当前不是完整企业级生产平台
-- 当前为本地演示版 / Mock AI，适合作品集、面试、功能演示使用
+- 当前为 RFQ Demo / Resume Demo / MVP，适合作品集、面试、功能演示使用
 
 ## 推荐演示路线
 
@@ -100,19 +104,18 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 
 | 模式 | 说明 |
 | --- | --- |
-| Local Only | 本地处理与 Mock 兜底，不主动调用远程 AI |
-| Hybrid | 优先真实 AI，失败时按模块明确降级 |
-| Remote AI | 强制使用远程 AI，失败时显示真实错误 |
-| Mock | 无 API Key 时的演示兜底 |
+| GitHub Pages | 公网静态演示，使用本地规则 / Mock，不请求后端 |
+| Local Demo | 本地浏览器 localStorage 保存数据，使用本地规则 / Mock |
+| Server Mode | 后续可部署后端并接入 DeepSeek / OpenAI-compatible API |
 
-真实 AI 推荐使用 DeepSeek OpenAI-compatible API。所有业务模块统一通过 AI Gateway 调用，不在前端硬编码 API Key。
+当前 v1.4 RFQ Demo 不在前端写入 API Key，不调用收费 API。真实 AI 接入属于后续服务器部署能力。
 
 ## 技术栈
 
 - 前端：HTML、CSS、原生 JavaScript、响应式布局
 - 后端：Node.js、Express、REST API
 - 数据：SQLite、localStorage、IndexedDB
-- AI：AI Gateway、DeepSeek OpenAI-compatible API、Mock fallback
+- AI：本地规则 / Mock；AI Gateway 与 DeepSeek OpenAI-compatible 接入位保留
 - 文件处理：SheetJS、ExcelJS、PDF.js、pdf-lib、Mammoth、Tesseract.js
 - 安全：JWT、bcrypt、Helmet、CORS、输入校验、日志脱敏
 - 部署：GitHub Pages、Render、Vercel、Docker、VPS
@@ -123,7 +126,7 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 Industrial AI OS · Manufacturing AI Office Demo
 
 项目描述：
-基于 HTML / CSS / JavaScript 构建的制造业 AI 办公演示系统，面向小工厂和加工企业，提供本地规则 AI 助手、单据 OCR 结构化识别、制造业成本核算、工厂工作模板和错误监控中心。项目当前为 Mock AI 演示版，所有数据保存在浏览器 localStorage，适合作品集、面试和功能演示。
+基于 HTML / CSS / JavaScript 构建的制造业 AI 办公演示系统，面向小工厂和加工企业，提供 RFQ 报价审批闭环、本地规则 AI 助手、单据 OCR 结构化识别、制造业成本核算、工厂工作模板和错误监控中心。项目当前为 v1.4 RFQ Demo，所有数据保存在当前浏览器 localStorage，适合作品集、面试和功能演示，不是正式生产系统。
 
 ## 安装与启动
 
