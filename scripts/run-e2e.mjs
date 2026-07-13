@@ -54,8 +54,10 @@ async function cdpConnect(wsUrl) {
   });
   let id = 0;
   const pending = new Map();
+  const events = [];
   ws.onmessage = event => {
     const msg = JSON.parse(event.data);
+    if (msg.method) events.push(msg);
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -68,7 +70,7 @@ async function cdpConnect(wsUrl) {
     pending.set(current, { resolve, reject });
     ws.send(JSON.stringify({ id: current, method, params }));
   });
-  return { ws, send };
+  return { ws, send, events };
 }
 
 async function openPage(url) {
@@ -79,12 +81,13 @@ async function openPage(url) {
     tabs = await chromeTabs();
     tab = pickTab(tabs);
   }
-  const { ws, send } = await cdpConnect(tab.webSocketDebuggerUrl);
+  const { ws, send, events } = await cdpConnect(tab.webSocketDebuggerUrl);
   await send('Page.enable');
   await send('Runtime.enable');
+  await send('Log.enable').catch(() => {});
   await send('Page.navigate', { url });
   await sleep(4000);
-  return { ws, send };
+  return { ws, send, events };
 }
 
 async function evalValue(send, expression) {
@@ -144,7 +147,7 @@ async function testChat() {
   await setAuth(send);
   await send('Page.reload');
   await sleep(3000);
-  const prompt = '请用三点回答你能帮我解决什么问题，并在最后一行原样补一句：需要我针对某项业务场景展开，或直接处理一个具体文件/问题？';
+  const prompt = '请用三点回答你能帮我解决什么问题。';
   await evalValue(send, `(() => {
     const input = document.getElementById('chatInput');
     input.value = ${JSON.stringify(prompt)};
@@ -152,8 +155,22 @@ async function testChat() {
     document.querySelector('[data-form="chat"]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
   })()`);
   await sleep(12000);
-  const body = await evalValue(send, 'document.body.innerText');
-  if (!body.includes('需要我针对某项业务场景展开，或直接处理一个具体文件/问题？')) throw new Error('AI Chat 回复未完整显示');
+  const chatState = await evalValue(send, `(() => {
+    const messages = [...document.querySelectorAll('#chatMessages .message')];
+    const assistantMessages = messages.filter(item => !item.classList.contains('user'));
+    const last = assistantMessages.at(-1);
+    return JSON.stringify({
+      count: messages.length,
+      assistantCount: assistantMessages.length,
+      lastText: last?.innerText || '',
+      inputDisabled: Boolean(document.getElementById('chatInput')?.disabled),
+      body: document.body.innerText
+    });
+  })()`);
+  const parsedChat = JSON.parse(chatState);
+  const body = parsedChat.body || '';
+  if (!parsedChat.assistantCount || !parsedChat.lastText.trim()) throw new Error('AI Chat 未生成可见回复');
+  if (parsedChat.inputDisabled) throw new Error('AI Chat 回复后输入框不可用');
   if (body.includes('模型返回为空')) throw new Error('仍出现模型返回为空');
   ws.close();
   return 'ai-chat: ok';
@@ -238,6 +255,192 @@ async function testAgent() {
   return 'agent-runtime: ok';
 }
 
+
+async function testQuotation() {
+  const { ws, send, events } = await openPage(`${baseUrl}/#/quotation`);
+  await setAuth(send);
+  await send('Page.reload');
+  await sleep(3000);
+
+  const click = async selector => evalValue(send, `(() => document.querySelector(${JSON.stringify(selector)})?.click())()`);
+  const bodyText = async () => evalValue(send, 'document.body.innerText');
+  const getApproval = async () => evalValue(send, `(() => document.querySelector('.panel .status-pill')?.textContent || '')()`);
+  const expectNoConsoleErrors = async label => {
+    const redErrors = events.filter(event => {
+      const method = event.method || '';
+      const params = event.params || {};
+      const text = JSON.stringify(params);
+      if (method === 'Runtime.exceptionThrown') return true;
+      if (method === 'Log.entryAdded' && params.entry?.level === 'error') return true;
+      return /ReferenceError|TypeError|Uncaught|Failed to execute/.test(text);
+    });
+    if (redErrors.length) {
+      throw new Error(`${label} 出现浏览器红色错误：${JSON.stringify(redErrors.slice(-2))}`);
+    }
+  };
+
+  await click('[data-action="quotation-sample"][data-sample="complete"]');
+  await sleep(1200);
+  await click('[data-action="quotation-generate"]');
+  await sleep(2500);
+  let body = await bodyText();
+  if (!body.includes('报价草稿') && !body.includes('RFQ 报价草稿')) throw new Error('RFQ 报价草稿未生成');
+  if (!body.includes('当前无阻断项') && !body.includes('可生成')) throw new Error('完整示例不应出现阻断项');
+
+  await click('[data-action="quotation-sample"][data-sample="missingMaterial"]');
+  await sleep(1200);
+  await click('[data-action="quotation-generate"]');
+  await sleep(1800);
+  body = await bodyText();
+  if (!body.includes('缺少：材料名称') && !body.includes('必填项缺失')) throw new Error('缺少材料示例未触发阻断');
+
+  await click('[data-action="quotation-sample"][data-sample="deliveryRisk"]');
+  await sleep(1200);
+  await click('[data-action="quotation-generate"]');
+  await sleep(1800);
+  body = await bodyText();
+  if (!body.includes('交期过紧') && !body.includes('交付风险')) throw new Error('交期风险示例未触发阻断');
+
+  await click('[data-action="quotation-sample"][data-sample="qualityRisk"]');
+  await sleep(1200);
+  await evalValue(send, `(() => {
+    const reason = document.querySelector('[data-ws-field="approvalReason"][data-module="quotation"]');
+    if (reason) {
+      reason.value = 'RFQ 审批通过，已完成人工确认';
+      reason.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })()`);
+  await evalValue(send, `(() => {
+    const ws = App.getQuotationWorkspace();
+    return (ws.rfqRisks || []).map(risk => risk.id);
+  })()`).then(async ids => {
+    for (const id of ids) {
+      await evalValue(send, `App.quotationSelectRisk(${JSON.stringify(id)})`);
+      await sleep(500);
+      await click('[data-action="quotation-risk-action"][data-status="mitigate"]');
+      await sleep(800);
+    }
+  });
+  body = await bodyText();
+  if (/阻断\s+\d+/.test(body) && !body.includes('可继续')) {
+    throw new Error('风险缓解后仍存在阻断');
+  }
+
+  await click('[data-action="quotation-sample"][data-sample="complete"]');
+  await sleep(1200);
+  await click('[data-action="quotation-submit-approval"]');
+  await sleep(800);
+  await evalValue(send, `(() => {
+    const reason = document.querySelector('[data-ws-field="approvalReason"][data-module="quotation"]');
+    if (reason) {
+      reason.value = '';
+      reason.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })()`);
+  await click('[data-action="quotation-decision"][data-status="rejected"]');
+  await sleep(900);
+  body = await bodyText();
+  if (!body.includes('pending') && !body.includes('draft')) throw new Error('驳回空原因仍然变更状态');
+
+  await evalValue(send, `(() => {
+    const reason = document.querySelector('[data-ws-field="approvalReason"][data-module="quotation"]');
+    if (reason) {
+      reason.value = '客户要求补充交期说明';
+      reason.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })()`);
+  await click('[data-action="quotation-decision"][data-status="returned"]');
+  await sleep(900);
+  body = await bodyText();
+  if (!body.includes('returned')) throw new Error('退回补充未生效');
+
+  await evalValue(send, `(() => {
+    const reason = document.querySelector('[data-ws-field="approvalReason"][data-module="quotation"]');
+    if (reason) {
+      reason.value = 'RFQ 审批通过，已完成人工确认';
+      reason.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  })()`);
+  await click('[data-action="quotation-decision"][data-status="approved"]');
+  await sleep(2500);
+  body = await bodyText();
+  if (!body.includes('审批通过') && !body.includes('approved')) throw new Error('审批通过未生效');
+  if (!body.includes('报价草稿')) throw new Error('审批通过后未生成报价草稿');
+
+  await click('[data-action="quotation-save"]');
+  await sleep(1000);
+  body = await bodyText();
+  if (!body.includes('保存报价草稿')) throw new Error('报价草稿保存未进入审计记录');
+
+  await click('[data-action="quotation-copy"]');
+  await sleep(1000);
+  body = await bodyText();
+  if (!body.includes('复制报价草稿')) throw new Error('报价草稿复制未进入审计记录');
+
+  await evalValue(send, `(() => {
+    window.__rfqPrintCalled = false;
+    window.open = () => ({
+      document: { open() {}, write() {}, close() {} },
+      focus() {},
+      print() { window.__rfqPrintCalled = true; }
+    });
+  })()`);
+  await click('[data-action="quotation-print"]');
+  await sleep(1200);
+  const printed = await evalValue(send, 'Boolean(window.__rfqPrintCalled)');
+  body = await bodyText();
+  if (!printed && !body.includes('打印报价草稿')) throw new Error('报价草稿打印动作未触发');
+
+  await evalValue(send, 'window.confirm = () => true');
+  await click('[data-action="quotation-final-send"]');
+  await sleep(1200);
+  body = await bodyText();
+  if (!body.includes('最终发送确认')) throw new Error('最终发送人工确认未进入审计记录');
+
+  await send('Page.reload');
+  await sleep(2500);
+  body = await bodyText();
+  if (!body.includes('RFQ 报价草稿') || !body.includes('最终发送确认')) {
+    throw new Error('页面刷新后 RFQ 数据未恢复');
+  }
+
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 3,
+    mobile: true
+  });
+  await sleep(800);
+  const mobileLayout = await evalValue(send, `(() => {
+    const body = document.body;
+    const buttons = [...document.querySelectorAll('button')];
+    const clipped = buttons.filter(btn => {
+      const r = btn.getBoundingClientRect();
+      return r.width < 12 || r.height < 12 || r.right > window.innerWidth + 4;
+    }).length;
+    return JSON.stringify({
+      scrollWidth: document.documentElement.scrollWidth,
+      innerWidth: window.innerWidth,
+      clipped,
+      hasQuotation: body.innerText.includes('报价助手')
+    });
+  })()`);
+  const parsedMobile = JSON.parse(mobileLayout);
+  if (!parsedMobile.hasQuotation) throw new Error('手机尺寸下报价页面未显示');
+  if (parsedMobile.scrollWidth > parsedMobile.innerWidth + 8) throw new Error('手机尺寸下存在横向溢出');
+  if (parsedMobile.clipped > 0) throw new Error('手机尺寸下存在按钮遮挡或尺寸异常');
+  await send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+
+  const approvalStatus = await getApproval();
+  if (!approvalStatus) throw new Error('审批状态未显示');
+  const audit = await evalValue(send, `document.body.innerText.includes('审计记录')`);
+  if (!audit) throw new Error('审计记录未显示');
+  await expectNoConsoleErrors('RFQ 报价审批');
+
+  ws.close();
+  return 'quotation: ok';
+}
+
 async function testMonitor() {
   const { ws, send } = await openPage(`${baseUrl}/#/monitor`);
   await setAuth(send);
@@ -254,6 +457,7 @@ async function main() {
   const results = [];
   results.push(await testChat());
   results.push(await testOcr());
+  results.push(await testQuotation());
   results.push(await testAgent());
   results.push(await testMonitor());
   console.log(results.join('\n'));

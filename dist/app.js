@@ -336,37 +336,12 @@ const App = {
   },
 
   normalizeBugAlert(item = {}) {
-    const lifecycle = this.bugAlertLifecycle(item);
-    const status = this.bugAlertStatusLabel({ ...item, lifecycle });
-    const firstAt = Number(item.firstAt || item.time || Date.now());
-    const lastAt = Number(item.lastAt || item.time || firstAt);
-    const count = Math.max(1, Number(item.count || 1));
-    const normalized = {
-      id: item.id || uid(),
+    return Stability.normalizeError({
+      ...item,
       signature: item.signature || this.bugAlertSignature(item),
-      module: item.module || 'system',
-      feature: item.feature || '',
-      type: item.type || '异常',
-      message: item.message || item.description || '检测到异常',
-      description: item.description || item.message || '检测到异常',
-      suggestion: item.suggestion || '请根据错误信息修复',
-      requestId: item.requestId || '',
-      source: item.source || 'frontend',
-      lifecycle,
-      status,
-      count,
-      firstAt,
-      lastAt,
-      time: item.time || lastAt,
-      confirmed: lifecycle === 'resolved',
-      confirmedAt: Number(item.confirmedAt || (lifecycle === 'resolved' ? lastAt : 0)),
-      ignored: lifecycle === 'ignored',
-      ignoredAt: Number(item.ignoredAt || (lifecycle === 'ignored' ? lastAt : 0)),
-      fixed: lifecycle === 'resolved',
-      fixedAt: Number(item.fixedAt || (lifecycle === 'resolved' ? lastAt : 0)),
-      rawError: item.rawError || ''
-    };
-    return normalized;
+      lifecycle: item.lifecycle || this.bugAlertLifecycle(item),
+      status: item.status || this.bugAlertStatusLabel(item)
+    });
   },
 
   getVisibleBugAlerts() {
@@ -406,6 +381,8 @@ const App = {
 
   normalizeBugAlerts() {
     Store.state.bugAlerts = this.getVisibleBugAlerts();
+    Store.state.errorLog = (Store.state.errorLog || []).map(item => Stability.normalizeError(item));
+    this.updateStabilityHealthSnapshot('error-normalize');
     Store.save();
   },
 
@@ -493,6 +470,7 @@ const App = {
       .map(item => this.normalizeBugAlert(item))
       .sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0))
       .slice(0, 20);
+    this.updateStabilityHealthSnapshot('error-created');
     Store.save();
     if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
     else this.renderBugMonitor();
@@ -539,6 +517,7 @@ const App = {
         entry.status = '已修复';
       }
     });
+    this.updateStabilityHealthSnapshot('error-resolved');
     Store.save();
     this.toast('已记录该问题，请开发者根据错误信息修复。');
     if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
@@ -571,6 +550,7 @@ const App = {
         entry.status = '已忽略';
       }
     });
+    this.updateStabilityHealthSnapshot('error-ignored');
     Store.save();
     this.toast('已忽略该问题，系统健康状态不再受其影响。');
     if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
@@ -603,6 +583,7 @@ const App = {
         entry.status = '待确认';
       }
     });
+    this.updateStabilityHealthSnapshot('error-restored');
     Store.save();
     this.toast('已恢复该问题，重新计入待处理。');
     if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
@@ -1016,8 +997,8 @@ const App = {
       'task-open': () => { this.temp.taskSelectedId = el.dataset.id; this.rerender(); },
       'task-open-result': () => { this.temp.taskSelectedId = el.dataset.id; this.navigate(el.dataset.route || 'taskcenter'); },
       'task-refresh': () => this.refreshAgentRuntime(true),
-      'task-cancel': () => this.runtimeTaskCancel(el.dataset.id),
-      'task-retry': () => this.runtimeTaskRetry(el.dataset.id),
+      'task-cancel': () => this.cancelTaskRecord(el.dataset.id),
+      'task-retry': () => this.retryTaskRecord(el.dataset.id),
       'toolcenter-refresh': () => this.refreshAgentRuntime(true),
       'toolcenter-select': () => { this.temp.toolSelectedName = el.dataset.id; this.rerender(); },
       'toolcenter-run': () => this.toolCenterRun(el),
@@ -1040,6 +1021,18 @@ const App = {
       'workspace-copy': () => this.workspaceCopy(el.dataset.module),
       'workspace-clear': () => this.workspaceClear(el.dataset.module),
       'workspace-export': () => this.workspaceExport(el.dataset.module),
+      'quotation-sample': () => this.quotationLoadSample(el.dataset.sample || 'complete'),
+      'quotation-generate': () => this.quotationGenerateDraft(),
+      'quotation-save': () => this.quotationSaveDraft(),
+      'quotation-copy': () => this.quotationCopyDraft(),
+      'quotation-print': () => this.quotationPrintDraft(),
+      'quotation-submit-approval': () => this.quotationStartApproval(),
+      'quotation-decision': () => this.quotationDecision(el.dataset.status),
+      'quotation-final-send': () => this.quotationFinalSend(),
+      'quotation-risk-add': () => this.quotationAddRisk(),
+      'quotation-risk-action': () => this.quotationUpdateRisk(el.dataset.status || 'save'),
+      'quotation-risk-select': () => this.quotationSelectRisk(el.dataset.id),
+      'quotation-risk-history': () => this.quotationOpenRiskHistory(el.dataset.id),
       'validate-run': () => this.validateRun(el.dataset.mode, el),
       'quality-check': () => this.qualityCheck(el),
       'quality-fix': () => this.qualityFix(el),
@@ -1520,6 +1513,127 @@ const App = {
     return Store.state.workspaces[route];
   },
 
+  getQuotationWorkspace() {
+    const ws = this.getWorkspace('quotation');
+    return typeof RFQStore !== 'undefined' && RFQStore && typeof RFQStore.ensureQuotationWorkspace === 'function'
+      ? RFQStore.ensureQuotationWorkspace(ws)
+      : ws;
+  },
+
+  saveQuotationAudit(action, detail = {}) {
+    const ws = this.getQuotationWorkspace();
+    const entry = {
+      id: uid(),
+      time: Date.now(),
+      action: String(action || '记录'),
+      module: 'quotation',
+      status: detail.status || ws.rfqApproval?.status || 'draft',
+      riskId: detail.riskId || '',
+      riskName: detail.riskName || '',
+      approvalStatus: detail.approvalStatus || ws.rfqApproval?.status || 'draft',
+      count: detail.count ?? (Array.isArray(ws.rfqRisks) ? ws.rfqRisks.length : 0),
+      blockers: detail.blockers ?? (Array.isArray(ws.rfqBlockers) ? ws.rfqBlockers.length : 0),
+      reason: detail.reason || '',
+      suggestion: detail.suggestion || '',
+      message: detail.message || '',
+      signature: detail.signature || ''
+    };
+    ws.rfqAuditTrail = Array.isArray(ws.rfqAuditTrail) ? ws.rfqAuditTrail : [];
+    ws.rfqAuditTrail.unshift(entry);
+    ws.rfqAuditTrail = ws.rfqAuditTrail.slice(0, 50);
+    Store.state.operationLogs.unshift({
+      id: uid(),
+      title: `RFQ ${entry.action}`,
+      type: 'quotation',
+      time: entry.time
+    });
+    Store.state.operationLogs = Store.state.operationLogs.slice(0, 200);
+    Store.save();
+    return entry;
+  },
+
+  quotationOrderFields(ws = {}) {
+    return {
+      customerName: String(ws.customerName || '').trim(),
+      productName: String(ws.productName || '').trim(),
+      productCode: String(ws.productCode || '').trim(),
+      materialName: String(ws.materialName || '').trim(),
+      quantity: String(ws.quantity || '').trim(),
+      unit: String(ws.unit || '').trim() || '件',
+      processType: String(ws.processType || '').trim(),
+      deliveryDate: String(ws.deliveryDate || '').trim(),
+      contactName: String(ws.contactName || '').trim(),
+      phone: String(ws.phone || '').trim(),
+      email: String(ws.email || '').trim(),
+      quoteDate: String(ws.quoteDate || '').trim(),
+      requirements: String(ws.requirements || '').trim()
+    };
+  },
+
+  quotationNormalizeRisks(risks = []) {
+    if (typeof RFQRisk !== 'undefined' && RFQRisk && typeof RFQRisk.normalizeRiskList === 'function') {
+      return RFQRisk.normalizeRiskList(risks);
+    }
+    return Array.isArray(risks) ? risks : [];
+  },
+
+  quotationGetBlockers(ws = this.getQuotationWorkspace()) {
+    const order = this.quotationOrderFields(ws);
+    const risks = this.quotationNormalizeRisks(ws.rfqRisks || []);
+    return typeof RFQValidation !== 'undefined' && RFQValidation && typeof RFQValidation.getQuotationBlockers === 'function'
+      ? RFQValidation.getQuotationBlockers(order, risks)
+      : [];
+  },
+
+  quotationHandledRiskNotes(ws = this.getQuotationWorkspace()) {
+    const risks = this.quotationNormalizeRisks(ws.rfqRisks || []);
+    return typeof RFQValidation !== 'undefined' && RFQValidation && typeof RFQValidation.handledRiskNotes === 'function'
+      ? RFQValidation.handledRiskNotes(risks)
+      : [];
+  },
+
+  quotationSyncDerived(ws = this.getQuotationWorkspace()) {
+    const risks = this.quotationNormalizeRisks(ws.rfqRisks || []);
+    ws.rfqRisks = risks;
+    ws.rfqBlockers = this.quotationGetBlockers(ws);
+    ws.rfqSelectedRiskId = ws.rfqSelectedRiskId || risks[0]?.id || '';
+    const selected = risks.find(item => item.id === ws.rfqSelectedRiskId) || risks[0] || null;
+    if (selected) {
+      ws.selectedRiskName = selected.name || '';
+      ws.selectedRiskType = selected.type || '';
+      ws.selectedRiskSeverity = selected.severity || 'medium';
+      ws.selectedRiskStatus = selected.status || 'pending';
+      ws.selectedRiskOwner = selected.owner || '';
+      ws.selectedRiskMitigation = selected.mitigation || '';
+      ws.selectedRiskAcceptReason = selected.acceptReason || '';
+      ws.rfqSelectedRiskId = selected.id;
+    }
+    ws.rfqBlockerSummary = ws.rfqBlockers.length
+      ? ws.rfqBlockers.map(item => `${item.title}：${item.reason}；${item.suggestion}`).join('\n')
+      : '当前无阻断项，可继续进入报价审批。';
+    ws.rfqApproval = ws.rfqApproval && typeof ws.rfqApproval === 'object'
+      ? ws.rfqApproval
+      : { status: 'draft', reason: '', history: [], updatedAt: Date.now() };
+    if (!Array.isArray(ws.rfqApproval.history)) ws.rfqApproval.history = [];
+    if (!ws.rfqApproval.status) ws.rfqApproval.status = 'draft';
+    return ws;
+  },
+
+  quotationFillSelectedRiskFromWorkspace(ws = this.getQuotationWorkspace()) {
+    const risks = this.quotationNormalizeRisks(ws.rfqRisks || []);
+    const selected = risks.find(item => item.id === ws.rfqSelectedRiskId);
+    if (selected) {
+      ws.selectedRiskName = selected.name || '';
+      ws.selectedRiskType = selected.type || '';
+      ws.selectedRiskSeverity = selected.severity || 'medium';
+      ws.selectedRiskStatus = selected.status || 'pending';
+      ws.selectedRiskOwner = selected.owner || '';
+      ws.selectedRiskMitigation = selected.mitigation || '';
+      ws.selectedRiskAcceptReason = selected.acceptReason || '';
+    }
+    return selected || null;
+  },
+
   syncWorkspaceFromDom(route = this.route) {
     const ws = this.getWorkspace(route);
     document.querySelectorAll(`[data-ws-field][data-module="${route}"]`).forEach(field => {
@@ -1551,6 +1665,42 @@ const App = {
     ws.result = '';
     ws.files = [];
     ws.records = [];
+    if (route === 'quotation') {
+      ws.customerName = '';
+      ws.productName = '';
+      ws.productCode = '';
+      ws.materialName = '';
+      ws.quantity = '';
+      ws.unit = '件';
+      ws.processType = '';
+      ws.deliveryDate = '';
+      ws.contactName = '';
+      ws.phone = '';
+      ws.email = '';
+      ws.quoteDate = '';
+      ws.requirements = '';
+      ws.rfqRisks = [];
+      ws.rfqBlockers = [];
+      ws.rfqDraft = '';
+      ws.rfqAuditTrail = [];
+      ws.rfqSavedDrafts = [];
+      ws.rfqApproval = { status: 'draft', reason: '', history: [], updatedAt: Date.now() };
+      ws.approvalReason = '';
+      ws.selectedRiskName = '';
+      ws.selectedRiskType = '';
+      ws.selectedRiskSeverity = 'medium';
+      ws.selectedRiskStatus = 'pending';
+      ws.selectedRiskOwner = '';
+      ws.selectedRiskMitigation = '';
+      ws.selectedRiskAcceptReason = '';
+      ws.newRiskName = '';
+      ws.newRiskType = '';
+      ws.newRiskSeverity = 'medium';
+      ws.newRiskOwner = '';
+      ws.newRiskMitigation = '';
+      ws.rfqSelectedRiskId = '';
+      ws.rfqBlockerSummary = '当前无阻断项。';
+    }
     ws.updatedAt = Date.now();
     Store.save();
     this.rerender();
@@ -1574,6 +1724,469 @@ const App = {
       return;
     }
     Utils.textDownload(content, `${safeName(title)}.txt`);
+  },
+
+  quotationLoadSample(sampleKey = 'complete') {
+    const ws = this.getQuotationWorkspace();
+    const sample = typeof RFQStore !== 'undefined' && RFQStore && typeof RFQStore.cloneSample === 'function'
+      ? RFQStore.cloneSample(sampleKey)
+      : null;
+    if (!sample) throw new Error('未找到 RFQ 示例数据');
+    Object.assign(ws, sample.order || {});
+    ws.rfqSampleKey = sample.key || sampleKey;
+    ws.rfqRisks = this.quotationNormalizeRisks(sample.risks || []);
+    ws.rfqApproval = {
+      status: 'draft',
+      reason: '',
+      history: [],
+      updatedAt: Date.now()
+    };
+    ws.rfqApprovalReason = '';
+    ws.rfqDraft = '';
+    ws.result = '';
+    ws.rfqBlockers = [];
+    ws.rfqAuditTrail = Array.isArray(ws.rfqAuditTrail) ? ws.rfqAuditTrail : [];
+    ws.rfqSavedDrafts = Array.isArray(ws.rfqSavedDrafts) ? ws.rfqSavedDrafts : [];
+    ws.rfqSelectedRiskId = ws.rfqRisks[0]?.id || '';
+    this.quotationFillSelectedRiskFromWorkspace(ws);
+    ws.rfqLastComputedAt = Date.now();
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('加载示例数据', {
+      message: sample.label,
+      signature: `RFQ_SAMPLE_${String(ws.rfqSampleKey || sampleKey).toUpperCase()}`
+    });
+    Store.save();
+    this.rerender();
+    this.toast(`已加载示例：${sample.label}`);
+  },
+
+  quotationSaveDraft() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    ws.rfqDraft = ws.rfqDraft || ws.result || '';
+    ws.result = ws.rfqDraft || ws.result || '';
+    ws.rfqSavedDrafts = Array.isArray(ws.rfqSavedDrafts) ? ws.rfqSavedDrafts : [];
+    ws.rfqSavedDrafts.unshift({
+      id: uid(),
+      time: Date.now(),
+      status: ws.rfqApproval?.status || 'draft',
+      draft: ws.rfqDraft,
+      blockers: structuredClone(ws.rfqBlockers || [])
+    });
+    ws.rfqSavedDrafts = ws.rfqSavedDrafts.slice(0, 10);
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('保存报价草稿', {
+      status: ws.rfqApproval?.status || 'draft',
+      message: '报价草稿已保存到本地持久化数据',
+      count: ws.rfqSavedDrafts.length
+    });
+    Store.save();
+    this.rerender();
+    this.toast('报价草稿已保存');
+  },
+
+  async quotationCopyDraft() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    const draft = ws.rfqDraft || ws.result || '';
+    if (!draft) throw new Error('暂无可复制的报价草稿');
+    await this.copy(draft);
+    this.saveQuotationAudit('复制报价草稿', {
+      status: ws.rfqApproval?.status || 'draft',
+      message: '报价草稿已复制到剪贴板'
+    });
+  },
+
+  quotationPrintDraft() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    const draft = ws.rfqDraft || ws.result || '';
+    if (!draft) throw new Error('暂无可打印的报价草稿');
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${Utils.escape(ws.productName || 'RFQ 报价草稿')}</title><style>
+      body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:28px;color:#111827}
+      h1,h2,h3,p{margin:0 0 10px}
+      .card{border:1px solid #e5e7eb;border-radius:14px;padding:18px;margin-bottom:16px}
+      .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+      .muted{color:#6b7280}
+      .warn{color:#b45309}
+      .ok{color:#047857}
+      .line{white-space:pre-wrap;line-height:1.75}
+    </style></head><body>
+      <h1>RFQ 报价草稿</h1>
+      <p class="muted">本草稿由 Industrial AI OS 本地规则生成，最终发送前需人工确认。</p>
+      <div class="card"><div class="grid">
+        <div><h3>客户需求</h3><p>客户：${Utils.escape(ws.customerName || '待补充')}</p><p>产品：${Utils.escape(ws.productName || '待补充')}</p><p>材料：${Utils.escape(ws.materialName || '待补充')}</p><p>数量：${Utils.escape(String(ws.quantity || '待补充'))} ${Utils.escape(ws.unit || '件')}</p></div>
+        <div><h3>交付信息</h3><p>工艺：${Utils.escape(ws.processType || '待补充')}</p><p>交期：${Utils.escape(ws.deliveryDate || '待补充')}</p><p>联系人：${Utils.escape(ws.contactName || '待补充')}</p><p>联系方式：${Utils.escape(ws.phone || '待补充')}</p></div>
+      </div></div>
+      <div class="card"><h3>报价草稿</h3><div class="line">${Utils.escape(draft)}</div></div>
+      <div class="card"><h3>风险说明</h3><p class="${(ws.rfqBlockers || []).length ? 'warn' : 'ok'}">${Utils.escape((ws.rfqBlockers || []).length ? (ws.rfqBlockers || []).map(item => item.reason).join('；') : '当前无阻断项，可进入审批。')}</p></div>
+    </body></html>`;
+    const win = window.open('', '_blank', 'width=1100,height=900');
+    if (!win) {
+      this.toast('浏览器阻止了打印窗口，请允许弹窗后重试', 'error');
+      return;
+    }
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 250);
+    this.saveQuotationAudit('打印报价草稿', {
+      status: ws.rfqApproval?.status || 'draft',
+      message: '已打开报价草稿打印窗口'
+    });
+    this.toast('已打开报价草稿打印窗口');
+  },
+
+  quotationOpenRiskHistory(riskId) {
+    const ws = this.getQuotationWorkspace();
+    const risk = (ws.rfqRisks || []).find(item => item.id === riskId);
+    if (!risk) {
+      this.toast('未找到风险详情', 'error');
+      return;
+    }
+    const history = Array.isArray(risk.history) ? risk.history : [];
+    const body = history.length
+      ? history.map(item => `${Utils.formatDate(item.time || Date.now(), true)}\n动作：${item.action || '更新'}\n状态：${item.status || 'pending'}\n说明：${item.note || '无'}`).join('\n\n---\n\n')
+      : '暂无历史记录';
+    this.openModal(`<div class="modal-head"><h3>风险历史</h3><button class="icon-btn" data-action="modal-close">${icon('x')}</button></div><div class="modal-body"><div class="result-box large">${Utils.textToHtml(`风险名称：${risk.name || '未命名风险'}\n类型：${risk.type || '风险'}\n严重程度：${risk.severity || '中'}\n状态：${risk.status || 'pending'}\n负责人：${risk.owner || '待分配'}\n处理措施：${risk.mitigation || '待补充'}\n更新时间：${Utils.formatDate(risk.updatedAt || Date.now(), true)}\n\n历史：\n${body}`)}</div></div>`);
+  },
+
+  quotationSelectRisk(riskId) {
+    const ws = this.getQuotationWorkspace();
+    ws.rfqSelectedRiskId = riskId;
+    this.quotationFillSelectedRiskFromWorkspace(ws);
+    this.quotationSyncDerived(ws);
+    ws.updatedAt = Date.now();
+    Store.save();
+    this.rerender();
+  },
+
+  quotationAddRisk() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    const name = String(ws.newRiskName || '').trim();
+    if (!name) throw new Error('请填写风险名称');
+    const risk = {
+      id: uid(),
+      name,
+      type: String(ws.newRiskType || '交付风险').trim() || '交付风险',
+      severity: String(ws.newRiskSeverity || 'medium').trim() || 'medium',
+      status: 'pending',
+      owner: String(ws.newRiskOwner || '待分配').trim() || '待分配',
+      mitigation: String(ws.newRiskMitigation || '待补充').trim() || '待补充',
+      acceptReason: '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      history: [
+        {
+          id: uid(),
+          action: '新建风险',
+          note: String(ws.newRiskMitigation || '待补充').trim() || '待补充',
+          status: 'pending',
+          time: Date.now()
+        }
+      ],
+      source: 'rfq'
+    };
+    ws.rfqRisks = this.quotationNormalizeRisks([risk, ...(ws.rfqRisks || [])]);
+    ws.rfqSelectedRiskId = risk.id;
+    ws.newRiskName = '';
+    ws.newRiskType = '';
+    ws.newRiskSeverity = 'medium';
+    ws.newRiskOwner = '';
+    ws.newRiskMitigation = '';
+    this.quotationFillSelectedRiskFromWorkspace(ws);
+    this.quotationSyncDerived(ws);
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('新增风险', {
+      riskId: risk.id,
+      riskName: risk.name,
+      status: risk.status,
+      message: `${risk.name} 已加入风险评审`,
+      signature: `RFQ_RISK_${risk.id}`
+    });
+    Store.save();
+    this.rerender();
+    this.toast('风险已添加');
+  },
+
+  quotationUpdateRisk(action) {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    const riskId = ws.rfqSelectedRiskId;
+    const list = this.quotationNormalizeRisks(ws.rfqRisks || []);
+    const risk = list.find(item => item.id === riskId);
+    if (!risk) {
+      this.toast('请先选择一个风险', 'error');
+      return;
+    }
+    const now = Date.now();
+    const reason = String(ws.selectedRiskAcceptReason || '').trim();
+    const owner = String(ws.selectedRiskOwner || risk.owner || '').trim() || '待分配';
+    const mitigation = String(ws.selectedRiskMitigation || risk.mitigation || '').trim() || '待补充';
+    const name = String(ws.selectedRiskName || risk.name || '').trim() || risk.name;
+    const type = String(ws.selectedRiskType || risk.type || '').trim() || risk.type;
+    const severity = typeof RFQRisk !== 'undefined' && RFQRisk ? RFQRisk.normalizeSeverity(ws.selectedRiskSeverity || risk.severity) : String(ws.selectedRiskSeverity || risk.severity || 'medium');
+    let status = typeof RFQRisk !== 'undefined' && RFQRisk ? RFQRisk.normalizeStatus(action === 'save' ? ws.selectedRiskStatus : action) : String(action || risk.status || 'pending');
+    if (action === 'save') status = typeof RFQRisk !== 'undefined' && RFQRisk ? RFQRisk.normalizeStatus(ws.selectedRiskStatus || risk.status) : String(ws.selectedRiskStatus || risk.status || 'pending');
+    if (action === 'accept' && typeof RFQRisk !== 'undefined' && RFQRisk && RFQRisk.isSevereRisk(risk) && !reason) {
+      this.toast('严重或阻断风险接受时必须填写接受原因', 'error');
+      return;
+    }
+    if (action === 'accept' && typeof RFQRisk !== 'undefined' && RFQRisk && RFQRisk.needsAcceptanceReason({ ...risk, status: 'accepted', acceptReason: reason })) {
+      this.toast('请先补充接受原因', 'error');
+      return;
+    }
+    const nextStatus = action === 'handle' ? 'handling'
+      : action === 'mitigate' ? 'mitigated'
+      : action === 'accept' ? 'accepted'
+      : action === 'close' ? 'closed'
+      : status;
+    const updated = {
+      ...risk,
+      name,
+      type,
+      severity,
+      status: nextStatus,
+      owner,
+      mitigation,
+      acceptReason: action === 'accept' ? reason : (risk.acceptReason || ''),
+      updatedAt: now,
+      history: Array.isArray(risk.history) ? [...risk.history] : []
+    };
+    updated.history.unshift({
+      id: uid(),
+      action: action === 'handle' ? '处理风险'
+        : action === 'mitigate' ? '缓解风险'
+        : action === 'accept' ? '接受风险'
+        : action === 'close' ? '关闭风险'
+        : '更新风险',
+      note: action === 'accept' ? reason || '已填写接受原因' : mitigation,
+      status: nextStatus,
+      time: now
+    });
+    list[list.findIndex(item => item.id === risk.id)] = updated;
+    ws.rfqRisks = list;
+    ws.rfqSelectedRiskId = updated.id;
+    this.quotationFillSelectedRiskFromWorkspace(ws);
+    this.quotationSyncDerived(ws);
+    ws.updatedAt = now;
+    const actionLabel = action === 'handle' ? '处理风险'
+      : action === 'mitigate' ? '标记已缓解'
+      : action === 'accept' ? '接受风险'
+      : action === 'close' ? '关闭风险'
+      : '保存风险';
+    this.saveQuotationAudit(actionLabel, {
+      riskId: updated.id,
+      riskName: updated.name,
+      status: updated.status,
+      reason: updated.acceptReason || mitigation,
+      message: `${updated.name} 状态更新为 ${updated.status}`
+    });
+    Store.save();
+    this.rerender();
+    this.toast(`风险已${actionLabel}`);
+  },
+
+  quotationGenerateDraft() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    this.quotationFillSelectedRiskFromWorkspace(ws);
+    this.quotationSyncDerived(ws);
+    const blockers = this.quotationGetBlockers(ws);
+    ws.rfqBlockers = blockers;
+    if (blockers.length) {
+      ws.rfqDraft = '';
+      ws.result = blockers.map(item => `${item.title}：${item.reason}\n建议：${item.suggestion}`).join('\n\n');
+      ws.rfqApproval.status = 'draft';
+      ws.rfqLastComputedAt = Date.now();
+      ws.updatedAt = Date.now();
+      this.saveQuotationAudit('报价阻断', {
+        status: 'blocked',
+        message: '存在阻断项，报价草稿未生成',
+        blockers: blockers.length,
+        reason: blockers.map(item => item.reason).join('；'),
+        suggestion: blockers.map(item => item.suggestion).join('；')
+      });
+      Store.save();
+      this.rerender();
+      this.toast('存在阻断项，请先处理后再生成报价草稿', 'warning');
+      return { blocked: true, blockers };
+    }
+    const handledNotes = this.quotationHandledRiskNotes(ws);
+    const approval = ws.rfqApproval || { status: 'draft', reason: '', history: [] };
+    const draftText = typeof RFQValidation !== 'undefined' && RFQValidation && typeof RFQValidation.buildQuotationDraft === 'function'
+      ? RFQValidation.buildQuotationDraft(this.quotationOrderFields(ws), ws.rfqRisks || [], approval)
+      : '';
+    const summary = [
+      '报价草稿（RFQ）',
+      `客户：${ws.customerName || '待补充'}`,
+      `产品：${ws.productName || '待补充'}`,
+      `材料：${ws.materialName || '待补充'}`,
+      `数量：${ws.quantity || '待补充'} ${ws.unit || '件'}`,
+      `工艺：${ws.processType || '待补充'}`,
+      `交期：${ws.deliveryDate || '待补充'}`,
+      `联系人：${ws.contactName || '待补充'}`,
+      `联系方式：${ws.phone || '待补充'}`,
+      '',
+      '已处理风险：',
+      handledNotes.length ? handledNotes.map(item => `- ${item}`).join('\n') : '- 无',
+      '',
+      '报价说明：',
+      `当前报价草稿已自动带入客户、产品、材料、数量、工艺、交期与联系方式。`,
+      `审批状态：${approval.status || 'draft'}`,
+      `最终发送前必须由人工确认。`
+    ].join('\n');
+    ws.rfqDraft = draftText ? `${summary}\n\n${draftText}` : summary;
+    ws.result = ws.rfqDraft;
+    ws.rfqLastComputedAt = Date.now();
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('生成报价草稿', {
+      status: 'draft',
+      message: '报价草稿已生成',
+      blockers: 0,
+      count: ws.rfqRisks.length
+    });
+    Store.save();
+    this.rerender();
+    this.toast('报价草稿已生成');
+    return ws.rfqDraft;
+  },
+
+  quotationStartApproval() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    this.quotationFillSelectedRiskFromWorkspace(ws);
+    const blockers = this.quotationGetBlockers(ws);
+    if (blockers.length) {
+      ws.rfqBlockers = blockers;
+      ws.result = blockers.map(item => `${item.title}：${item.reason}\n建议：${item.suggestion}`).join('\n\n');
+      ws.rfqApproval.status = 'draft';
+      ws.updatedAt = Date.now();
+      this.saveQuotationAudit('发起审批失败', {
+        status: 'blocked',
+        message: '存在阻断项，无法发起审批',
+        blockers: blockers.length,
+        reason: blockers.map(item => item.reason).join('；')
+      });
+      Store.save();
+      this.rerender();
+      this.toast('存在阻断项，请先处理后再发起审批', 'error');
+      return false;
+    }
+    ws.rfqApproval.status = 'pending';
+    ws.rfqApproval.reason = String(ws.approvalReason || '').trim();
+    ws.rfqApproval.updatedAt = Date.now();
+    ws.rfqApproval.history.unshift({
+      id: uid(),
+      action: '发起审批',
+      status: 'pending',
+      reason: ws.rfqApproval.reason || '无',
+      time: Date.now()
+    });
+    ws.rfqLastSubmittedAt = Date.now();
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('发起审批', {
+      status: 'pending',
+      message: '报价审批已进入 pending',
+      reason: ws.rfqApproval.reason || ''
+    });
+    Store.save();
+    this.rerender();
+    this.toast('报价审批已发起');
+    return true;
+  },
+
+  quotationDecision(status) {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    const approval = ws.rfqApproval || { status: 'draft', reason: '', history: [] };
+    const reason = String(ws.approvalReason || approval.reason || '').trim();
+    const blockers = this.quotationGetBlockers(ws);
+    if (status === 'approved') {
+      if (blockers.length) {
+        ws.rfqBlockers = blockers;
+        ws.result = blockers.map(item => `${item.title}：${item.reason}\n建议：${item.suggestion}`).join('\n\n');
+        this.toast('存在阻断项，无法批准报价', 'error');
+        this.saveQuotationAudit('审批批准失败', {
+          status: 'blocked',
+          message: '阻断项未解决',
+          blockers: blockers.length,
+          reason: blockers.map(item => item.reason).join('；')
+        });
+        Store.save();
+        this.rerender();
+        return false;
+      }
+      approval.status = 'approved';
+      approval.reason = reason || approval.reason || '已批准';
+      approval.updatedAt = Date.now();
+      approval.history.unshift({
+        id: uid(),
+        action: '批准',
+        status: 'approved',
+        reason: approval.reason,
+        time: Date.now()
+      });
+      ws.rfqApproval = approval;
+      ws.approvalReason = approval.reason;
+      ws.rfqApprovedAt = Date.now();
+      const draft = this.quotationGenerateDraft();
+      this.saveQuotationAudit('审批通过', {
+        status: 'approved',
+        message: '审批通过并生成报价草稿',
+        reason: approval.reason
+      });
+      Store.save();
+      this.toast('审批通过，已生成报价草稿');
+      return draft;
+    }
+    if (status === 'rejected' || status === 'returned') {
+      if (!reason) {
+        this.toast('驳回或退回补充必须填写原因', 'error');
+        return false;
+      }
+      approval.status = status;
+      approval.reason = reason;
+      approval.updatedAt = Date.now();
+      approval.history.unshift({
+        id: uid(),
+        action: status === 'rejected' ? '驳回' : '退回补充',
+        status,
+        reason,
+        time: Date.now()
+      });
+      ws.rfqApproval = approval;
+      ws.approvalReason = reason;
+      ws.rfqDraft = ws.rfqDraft || '';
+      ws.result = ws.result || ws.rfqDraft || '';
+      ws.updatedAt = Date.now();
+      this.saveQuotationAudit(status === 'rejected' ? '审批驳回' : '审批退回', {
+        status,
+        message: status === 'rejected' ? '报价审批被驳回' : '报价审批退回补充',
+        reason
+      });
+      Store.save();
+      this.rerender();
+      this.toast(status === 'rejected' ? '报价已驳回' : '报价已退回补充');
+      return true;
+    }
+    return false;
+  },
+
+  quotationFinalSend() {
+    const ws = this.syncWorkspaceFromDom('quotation');
+    if (!ws.rfqDraft && !ws.result) throw new Error('请先生成报价草稿');
+    if ((ws.rfqApproval?.status || 'draft') !== 'approved') {
+      throw new Error('请先通过审批后再进行最终发送');
+    }
+    const blockers = this.quotationGetBlockers(ws);
+    if (blockers.length) throw new Error('存在阻断项，请先处理风险');
+    const confirmText = `客户：${ws.customerName || '待补充'}\n产品：${ws.productName || '待补充'}\n审批状态：${ws.rfqApproval?.status || 'draft'}\n\n确认后将记录为最终发送动作，但不会自动调用收费 API。`;
+    if (!confirm(confirmText)) return false;
+    ws.rfqFinalSentAt = Date.now();
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('最终发送确认', {
+      status: 'approved',
+      message: '已完成人工确认的最终发送动作'
+    });
+    Store.save();
+    this.rerender();
+    this.toast('已记录最终发送确认');
+    return true;
   },
 
   parseKeyValueText(text = '') {
@@ -2523,7 +3136,146 @@ const App = {
   recordTask(entry = {}) {
     if (!entry.type && !entry.fileName && !entry.summary) return;
     Store.addTaskRecord(entry);
+    this.updateStabilityHealthSnapshot('task-recorded');
     Store.addActivity(`任务：${entry.type || entry.fileName || '处理任务'}`, 'file');
+  },
+
+  upsertStabilityTask(entry = {}) {
+    const normalized = Stability.normalizeTask(entry);
+    Store.state.taskRecords = Store.state.taskRecords || [];
+    const index = Store.state.taskRecords.findIndex(item => item.id === normalized.id);
+    if (index >= 0) Store.state.taskRecords[index] = { ...Store.state.taskRecords[index], ...normalized };
+    else Store.state.taskRecords.unshift(normalized);
+    Store.state.taskRecords = Store.state.taskRecords.slice(0, 200);
+    this.updateStabilityHealthSnapshot(entry.source || 'stability-task');
+    Store.save();
+    return normalized;
+  },
+
+  async runWithStability(kind, task, work) {
+    if (!Stability.canStart(kind)) {
+      const error = new Error(`${kind} concurrency limit reached`);
+      error.code = 'CONCURRENCY_LIMIT';
+      throw error;
+    }
+    const startedAt = Date.now();
+    const taskId = task.id || uid();
+    const retryCount = Number(task.retryCount || 0);
+    Stability.start(kind);
+    this.upsertStabilityTask({
+      ...task,
+      id: taskId,
+      status: retryCount ? 'retrying' : 'running',
+      startedAt,
+      updatedAt: startedAt,
+      retryCount,
+      cancellable: true,
+      retryable: false,
+      source: `${kind}-started`
+    });
+    const timeout = Stability.timeoutPromise(kind);
+    try {
+      const result = await Promise.race([Promise.resolve(work({ taskId, startedAt, timeoutMs: timeout.timeoutMs })), timeout.promise]);
+      const finishedAt = Date.now();
+      this.upsertStabilityTask({
+        ...task,
+        id: taskId,
+        status: 'success',
+        startedAt,
+        updatedAt: finishedAt,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        retryCount,
+        summary: task.summary || `${kind} completed`,
+        result: task.result || '',
+        cancellable: false,
+        retryable: false,
+        source: `${kind}-success`
+      });
+      return result;
+    } catch (error) {
+      const finishedAt = Date.now();
+      const status = error?.status === 'timeout' || error?.code === 'TIMEOUT'
+        ? 'timeout'
+        : error?.code === 'CANCELLED'
+          ? 'cancelled'
+          : error?.code === 'INTERRUPTED'
+            ? 'interrupted'
+            : 'failed';
+      this.upsertStabilityTask({
+        ...task,
+        id: taskId,
+        status,
+        startedAt,
+        updatedAt: finishedAt,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        retryCount,
+        errorMessage: Utils.friendlyErrorMessage(error?.message || error),
+        failureType: Stability.classifyFailure(error?.message || error),
+        cancellable: false,
+        retryable: true,
+        source: `${kind}-${status}`
+      });
+      throw error;
+    } finally {
+      timeout.clear();
+      Stability.finish(kind);
+    }
+  },
+
+  updateStabilityHealthSnapshot(source = 'frontend') {
+    const tasks = (Store.state.taskRecords || []).map(item => Stability.normalizeTask(item));
+    const errors = this.getVisibleBugAlerts ? this.getVisibleBugAlerts() : (Store.state.bugAlerts || []).map(item => Stability.normalizeError(item));
+    const activeTasks = tasks.filter(item => ['pending', 'running', 'waiting_human'].includes(item.status));
+    const failedTasks = tasks.filter(item => ['failed', 'timeout', 'interrupted'].includes(item.status));
+    const activeErrors = errors.filter(item => item.lifecycle === 'active');
+    const checks = [
+      {
+        name: 'Task Center',
+        category: 'stability',
+        state: failedTasks.length ? 'failed' : activeTasks.length ? 'running' : 'success',
+        status: failedTasks.length ? '🟡 存在失败任务' : activeTasks.length ? '🟡 有任务处理中' : '🟢 正常',
+        reason: `任务 ${tasks.length} 个，处理中 ${activeTasks.length} 个，失败/超时/中断 ${failedTasks.length} 个。`,
+        suggestion: failedTasks.length ? '打开 Task Center 查看失败原因，必要时重试或取消。' : '任务状态结构正常。'
+      },
+      {
+        name: 'Error Center',
+        category: 'stability',
+        state: activeErrors.length ? 'failed' : 'success',
+        status: activeErrors.length ? '🟡 待处理' : '🟢 正常',
+        reason: `错误 ${errors.length} 条，待处理 ${activeErrors.length} 条。`,
+        suggestion: activeErrors.length ? '查看 Error Center，确认修复或忽略非阻塞问题。' : '暂无待处理错误。'
+      },
+      {
+        name: 'Stability Center',
+        category: 'stability',
+        state: 'success',
+        status: '🟢 已统一',
+        reason: '任务、错误、健康状态已使用统一 schemaVersion=1。',
+        suggestion: '后续阶段再接入 AI/OCR/Workflow/Agent/Tool 外围状态。'
+      }
+    ];
+    Store.state.taskRecords = tasks;
+    Store.state.bugAlerts = errors;
+    Store.state.errorLog = (Store.state.errorLog || []).map(item => Stability.normalizeError(item));
+    Store.state.systemHealth = Stability.buildHealthSnapshot({
+      checks,
+      tasks,
+      errors,
+      source,
+      gateway: Store.state.aiGatewayStatus
+    });
+    Store.state.runtimeMonitor = Store.state.runtimeMonitor || {};
+    Store.state.runtimeMonitor.healthChecks = Store.state.systemHealth.checks;
+    Store.state.runtimeMonitor.lastSelfCheckAt = Store.state.systemHealth.updatedAt;
+    Store.state.runtimeMonitor.lastSelfCheckSource = source;
+    Store.state.runtimeMonitor.lastSelfCheckSummary = Store.state.systemHealth.summary;
+    syncGlobalSystemState({
+      systemHealth: Store.state.systemHealth,
+      errorLog: Store.state.errorLog,
+      aiGateway: Store.state.aiGatewayStatus
+    });
   },
 
   recordDownload(entry = {}) {
@@ -2851,6 +3603,21 @@ const App = {
     const commandHint = text.startsWith('/') ? `快捷命令：${text}\n` : '';
     chat.messages.push({ role: 'user', content: text, time: Date.now() });
     const loadingId = uid();
+    const stabilityTaskId = uid();
+    const startedAt = Date.now();
+    const retryCount = Number(this.temp.chatRetryCount || 0);
+    this.upsertStabilityTask({
+      id: stabilityTaskId,
+      type: 'AI Chat',
+      module: 'chat',
+      status: retryCount ? 'retrying' : 'running',
+      summary: text.slice(0, 120),
+      startedAt,
+      retryCount,
+      cancellable: true,
+      retryable: false,
+      source: 'ai-chat'
+    });
     chat.messages.push({ id: loadingId, role: 'assistant', content: '正在处理...', time: Date.now(), mode: 'loading' });
     if (chat.title === '新对话') chat.title = text.slice(0, 24);
     chat.updatedAt = Date.now();
@@ -2902,6 +3669,24 @@ const App = {
       });
       chat.updatedAt = Date.now();
       Store.addActivity(`AI聊天：${chat.title}`, 'ai');
+      this.temp.chatRetryCount = 0;
+      this.upsertStabilityTask({
+        id: stabilityTaskId,
+        type: 'AI Chat',
+        module: 'chat',
+        status: 'success',
+        summary: demo.mode === 'mock' || demo.mode === 'demo' ? 'Mock/Fallback reply generated' : 'AI reply generated',
+        result: demo.text,
+        startedAt,
+        updatedAt: Date.now(),
+        finishedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        retryCount,
+        mockFallbackCount: (Store.state.aiHistory || []).filter(item => item.mock).length,
+        cancellable: false,
+        retryable: false,
+        source: 'ai-chat'
+      });
       if (input) input.value = '';
       this.renderNav();
       this.rerender();
@@ -2910,6 +3695,24 @@ const App = {
       chat = Store.state.chats.find(c => c.id === chat.id);
       chat.messages = chat.messages.filter(item => item.id !== loadingId);
       const message = this.recordAiError(error, 'ai-chat');
+      this.temp.chatRetryCount = retryCount + 1;
+      this.upsertStabilityTask({
+        id: stabilityTaskId,
+        type: 'AI Chat',
+        module: 'chat',
+        status: error?.status === 'timeout' || error?.code === 'TIMEOUT' ? 'timeout' : error?.code === 'CANCELLED' ? 'cancelled' : error?.code === 'INTERRUPTED' ? 'interrupted' : 'failed',
+        summary: text.slice(0, 120),
+        errorMessage: message,
+        failureType: Stability.classifyFailure(error?.message || error),
+        startedAt,
+        updatedAt: Date.now(),
+        finishedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        retryCount,
+        cancellable: false,
+        retryable: true,
+        source: 'ai-chat'
+      });
       chat.messages.push({ role: 'assistant', content: message, time: Date.now(), mode: 'error' });
       chat.updatedAt = Date.now();
       Store.save();
@@ -2919,6 +3722,32 @@ const App = {
     } finally {
       this.temp.chatSending = false;
       this.chatAutoScrollUntil = Date.now() + 1200;
+      chat = Store.state.chats.find(c => c.id === chat.id);
+      if (chat) {
+        const loading = chat.messages.find(item => item.id === loadingId);
+        if (loading?.streaming) {
+          loading.streaming = false;
+          loading.mode = 'interrupted';
+          this.upsertStabilityTask({
+            id: stabilityTaskId,
+            type: 'AI Chat',
+            module: 'chat',
+            status: 'interrupted',
+            summary: text.slice(0, 120),
+            errorMessage: 'AI Chat loading was interrupted before completion',
+            failureType: 'interrupted',
+            startedAt,
+            updatedAt: Date.now(),
+            finishedAt: Date.now(),
+            durationMs: Date.now() - startedAt,
+            retryCount,
+            cancellable: false,
+            retryable: true,
+            source: 'ai-chat'
+          });
+          Store.save();
+        }
+      }
       if (this.route === 'chat') this.rerender();
     }
   },
@@ -3683,7 +4512,22 @@ const App = {
   async ocrRun(btn) {
     const o = this.temp.ocr;
     if (!o.file) throw new Error('请先上传或拍摄图片');
+    const stabilityTaskId = uid();
+    const startedAt = Date.now();
+    const retryCount = Number(o.retryCount || 0);
     await this.busy(btn, async () => {
+      this.upsertStabilityTask({
+        id: stabilityTaskId,
+        type: 'OCR识别',
+        fileName: o.file.name,
+        module: 'ocr',
+        status: retryCount ? 'retrying' : 'running',
+        startedAt,
+        retryCount,
+        cancellable: true,
+        retryable: false,
+        source: 'ocr'
+      });
       const health = typeof OCRService.health === 'function' ? OCRService.health() : {};
       o.engineStatus = health;
       o.status = health.hasTesseract ? '处理中（真实 OCR）' : '处理中（待降级）';
@@ -3754,9 +4598,52 @@ const App = {
         summary: o.mock ? (attemptedReal ? 'real_ocr_failed' : 'mock_ocr_used') : 'real_ocr_success',
         result: o.result
       });
+      o.retryCount = 0;
+      this.upsertStabilityTask({
+        id: stabilityTaskId,
+        type: 'OCR识别',
+        fileName: o.file.name,
+        module: 'ocr',
+        status: 'success',
+        startedAt,
+        updatedAt: Date.now(),
+        finishedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        retryCount,
+        mockFallbackCount: o.mock ? 1 : 0,
+        summary: o.mock ? (attemptedReal ? 'real_ocr_failed_fallback' : 'mock_ocr_used') : 'real_ocr_success',
+        result: o.result,
+        cancellable: false,
+        retryable: false,
+        source: 'ocr'
+      });
       Store.addActivity(`OCR 识别：${o.file.name}`, 'ai');
       this.rerender();
       this.toast(o.mock ? '当前环境无法运行真实 OCR，已使用 Mock 兜底。' : quality.low ? quality.summary : '真实 OCR 成功');
+    }).catch(error => {
+      o.retryCount = retryCount + 1;
+      o.status = error?.status === 'timeout' || error?.code === 'TIMEOUT' ? 'OCR 超时' : 'OCR 失败';
+      this.upsertStabilityTask({
+        id: stabilityTaskId,
+        type: 'OCR识别',
+        fileName: o.file?.name || '图片',
+        module: 'ocr',
+        status: error?.status === 'timeout' || error?.code === 'TIMEOUT' ? 'timeout' : error?.code === 'CANCELLED' ? 'cancelled' : error?.code === 'INTERRUPTED' ? 'interrupted' : 'failed',
+        startedAt,
+        updatedAt: Date.now(),
+        finishedAt: Date.now(),
+        durationMs: Date.now() - startedAt,
+        retryCount,
+        errorMessage: Utils.friendlyErrorMessage(error?.message || error),
+        failureType: Stability.classifyFailure(error?.message || error),
+        cancellable: false,
+        retryable: true,
+        source: 'ocr'
+      });
+      throw error;
+    }).finally(() => {
+      o.loading = false;
+      o.cancelRequested = false;
     });
   },
 
@@ -4764,18 +5651,34 @@ const App = {
 
   normalizeRuntimeTask(task = {}) {
     const output = task.output_payload || {};
+    const logs = Array.isArray(task.logs) ? task.logs : [];
+    const startedAt = new Date(task.created_at || Date.now()).getTime();
+    const updatedAt = new Date(task.updated_at || task.created_at || Date.now()).getTime();
+    const lastFailure = logs.slice().reverse().find(log => ['failed', 'timeout', 'cancelled'].includes(log.status) || log.error_message);
     return {
       id: task.id,
       runtime: true,
-      time: new Date(task.updated_at || task.created_at || Date.now()).getTime(),
+      time: updatedAt,
+      createdAt: startedAt,
+      updatedAt,
+      startedAt,
+      finishedAt: ['success', 'failed', 'timeout', 'cancelled'].includes(task.status) ? updatedAt : 0,
       type: task.title || 'Agent 任务',
       fileName: task.input_payload?.filename || '',
       module: 'agent-runtime',
       status: task.status || 'pending',
+      failureType: task.failureType || Stability.classifyFailure(task.error_message || lastFailure?.error_message || task.error_code || ''),
+      errorMessage: task.error_message || lastFailure?.error_message || '',
       summary: output.summary || task.error_message || '',
       result: output.result || task.error_message || '',
       sourceId: task.id,
-      route: 'agent'
+      route: 'agent',
+      retryCount: Number(task.retry_count || 0),
+      durationMs: Number(task.durationMs || task.duration_ms || (updatedAt && startedAt ? Math.max(0, updatedAt - startedAt) : 0)),
+      circuitState: task.circuitState || task.circuit_state || 'unknown',
+      requestId: lastFailure?.request_id || logs[0]?.request_id || '',
+      cancellable: ['pending', 'running', 'waiting_human'].includes(task.status),
+      retryable: ['failed', 'timeout', 'cancelled'].includes(task.status)
     };
   },
 
@@ -4849,6 +5752,7 @@ const App = {
       }));
       this.temp.agent.result = latest.output_payload?.result || latest.error_message || this.temp.agent.result;
     }
+    this.updateStabilityHealthSnapshot('agent-runtime-refresh');
     Store.save();
     if (!silent) this.rerender();
   },
@@ -5115,6 +6019,52 @@ const App = {
     this.toast('任务已重新执行');
   },
 
+  async cancelTaskRecord(taskId) {
+    const task = (Store.state.taskRecords || []).find(item => item.id === taskId);
+    if (!task) return this.toast('未找到任务', 'error');
+    if (task.runtime) return this.runtimeTaskCancel(taskId);
+    const now = Date.now();
+    Object.assign(task, Stability.normalizeTask({
+      ...task,
+      status: 'cancelled',
+      updatedAt: now,
+      finishedAt: now,
+      errorMessage: task.errorMessage || '用户在 Task Center 取消任务',
+      summary: task.summary || '任务已取消'
+    }));
+    this.updateStabilityHealthSnapshot('task-cancelled');
+    Store.save();
+    this.toast('任务已标记为取消');
+    this.rerender();
+  },
+
+  async retryTaskRecord(taskId) {
+    const task = (Store.state.taskRecords || []).find(item => item.id === taskId);
+    if (!task) return this.toast('未找到任务', 'error');
+    if (task.runtime) return this.runtimeTaskRetry(taskId);
+    const retry = Stability.normalizeTask({
+      ...task,
+      id: uid(),
+      sourceId: task.id,
+      status: 'pending',
+      time: Date.now(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      finishedAt: 0,
+      retryCount: Number(task.retryCount || 0) + 1,
+      summary: `重试任务：${task.summary || task.type || task.fileName || '本地任务'}`,
+      result: '',
+      errorMessage: ''
+    });
+    Store.state.taskRecords.unshift(retry);
+    Store.state.taskRecords = Store.state.taskRecords.slice(0, 200);
+    this.temp.taskSelectedId = retry.id;
+    this.updateStabilityHealthSnapshot('task-retry-created');
+    Store.save();
+    this.toast('已创建本地重试记录');
+    this.rerender();
+  },
+
   async runtimeApproval(taskId, approved) {
     await APIClient.request(`/api/agents/tasks/${taskId}/approve`, {
       method: 'POST',
@@ -5131,6 +6081,7 @@ const App = {
     if (!selected) throw new Error('当前没有可执行工具');
     const ws = this.getWorkspace('toolcenter');
     await this.busy(btn, async () => {
+      const startedAt = Date.now();
       const raw = document.getElementById('toolcenterInput')?.value.trim() || ws.prompt || '{}';
       ws.prompt = raw;
       let input;
@@ -5143,7 +6094,28 @@ const App = {
         method: 'POST',
         body: JSON.stringify({ input })
       });
-      ws.result = JSON.stringify(res.data?.result || {}, null, 2);
+      const result = res.data?.result || {};
+      ws.result = JSON.stringify(result || {}, null, 2);
+      this.upsertStabilityTask({
+        id: uid(),
+        type: `Tool ${selected.toolName}`,
+        module: 'toolcenter',
+        status: result.status || (result.ok ? 'success' : 'failed'),
+        startedAt,
+        updatedAt: Date.now(),
+        finishedAt: Date.now(),
+        durationMs: Number(result.durationMs || (Date.now() - startedAt)),
+        retryCount: Number(result.retryCount || 0),
+        failureType: result.failureType || Stability.classifyFailure(result.error || ''),
+        errorMessage: result.error || '',
+        summary: `${selected.toolName} · circuit ${result.circuitState || selected.circuitState || 'closed'}`,
+        result: ws.result,
+        requestId: result.requestId || '',
+        circuitState: result.circuitState || selected.circuitState || 'closed',
+        retryable: !result.ok,
+        cancellable: false,
+        source: 'toolcenter'
+      });
       Store.save();
       this.rerender();
     });
@@ -5256,20 +6228,112 @@ const App = {
 
   async enterpriseWorkflow(btn) {
     if (!this.temp.excel.rows.length) throw new Error('请先在 Excel 助手加载发货单或统计表');
+    const ws = this.getWorkspace('workflow');
+    const stabilityTaskId = uid();
+    const startedAt = Date.now();
+    const retryCount = Number(ws.retryCount || 0);
+    const workflowSteps = [
+      { key: 'excel_stats', label: '统计 Excel 数据' },
+      { key: 'word_report', label: '生成企业日报' },
+      { key: 'export_pdf', label: '导出 PDF' },
+      { key: 'save_file', label: '保存到文件中心' },
+      { key: 'save_knowledge', label: '写入知识库' }
+    ];
+    ws.steps = workflowSteps.map(step => ({ ...step, status: retryCount ? 'retrying' : 'pending', durationMs: 0, errorMessage: '' }));
     await this.busy(btn, async () => {
-      this.excelStats();
-      const stats = this.temp.excel.summary || this.getExcelAnalysis().summary;
-      this.temp.word.title = `企业日报_${stats.customer}_${stats.deliveryDate}`;
-      this.temp.word.content = WritingTemplates.generate('日报', `客户：${stats.customer}\n产品：${this.temp.excel.records.map(item => item.name).filter(Boolean).join('、')}\n数量：${stats.totalQuantity}\n交期：${stats.deliveryDate}\n付款方式：${stats.payment}\n运输方式：${stats.transport}`);
-      localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(this.temp.word));
-      await Utils.exportPdf(this.temp.word.title, this.temp.word.content);
-      const textFile = new File([new Blob([this.temp.word.content], { type: 'text/plain;charset=utf-8' })], `${safeName(this.temp.word.title)}.txt`, { type: 'text/plain' });
-      await this.addFiles([textFile]);
-      Store.state.knowledge.unshift(KnowledgeEngine.buildEntry({ title: this.temp.word.title, content: this.temp.word.content, sourceType: 'workflow' }));
-      Store.save();
-      Store.addActivity('一键企业办公流程完成', 'ai');
-      this.toast('一键企业办公流程已完成');
-      this.rerender();
+      this.upsertStabilityTask({
+        id: stabilityTaskId,
+        type: 'Workflow',
+        module: 'workflow',
+        status: retryCount ? 'retrying' : 'running',
+        startedAt,
+        retryCount,
+        cancellable: true,
+        retryable: false,
+        source: 'workflow'
+      });
+      const runStep = async (key, fn) => {
+        const step = ws.steps.find(item => item.key === key);
+        const stepStartedAt = Date.now();
+        if (step) step.status = 'running';
+        try {
+          const result = await fn();
+          if (step) {
+            step.status = 'success';
+            step.durationMs = Date.now() - stepStartedAt;
+          }
+          return result;
+        } catch (error) {
+          if (step) {
+            step.status = 'failed';
+            step.durationMs = Date.now() - stepStartedAt;
+            step.errorMessage = Utils.friendlyErrorMessage(error?.message || error);
+            step.failureType = Stability.classifyFailure(error?.message || error);
+          }
+          throw error;
+        } finally {
+          Store.save();
+        }
+      };
+      try {
+        await runStep('excel_stats', async () => this.excelStats());
+        const stats = this.temp.excel.summary || this.getExcelAnalysis().summary;
+        await runStep('word_report', async () => {
+          this.temp.word.title = `企业日报_${stats.customer}_${stats.deliveryDate}`;
+          this.temp.word.content = WritingTemplates.generate('日报', `客户：${stats.customer}\n产品：${this.temp.excel.records.map(item => item.name).filter(Boolean).join('、')}\n数量：${stats.totalQuantity}\n交期：${stats.deliveryDate}\n付款方式：${stats.payment}\n运输方式：${stats.transport}`);
+          localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(this.temp.word));
+        });
+        await runStep('export_pdf', async () => Utils.exportPdf(this.temp.word.title, this.temp.word.content));
+        await runStep('save_file', async () => {
+          const textFile = new File([new Blob([this.temp.word.content], { type: 'text/plain;charset=utf-8' })], `${safeName(this.temp.word.title)}.txt`, { type: 'text/plain' });
+          await this.addFiles([textFile]);
+        });
+        await runStep('save_knowledge', async () => {
+          Store.state.knowledge.unshift(KnowledgeEngine.buildEntry({ title: this.temp.word.title, content: this.temp.word.content, sourceType: 'workflow' }));
+        });
+        ws.retryCount = 0;
+        this.upsertStabilityTask({
+          id: stabilityTaskId,
+          type: 'Workflow',
+          module: 'workflow',
+          status: 'success',
+          startedAt,
+          updatedAt: Date.now(),
+          finishedAt: Date.now(),
+          durationMs: Date.now() - startedAt,
+          retryCount,
+          summary: '一键企业办公流程完成',
+          result: this.temp.word.content,
+          cancellable: false,
+          retryable: false,
+          source: 'workflow'
+        });
+        Store.save();
+        Store.addActivity('一键企业办公流程完成', 'ai');
+        this.toast('一键企业办公流程已完成');
+        this.rerender();
+      } catch (error) {
+        ws.retryCount = retryCount + 1;
+        this.upsertStabilityTask({
+          id: stabilityTaskId,
+          type: 'Workflow',
+          module: 'workflow',
+          status: error?.code === 'CANCELLED' ? 'cancelled' : error?.code === 'INTERRUPTED' ? 'interrupted' : 'failed',
+          startedAt,
+          updatedAt: Date.now(),
+          finishedAt: Date.now(),
+          durationMs: Date.now() - startedAt,
+          retryCount,
+          errorMessage: Utils.friendlyErrorMessage(error?.message || error),
+          failureType: Stability.classifyFailure(error?.message || error),
+          summary: 'Workflow step failed',
+          cancellable: false,
+          retryable: true,
+          source: 'workflow'
+        });
+        this.rerender();
+        throw error;
+      }
     });
   },
 
@@ -5298,6 +6362,9 @@ const App = {
           return;
         case 'bidding':
           await this.biddingAnalyze(btn);
+          return;
+        case 'quotation':
+          this.quotationGenerateDraft();
           return;
         case 'datavalidation':
           this.validateRun('all');
