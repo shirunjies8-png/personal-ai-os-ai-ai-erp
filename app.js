@@ -138,6 +138,24 @@ const App = {
   async init() {
     if (!Store.state.chats.length) this.createChat(false);
     await Store.hydrateFromServer();
+    if (!AuthClient.isLoggedIn() && window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
+      AuthClient.save({
+        token: 'demo-local-session',
+        demo: true,
+        user: {
+          id: 'demo-admin',
+          enterpriseId: 'demo-enterprise',
+          email: DEMO_ACCOUNT.email,
+          name: DEMO_ACCOUNT.name,
+          role: DEMO_ACCOUNT.role,
+          status: '启用'
+        },
+        enterprise: {
+          id: 'demo-enterprise',
+          name: DEMO_ACCOUNT.enterpriseName
+        }
+      });
+    }
     this.normalizeBugAlerts();
     this.applyTheme();
     this.renderNav();
