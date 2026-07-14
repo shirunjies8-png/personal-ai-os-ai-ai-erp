@@ -45,6 +45,9 @@ const Icons = {
 };
 
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${Icons[name] || Icons.apps}</svg>`;
+if (typeof window !== 'undefined') {
+  window.icon = icon;
+}
 
 const MODULES = [
   { id: 'login', name: '登录', icon: 'lock', group: '隐藏', hidden: true },
