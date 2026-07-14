@@ -5,14 +5,16 @@ const env = require('../config/env');
 
 fs.mkdirSync(env.logsDir, { recursive: true });
 
-const SENSITIVE_KEY = /api[-_]?key|authorization|password|token|secret|cookie/i;
+const SENSITIVE_KEY = /api[-_]?key|authorization|password|token|secret|cookie|credential|session|private.?key/i;
 
 function sanitize(value, key = '') {
   if (SENSITIVE_KEY.test(key)) return '[已脱敏]';
   if (typeof value === 'string') {
     return value
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [已脱敏]')
-      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[已脱敏]');
+      .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[已脱敏]')
+      .replace(/([?&](?:api[-_]?key|token|secret|password)=)[^&\s]+/gi, '$1[已脱敏]')
+      .replace(/\b[A-Za-z0-9+/_-]{32,}\.[A-Za-z0-9+/_-]{8,}\.[A-Za-z0-9+/_-]{16,}\b/g, '[JWT已脱敏]');
   }
   if (Array.isArray(value)) return value.map(item => sanitize(item));
   if (value && typeof value === 'object') {

@@ -1,6 +1,8 @@
 const env = require('../config/env');
 const logger = require('../logger');
 const { maybeRunTool } = require('./toolRegistry');
+const policy = require('./securityPolicyService');
+const costControl = require('./costControlService');
 
 function requestId(prefix = 'ai') {
   return logger.requestId(prefix);
@@ -227,12 +229,14 @@ async function callProvider(messages = [], config = {}, options = {}) {
 }
 
 async function chat(input = {}) {
+  policy.requireCapability('ai');
   const requestIdValue = input.requestId || requestId('ai');
   const startedAt = Date.now();
   const providerConfig = resolveProviderConfig(input);
   const demoMode = Boolean(input.demoMode);
   const fallbackAllowed = input.allowMockFallback !== false;
   const messages = Array.isArray(input.messages) ? input.messages : [];
+  const reservedTokens = costControl.reserve({ enterpriseId: input.enterpriseId || 'default', messages });
   const toolResult = await maybeRunTool(messages, input.module || 'general');
   const toolContext = toolResult?.data?.summary || toolResult?.data?.preview || toolResult?.data?.message || '';
   const promptMessages = toolContext
@@ -263,6 +267,7 @@ async function chat(input = {}) {
       httpStatus: 200,
       latencyMs
     });
+    costControl.record({ enterpriseId: input.enterpriseId || 'default', reserved: reservedTokens, totalTokens: 0 });
     return {
       ok: true,
       provider: 'mock',
@@ -291,6 +296,7 @@ async function chat(input = {}) {
         latencyMs: Date.now() - startedAt
       });
       res.latencyMs = Date.now() - startedAt;
+      costControl.record({ enterpriseId: input.enterpriseId || 'default', reserved: reservedTokens, totalTokens: res.totalTokens });
       logger.info('AI Gateway 完成', {
         requestId: requestIdValue,
         module: input.module || 'general',
@@ -321,7 +327,7 @@ async function chat(input = {}) {
         httpStatus,
         latencyMs: Date.now() - startedAt,
         errorMessage: sanitizeErrorMessage(error),
-        rawError: String(error.rawError || error.message || error || '')
+        rawError: sanitizeErrorMessage(error)
       });
       if (!retryable.includes(httpStatus) && !isRetryable(error)) break;
       if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 350));
@@ -342,8 +348,9 @@ async function chat(input = {}) {
       httpStatus: lastError?.httpStatus || lastError?.status || 200,
       latencyMs,
       errorMessage: friendly,
-      rawError
+      rawError: friendly
     });
+    costControl.record({ enterpriseId: input.enterpriseId || 'default', reserved: reservedTokens, totalTokens: 0 });
     return {
       ok: true,
       provider: providerConfig.provider,
@@ -382,6 +389,7 @@ function getStatus() {
     todayFailedCount: stats.todayFailedCount,
     recentError: stats.lastError?.errorMessage || stats.lastError?.message || '',
     avgLatency: stats.avgLatency,
+    usage: costControl.usage('default'),
     lastRequestId: stats.latest?.requestId || '',
     lastRequestTime: stats.latest?.time || ''
   };

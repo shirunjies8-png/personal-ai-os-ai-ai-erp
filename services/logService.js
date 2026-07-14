@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const logModel = require('../models/logModel');
+const { sanitize } = require('../utils/logger');
 
 function add({ enterpriseId, userId = '', type, title, detail = '' }) {
   logModel.add({
@@ -7,8 +8,8 @@ function add({ enterpriseId, userId = '', type, title, detail = '' }) {
     enterprise_id: enterpriseId,
     user_id: userId,
     type,
-    title,
-    detail,
+    title: sanitize(title),
+    detail: sanitize(detail),
     created_at: new Date().toISOString()
   });
 }
