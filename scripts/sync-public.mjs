@@ -47,4 +47,6 @@ await fs.writeFile(
   )
 );
 
+await fs.writeFile(path.join(publicDir, '.nojekyll'), '');
+
 console.log(`Synced frontend assets to ${publicDir}`);
