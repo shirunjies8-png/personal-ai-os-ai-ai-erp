@@ -2,6 +2,8 @@ const path = require('node:path');
 const db = require('../database/client');
 const logger = require('../logger');
 const env = require('../config/env');
+const permissionService = require('./permissionService');
+const policy = require('./securityPolicyService');
 
 const SAFE_SQL = /^(select|pragma\s+table_info|with)\b/i;
 const MAX_TEXT = 120000;
@@ -383,10 +385,7 @@ function mapRole(role = '') {
 }
 
 function checkPermission(tool, role = 'viewer') {
-  const current = mapRole(role);
-  const level = tool.permissionLevel || 'viewer';
-  const rank = { viewer: 1, operator: 2, admin: 3 };
-  if ((rank[current] || 0) < (rank[level] || 0)) throw validationError('权限不足');
+  return permissionService.authorizeTool(tool, { role });
 }
 
 async function withTimeout(promise, timeoutMs) {
@@ -437,7 +436,7 @@ async function executeTool(toolName, input = {}, context = {}) {
   try {
     tool.validate?.(input);
     checkPermission(tool, context.role);
-    if (tool.highRisk && context.requireApproval) {
+    if (policy.isHighRisk(toolName) && context.requireApproval !== false) {
       return {
         ok: true,
         data: { approvalRequired: true, actionLabel: context.actionLabel || tool.description },

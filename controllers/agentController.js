@@ -34,7 +34,7 @@ async function approveTask(req, res) {
   try {
     const task = await agentRuntimeService.approveTask(
       req.params.id,
-      req.user.name || req.user.email || req.user.id,
+      { enterpriseId: req.user.enterprise_id, userId: req.user.id, name: req.user.name || req.user.email || req.user.id, role: req.user.role },
       Boolean(req.body.approved),
       String(req.body.reason || '')
     );
@@ -72,9 +72,9 @@ async function executeRuntimeTool(req, res) {
       requestId: req.body.requestId || '',
       module: 'tool-center',
       role: req.user.role,
-      requireApproval: false
+      requireApproval: true
     });
-    ok(res, { result }, result.ok ? '工具执行完成' : '工具执行失败');
+    ok(res, { result }, result.status === 'waiting_human' ? '高风险操作等待人工确认' : (result.ok ? '工具执行完成' : '工具执行失败'));
   } catch (error) {
     fail(res, 400, error.message || '工具执行失败');
   }

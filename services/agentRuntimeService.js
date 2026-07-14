@@ -5,6 +5,10 @@ const agentApprovalModel = require('../models/agentApprovalModel');
 const { executeTool, listTools, detectTool, mapRole, classifyFailure } = require('./toolRegistry');
 const { chat: gatewayChat } = require('./aiGateway');
 const memoryService = require('./memoryService');
+const permissionService = require('./permissionService');
+const approvalService = require('./approvalService');
+const { recoveryPlan } = require('./taskRecoveryService');
+const { sanitize } = require('../utils/logger');
 
 const ACTIVE_RUNS = new Map();
 const TASK_STATES = ['pending', 'running', 'waiting_human', 'success', 'failed', 'timeout', 'cancelled'];
@@ -60,6 +64,7 @@ function buildPlan(goal = '', role = 'operator') {
 }
 
 async function createTask({ enterpriseId, userId, role, goal, input = {} }) {
+  permissionService.authorizeAgent({ role });
   const plan = buildPlan(goal, role);
   const now = new Date().toISOString();
   const task = agentTaskModel.create({
@@ -128,19 +133,10 @@ function decorateTask(task = {}) {
 }
 
 async function requestApproval(task, step) {
-  const approval = agentApprovalModel.create({
-    id: uuidv4(),
-    task_id: task.id,
-    enterprise_id: task.enterprise_id,
-    user_id: task.user_id,
-    tool_name: step.toolName || 'human_approval_tool',
-    action_label: step.actionLabel || '高风险动作审批',
-    status: 'pending',
-    reason: '检测到高风险动作，需要人工确认后继续执行',
-    payload: { step },
-    approved_by: '',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
+  const approval = approvalService.request({
+    taskId: task.id, enterpriseId: task.enterprise_id, userId: task.user_id,
+    toolName: step.toolName || 'human_approval_tool', actionLabel: step.actionLabel || '高风险动作审批',
+    reason: '检测到高风险动作，需要人工确认后继续执行', payload: { step }
   });
   agentTaskModel.update(task.id, { status: 'waiting_human', needs_approval: 1 });
   addTaskLog(task, {
@@ -174,7 +170,7 @@ async function runTask(taskId) {
           requestId: uuidv4().slice(0, 8),
           module: 'agent-runtime',
           role: task.input_payload?.role || 'operator',
-          requireApproval: highRisk,
+          requireApproval: highRisk && task.input_payload?.approvedToolName !== step.toolName,
           actionLabel: step.label
         });
         if (result.status === 'waiting_human') {
@@ -182,7 +178,8 @@ async function runTask(taskId) {
           return getTask(task.id);
         }
         if (!result.ok) {
-          const failureType = result.failureType || classifyFailure(result.error);
+          const recovery = recoveryPlan(result.error, result.retryCount || 0);
+          const failureType = result.failureType || recovery.failureType;
           agentTaskModel.update(task.id, {
             status: result.status === 'timeout' ? 'timeout' : 'failed',
             current_step: index,
@@ -250,6 +247,7 @@ async function runTask(taskId) {
           .join('\n\n');
         const ai = await gatewayChat({
           module: 'agent-runtime',
+          enterpriseId: task.enterprise_id,
           messages: [{
             role: 'user',
             content: `请基于以下任务与工具结果生成中文汇总。\n任务：${task.goal}\n\n工具结果：\n${toolResults || '未引用来源'}\n\n要求：1. 如果没有来源，明确写“未引用来源”。2. 不确定时写“无法确认”。3. 输出 confidence 字段。`
@@ -300,7 +298,7 @@ async function runTask(taskId) {
 }
 
 function safeString(value) {
-  return String(value || '').slice(0, 2000);
+  return String(sanitize(String(value || ''))).slice(0, 2000);
 }
 
 function buildToolInput(task, step) {
@@ -328,16 +326,12 @@ function buildToolInput(task, step) {
   }
 }
 
-async function approveTask(taskId, approvedBy, approved, reason = '') {
+async function approveTask(taskId, actor, approved, reason = '') {
   const task = agentTaskModel.findById(taskId);
   if (!task) throw new Error('任务不存在');
   const pending = agentApprovalModel.findPendingByTask(taskId);
   if (!pending) throw new Error('当前任务没有待审批动作');
-  agentApprovalModel.update(pending.id, {
-    status: approved ? 'approved' : 'rejected',
-    reason: reason || pending.reason,
-    approved_by: approvedBy
-  });
+  approvalService.decide({ approvalId: pending.id, actor, approved, reason });
   addTaskLog(task, {
     status: approved ? 'success' : 'cancelled',
     toolName: pending.tool_name,
@@ -347,7 +341,10 @@ async function approveTask(taskId, approvedBy, approved, reason = '') {
     agentTaskModel.update(task.id, { status: 'cancelled', error_code: 'approval_rejected', error_message: '审批已拒绝', needs_approval: 0 });
     return getTask(taskId);
   }
-  agentTaskModel.update(task.id, { status: 'running', needs_approval: 0, current_step: Number(task.current_step || 0) + 1 });
+  agentTaskModel.update(task.id, {
+    status: 'running', needs_approval: 0,
+    input_payload: { ...(task.input_payload || {}), approvedToolName: pending.tool_name }
+  });
   runTask(taskId).catch(() => {});
   return getTask(taskId);
 }
