@@ -1578,7 +1578,8 @@ const OCRService = {
       this.engineState = 'loading';
       try {
         this.worker = await this.withoutKnownTesseractWarnings(() => Tesseract.createWorker('chi_sim', 1, {
-          workerPath: './vendor/tesseract/worker.min.js',
+          workerPath: './vendor/tesseract/worker-wrapper.js',
+          workerBlobURL: false,
           corePath: './vendor/tesseract-core',
           langPath: './assets/ocr',
           cacheMethod: 'readOnly',
