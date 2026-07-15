@@ -90,6 +90,12 @@ const App = {
       qaQuestion: '',
       qaAnswer: '',
       analysis: '',
+      providerId: 'auto',
+      providerResult: null,
+      review: null,
+      diagnostics: null,
+      sourceFile: {},
+      reviewZoom: 1,
       fieldDrafts: [],
       confirmedFields: JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null'),
       demoFields: null
@@ -141,6 +147,7 @@ const App = {
     // 先绑定交互事件，避免状态同步较慢时聊天提交被丢失。
     this.bindGlobalEvents();
     await Store.hydrateFromServer();
+    this.setupOcrProviders();
     if (!AuthClient.isLoggedIn() && window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
       AuthClient.save({
         token: 'demo-local-session',
@@ -859,6 +866,15 @@ const App = {
         this.temp.ocr.fieldDrafts.fields['缺失字段'] = missing.length ? missing.join('、') : '无';
       }
     }
+    if (target.id === 'ocrProviderSelect') {
+      this.temp.ocr.providerId = target.value;
+      Store.state.ocrData.providerConfig.selectedProviderId = target.value;
+      Store.save();
+      this.rerender();
+    }
+    if (target.dataset.ocrReviewField && this.temp.ocr.review) {
+      this.saveOcrReview(OCRArchitecture.updateReviewField(this.temp.ocr.review, target.dataset.ocrReviewField, target.value));
+    }
     if (target.id === 'agentGoal') this.temp.agent.goal = target.value;
     if (target.id === 'kbQuestion') this.temp.kbQuestion = target.value;
     if (target.id === 'pdfQuestion') this.temp.pdf.qaQuestion = target.value;
@@ -983,6 +999,16 @@ const App = {
       'ocr-ai-fix': () => this.ocrAIFix(el),
       'ocr-ai-table': () => this.ocrAITable(el),
       'ocr-ai-save': () => this.ocrAISave(el),
+      'ocr-review-save': () => this.ocrSaveReviewDraft(),
+      'ocr-review-approve': () => this.ocrApproveReview(),
+      'ocr-review-reject': () => this.ocrRejectReview(),
+      'ocr-review-retry': () => this.ocrRun(el, true),
+      'ocr-provider-refresh': () => this.ocrRefreshProviders(),
+      'ocr-diagnostics-copy': () => this.ocrCopyDiagnostics(),
+      'ocr-transfer-quotation': () => this.ocrTransferQuotation(),
+      'ocr-transfer-inquiry': () => this.ocrTransferInquiry(),
+      'ocr-review-export': () => this.ocrExportReview(el),
+      'ocr-zoom': () => this.ocrZoom(Number(el.dataset.delta || 0)),
       'ocr-copy': () => this.ocrCopy(el),
       'ocr-txt': () => this.ocrTxt(el),
       'ocr-ai-txt': () => this.ocrAiTxt(el),
@@ -2233,6 +2259,246 @@ const App = {
       if (match) map[match[1].trim()] = match[2].trim();
     });
     return map;
+  },
+
+  setupOcrProviders() {
+    if (this.ocrRegistry || typeof OCRArchitecture === 'undefined') return this.ocrRegistry;
+    const registry = new OCRArchitecture.ProviderRegistry({
+      onLog: entry => this.recordOcrProviderLog(entry),
+      onError: entry => this.recordOcrProviderError(entry)
+    });
+    const health = OCRService.health();
+    const current = OCRArchitecture.createCurrentProvider({
+      recognize: (file, onProgress) => OCRService.recognize(file, onProgress),
+      healthCheck: () => ({ available: Boolean(OCRService.health().hasTesseract), status: OCRService.health().engineState, message: OCRService.health().engineError || '' }),
+      structure: text => OCRService.structure(text)
+    });
+    current.available = Boolean(health.hasTesseract);
+    current.availabilityReason = health.hasTesseract ? '' : '当前 OCR 引擎未加载，自动模式将明确降级到演示 Provider';
+    registry.register(current);
+    registry.register(OCRArchitecture.createPlaceholderProvider('local', '本地 OCR', 'local', { supportsLocal: true, supportsTable: true, supportsChinese: true }));
+    registry.register(OCRArchitecture.createPlaceholderProvider('cloud', '云端 OCR', 'cloud', { supportsCloud: true, supportsTable: true, supportsChinese: true }));
+    registry.register(OCRArchitecture.createPlaceholderProvider('vision', '视觉模型', 'vision', { supportsCloud: true, supportsTable: true, supportsHandwriting: true, supportsChinese: true }));
+    registry.register(OCRArchitecture.createMockProvider());
+    this.ocrRegistry = registry;
+    const data = Store.state.ocrData;
+    this.temp.ocr.providerId = data.providerConfig.selectedProviderId || 'auto';
+    for (const provider of registry.list()) data.providerHealth[provider.providerId] = {
+      available: provider.available, status: provider.available ? (provider.providerType === 'mock' ? 'demo' : 'ready') : 'unconfigured',
+      message: provider.availabilityReason || '', updatedAt: Date.now()
+    };
+    Store.save();
+    return registry;
+  },
+
+  ocrEnvironment() {
+    const nav = typeof navigator !== 'undefined' ? navigator : {};
+    return {
+      browser: nav.userAgent || '', platform: nav.platform || '', operatingSystem: nav.userAgentData?.platform || '',
+      architecture: nav.userAgentData?.architecture || '', deviceMemoryGb: Number(nav.deviceMemory) || null,
+      hardwareConcurrency: Number(nav.hardwareConcurrency) || null, nodeVersion: typeof process !== 'undefined' ? process.version : '',
+      online: typeof nav.onLine === 'boolean' ? nav.onLine : null
+    };
+  },
+
+  recordOcrProviderLog(entry = {}) {
+    const data = Store.state.ocrData;
+    data.tasks.unshift({ schemaVersion: 2, time: Date.now(), module: 'ocr', ...entry });
+    data.tasks = data.tasks.slice(0, 200);
+    Store.save();
+  },
+
+  recordOcrProviderError({ requestId, provider = {}, error, file, startedAt, fallbackUsed }) {
+    const durationMs = Math.max(0, Date.now() - Date.parse(startedAt || new Date().toISOString()));
+    const errorType = error?.code || 'invalid_response';
+    const diagnostic = OCRArchitecture.sanitizeDiagnostics({
+      errorType, requestId, providerId: provider.providerId || '', providerVersion: provider.version || '',
+      fileType: file?.type || '', imageSize: this.temp.ocr?.sourceFile?.dimensions || {}, durationMs,
+      rawError: String(error?.message || error || ''), retried: Number(this.temp.ocr?.retryCount || 0) > 0,
+      fallbackUsed: Boolean(fallbackUsed), environment: this.ocrEnvironment()
+    });
+    Store.state.ocrData.errors.unshift({ ...diagnostic, time: Date.now() });
+    Store.state.ocrData.errors = Store.state.ocrData.errors.slice(0, 100);
+    this.temp.ocr.diagnostics = diagnostic;
+    this.reportBug({
+      module: 'OCR', feature: 'Provider 识别', type: errorType, message: `OCR 诊断：${error?.message || '识别异常'}`,
+      description: JSON.stringify(diagnostic), suggestion: '请重新识别、检查图片质量，或更换可用 Provider。',
+      requestId, source: 'ocr-provider', signature: ['OCR', errorType, provider.providerId || 'unknown', error?.message || 'error'].join('|'), rawError: String(error?.message || error || '')
+    });
+    Store.save();
+  },
+
+  updateOcrDailyStats(result) {
+    const stats = Store.state.ocrData.stats;
+    const today = new Date().toISOString().slice(0, 10);
+    if (stats.date !== today) Object.assign(stats, { date: today, todayCount: 0, todayFailureCount: 0, todayFallbackCount: 0 });
+    stats.todayCount += 1;
+    if (!result?.success) stats.todayFailureCount += 1;
+    if (result?.fallbackUsed) stats.todayFallbackCount += 1;
+  },
+
+  persistOcrResult(result) {
+    const data = Store.state.ocrData;
+    data.results = data.results.filter(item => item.requestId !== result.requestId);
+    data.results.unshift(result);
+    data.results = data.results.slice(0, 50);
+    const existingReview = data.reviews.find(item => item.requestId === result.requestId);
+    const review = OCRArchitecture.createReview(result, existingReview || {});
+    data.reviews = data.reviews.filter(item => item.requestId !== result.requestId);
+    data.reviews.unshift(review);
+    data.reviews = data.reviews.slice(0, 50);
+    this.temp.ocr.providerResult = result;
+    this.temp.ocr.review = review;
+    this.updateOcrDailyStats(result);
+    Store.save();
+    return review;
+  },
+
+  saveOcrReview(review) {
+    const data = Store.state.ocrData;
+    data.reviews = data.reviews.filter(item => item.requestId !== review.requestId);
+    data.reviews.unshift(review);
+    data.reviews = data.reviews.slice(0, 50);
+    this.temp.ocr.review = review;
+    Store.save();
+  },
+
+  syncOcrReviewFromDom() {
+    let review = this.temp.ocr.review;
+    if (!review) throw Object.assign(new Error('暂无可复核的 OCR 结果'), { code: 'review_not_found' });
+    document.querySelectorAll('[data-ocr-review-field]').forEach(input => {
+      const field = review.fields.find(item => item.key === input.dataset.ocrReviewField);
+      if (field && String(field.value ?? '') !== String(input.value ?? '')) {
+        review = OCRArchitecture.updateReviewField(review, field.key, input.value);
+      }
+    });
+    this.saveOcrReview(review);
+    return review;
+  },
+
+  ocrReviewerName() {
+    const user = AuthClient.session?.user || {};
+    return user.name || user.email || '当前用户';
+  },
+
+  ocrSaveReviewDraft() {
+    const review = this.syncOcrReviewFromDom();
+    this.recordTask({
+      type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'waiting_human',
+      summary: `复核草稿已保存 · ${review.modifications.length} 处修改`, requestId: review.requestId
+    });
+    this.rerender();
+    this.toast('复核草稿已保存，尚未批准进入正式业务。');
+  },
+
+  ocrApproveReview() {
+    const review = this.syncOcrReviewFromDom();
+    const summary = OCRArchitecture.reviewSummary(review);
+    if (!confirm(`确认批准本次 OCR 人工复核？\n\n低置信度字段：${summary.lowConfidenceCount}\n缺失字段：${summary.missingCount}\n人工修改：${summary.manuallyEditedCount}\n\n批准后才能转入报价或询价，仍需对原图负责核对。`)) return;
+    const approved = OCRArchitecture.approveReview(review, this.ocrReviewerName());
+    this.saveOcrReview(approved);
+    const fields = Object.fromEntries(approved.fields.map(field => [field.label, field.value || '待补充']));
+    const confirmed = { confirmed: true, confirmedAt: Date.now(), reviewedAt: approved.reviewedAt, reviewer: approved.reviewer, fields, source: 'ocr-review-v2' };
+    this.temp.ocr.confirmedFields = confirmed;
+    localStorage.setItem('personal-ai-os-ocr-confirmed-fields', JSON.stringify(confirmed));
+    this.recordTask({ type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'success',
+      summary: '人工复核已批准', requestId: approved.requestId, result: JSON.stringify(fields) });
+    Store.addActivity('OCR 人工复核已批准', 'check');
+    this.rerender();
+    this.toast('复核已批准，现可转入正式业务。');
+  },
+
+  ocrRejectReview() {
+    if (!this.temp.ocr.review) throw new Error('暂无可驳回的 OCR 结果');
+    const reason = prompt('请填写驳回原因（必填）：', this.temp.ocr.review.rejectionReason || '');
+    if (reason === null) return;
+    const rejected = OCRArchitecture.rejectReview(this.syncOcrReviewFromDom(), reason, this.ocrReviewerName());
+    this.saveOcrReview(rejected);
+    this.recordOcrProviderError({ requestId: rejected.requestId, provider: this.ocrRegistry?.get(this.temp.ocr.providerResult?.providerId) || {},
+      error: Object.assign(new Error(reason), { code: 'user_rejected' }), file: this.temp.ocr.file, startedAt: this.temp.ocr.providerResult?.startedAt, fallbackUsed: this.temp.ocr.providerResult?.fallbackUsed });
+    this.recordTask({ type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'failed',
+      summary: `已驳回：${reason}`, requestId: rejected.requestId });
+    this.rerender();
+    this.toast('OCR 复核已驳回，未进入正式业务。', 'warning');
+  },
+
+  async ocrRefreshProviders() {
+    const registry = this.setupOcrProviders();
+    const current = registry.get('current');
+    if (current) {
+      const engine = OCRService.health();
+      current.available = Boolean(engine.hasTesseract);
+      current.availabilityReason = current.available ? '' : '当前 OCR 引擎未加载';
+    }
+    for (const provider of registry.list()) {
+      const health = await registry.healthCheck(provider.providerId);
+      Store.state.ocrData.providerHealth[provider.providerId] = { ...health, updatedAt: Date.now() };
+    }
+    Store.save();
+    this.rerender();
+    this.toast('OCR Provider 状态已刷新');
+  },
+
+  async ocrCopyDiagnostics() {
+    const result = this.temp.ocr.providerResult || {};
+    const diagnostics = OCRArchitecture.sanitizeDiagnostics(this.temp.ocr.diagnostics || {
+      requestId: result.requestId || '', providerId: result.providerId || '', providerVersion: result.providerVersion || '',
+      status: result.status || 'waiting', fileType: this.temp.ocr.sourceFile?.type || '', imageSize: this.temp.ocr.sourceFile?.dimensions || {},
+      durationMs: result.durationMs || 0, warnings: result.warnings || [], errors: result.errors || [],
+      fallbackUsed: Boolean(result.fallbackUsed), environment: this.ocrEnvironment()
+    });
+    await this.copy(JSON.stringify(diagnostics, null, 2));
+    this.toast('已复制脱敏 OCR 诊断信息');
+  },
+
+  ocrTransferQuotation() {
+    const payload = OCRArchitecture.confirmedPayload(this.temp.ocr.review, this.temp.ocr.providerResult);
+    if (!confirm('确认将已人工批准的 OCR 字段转入报价工作台？\n空字段保持为空，不会自动编造。')) return;
+    const fields = payload.fields;
+    const ws = this.getQuotationWorkspace();
+    Object.assign(ws, {
+      customerName: fields.customer_name || '', productName: fields.product_name || '', materialName: fields.material || '',
+      quantity: fields.quantity || '', deliveryDate: fields.delivery_date || fields.date || '',
+      requirements: [fields.specification && `规格：${fields.specification}`, fields.notes, fields.unit_price && `OCR单价：${fields.unit_price}`, fields.total_amount && `OCR总金额：${fields.total_amount}`].filter(Boolean).join('\n'),
+      ocrSource: payload, updatedAt: Date.now()
+    });
+    this.saveQuotationAudit('OCR人工确认结果转入', { status: 'draft', message: `requestId: ${payload.requestId}` });
+    Store.save();
+    this.navigate('quotation');
+    this.toast('已转入报价草稿，请继续人工核对。');
+  },
+
+  ocrTransferInquiry() {
+    const payload = OCRArchitecture.confirmedPayload(this.temp.ocr.review, this.temp.ocr.providerResult);
+    if (!confirm('确认将已人工批准的 OCR 字段保存为询价记录？')) return;
+    Store.state.ocrInquiries = Array.isArray(Store.state.ocrInquiries) ? Store.state.ocrInquiries : [];
+    Store.state.ocrInquiries.unshift({ id: uid(), createdAt: Date.now(), status: 'draft', source: 'ocr', ...payload });
+    Store.state.ocrInquiries = Store.state.ocrInquiries.slice(0, 100);
+    Store.state.operationLogs.unshift({ id: uid(), title: 'OCR结果转入询价草稿', type: 'ocr', time: Date.now(), requestId: payload.requestId });
+    Store.save();
+    this.rerender();
+    this.toast('已保存询价草稿记录，未自动发送。');
+  },
+
+  ocrExportReview() {
+    const review = this.temp.ocr.review;
+    const result = this.temp.ocr.providerResult;
+    if (!review || !result) throw new Error('暂无可导出的复核结果');
+    const content = [
+      'OCR 人工复核结果', `requestId：${review.requestId}`, `Provider：${result.providerName} (${result.providerId})`,
+      `识别状态：${result.status}`, `识别开始：${result.startedAt || '未记录'}`, `识别完成：${result.finishedAt || '未记录'}`, `耗时：${result.durationMs || 0} ms`,
+      `复核状态：${review.status}`, `复核人：${review.reviewer || '未批准'}`, `复核时间：${review.reviewedAt || '未批准'}`, '',
+      '结构化字段', ...review.fields.map(field => `${field.label}：${field.value || '待补充'} | 置信度 ${Math.round(field.confidence * 100)}% | ${field.status}`), '',
+      '人工修改', ...(review.modifications.length ? review.modifications.map(item => `${item.time} ${item.label}：${item.originalValue} -> ${item.newValue}`) : ['无']), '',
+      '警告', ...(result.warnings.length ? result.warnings : ['无']), '', '错误', ...(result.errors.length ? result.errors.map(error => error.message || error.type || String(error)) : ['无']), '', '原始识别文本', result.rawText
+    ].join('\n');
+    Utils.textDownload(content, `OCR复核_${review.requestId}.txt`);
+    this.toast('OCR 复核结果已导出');
+  },
+
+  ocrZoom(delta) {
+    this.temp.ocr.reviewZoom = Math.max(0.5, Math.min(2, Number(this.temp.ocr.reviewZoom || 1) + delta));
+    this.rerender();
   },
 
   getOcrFieldOrder() {
@@ -4467,10 +4733,19 @@ const App = {
   },
 
   loadOcr(file) {
-    if (!file.type.startsWith('image/')) throw new Error('请选择图片文件');
+    if (!/^image\/(?:png|jpe?g|webp)$/i.test(file.type) && !/\.(?:png|jpe?g|webp)$/i.test(file.name)) {
+      const error = new Error('仅支持 PNG、JPG、JPEG、WEBP 图片');
+      error.code = 'unsupported_file';
+      this.reportBug({ module: 'OCR', feature: '文件输入', type: 'unsupported_file', message: error.message,
+        description: `不支持的文件类型：${file.type || '未知'}`, suggestion: '请转换为 PNG、JPG、JPEG 或 WEBP 后重试。',
+        source: 'ocr-provider', signature: `OCR|unsupported_file|${file.type || 'unknown'}` });
+      throw error;
+    }
     if (this.temp.ocr.url) URL.revokeObjectURL(this.temp.ocr.url);
     const engine = typeof OCRService.health === 'function' ? OCRService.health() : {};
     const demoFields = /OCR示例发货单/i.test(file.name) || /示例/i.test(file.name) ? this.buildOcrDemoFields() : null;
+    const providerId = Store.state.ocrData?.providerConfig?.selectedProviderId || this.temp.ocr.providerId || 'auto';
+    const uploadedAt = new Date().toISOString();
     this.temp.ocr = {
       file,
       url: URL.createObjectURL(file),
@@ -4485,10 +4760,24 @@ const App = {
       qaAnswer: '',
       mock: false,
       mockReason: '',
+      providerId,
+      providerResult: null,
+      review: null,
+      diagnostics: null,
+      reviewZoom: 1,
+      sourceFile: { name: file.name, size: file.size, type: file.type, uploadedAt, dimensions: {} },
       fieldDrafts: [],
       confirmedFields: JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null'),
       demoFields
     };
+    const image = new Image();
+    image.onload = () => {
+      if (this.temp.ocr.file === file) {
+        this.temp.ocr.sourceFile.dimensions = { width: image.naturalWidth, height: image.naturalHeight };
+        this.rerender();
+      }
+    };
+    image.src = this.temp.ocr.url;
     this.recordTask({
       type: 'OCR载入',
       fileName: file.name,
@@ -4546,12 +4835,14 @@ const App = {
     await this.busy(btn, async () => this.copy(this.temp.ocr.result));
   },
 
-  async ocrRun(btn) {
+  async ocrRun(btn, forceRetry = false) {
     const o = this.temp.ocr;
     if (!o.file) throw new Error('请先上传或拍摄图片');
+    const registry = this.setupOcrProviders();
+    const providerId = o.providerId || Store.state.ocrData.providerConfig.selectedProviderId || 'auto';
     const stabilityTaskId = uid();
     const startedAt = Date.now();
-    const retryCount = Number(o.retryCount || 0);
+    const retryCount = Number(o.retryCount || 0) + (forceRetry ? 1 : 0);
     await this.busy(btn, async () => {
       this.upsertStabilityTask({
         id: stabilityTaskId,
@@ -4565,26 +4856,28 @@ const App = {
         retryable: false,
         source: 'ocr'
       });
-      const health = typeof OCRService.health === 'function' ? OCRService.health() : {};
-      o.engineStatus = health;
-      o.status = health.hasTesseract ? '处理中（真实 OCR）' : '处理中（待降级）';
+      const chosen = providerId === 'auto' ? registry.get('current') : registry.get(providerId);
+      o.status = `处理中（${chosen?.providerName || '自动选择'}）`;
       o.progress = 0.06;
       o.mock = false;
-      Store.state.ocrResult = {
-        text: '',
-        table: null,
-        imageMeta: { name: o.file.name, size: o.file.size, type: o.file.type },
-        status: 'processing'
-      };
+      o.providerResult = null;
+      o.review = null;
+      Store.state.ocrResult = { text: '', table: null, imageMeta: o.sourceFile, status: 'processing', providerId };
       if (typeof emit === 'function') emit('ocr:completed', Store.state.ocrResult);
-      if (typeof globalThis !== 'undefined') {
-        syncGlobalSystemState({ ocrResult: Store.state.ocrResult });
-      }
+      syncGlobalSystemState({ ocrResult: Store.state.ocrResult });
       this.rerender();
       await wait(80);
-      const attemptedReal = Boolean(health.hasTesseract);
-      try {
-        o.result = await OCRService.recognize(o.file, (progress, status) => {
+      const requestId = stabilityTaskId;
+      const environment = this.ocrEnvironment();
+      const result = await registry.run({
+        providerId,
+        file: o.file,
+        allowFallback: providerId === 'auto',
+        timeoutMs: Stability.limitFor('ocr').timeoutMs,
+        context: { requestId, environment, sourceFile: o.sourceFile, mode: providerId,
+          lowConfidenceThreshold: Store.state.ocrData.providerConfig.lowConfidenceThreshold,
+          highRiskThreshold: Store.state.ocrData.providerConfig.highRiskThreshold },
+        onProgress: (progress, status) => {
           o.progress = progress;
           o.status = status ? `处理中：${status}` : '处理中';
           const bar = document.getElementById('ocrBar');
@@ -4593,16 +4886,15 @@ const App = {
           if (pct) pct.textContent = `${Math.round(progress * 100)}%`;
           const stat = document.getElementById('ocrStatus');
           if (stat) stat.textContent = o.status;
-        });
-        if (!o.result.trim()) throw new Error('OCR 未返回文字');
-        o.status = '真实 OCR 成功';
-      } catch (error) {
-        o.mock = true;
-        const friendly = Utils.friendlyErrorMessage(error?.message || error);
-        o.result = ['当前为演示模式，已使用模拟 OCR 结果。','单据类型：发货单','单号：SO-2026-015','客户：常州新能源科技有限公司','产品：304不锈钢连接件','发货数量：760','总金额：9710.00','付款方式：月结30天','运输方式：物流配送','状态：待签收'].join('\n');
-        o.status = '当前环境无法运行真实 OCR，已使用 Mock 兜底。';
-        o.mockReason = friendly || 'OCR 引擎暂不可用，已切换演示模式';
-      }
+        }
+      });
+      o.result = result.rawText;
+      o.mock = result.providerId === 'mock' || result.fallbackUsed;
+      o.mockReason = result.fallbackUsed ? result.warnings[0] || '真实识别不可用，已使用演示降级' : '';
+      o.status = result.providerId === 'mock' ? (result.fallbackUsed ? '已使用降级模式（演示数据，非真实识别）' : '演示数据（非真实识别）')
+        : result.status === 'fallback' ? '已使用降级模式（演示数据）'
+        : result.status === 'partial_success' ? '部分成功：疑似乱码或模型兼容异常'
+          : result.status === 'success' ? '真实 OCR 成功' : 'OCR 失败';
       o.progress = 1;
       o.original = o.result;
       const quality = OCRService.assessQuality(o.result);
@@ -4618,37 +4910,43 @@ const App = {
       o.analysis = '';
       o.qaQuestion = '';
       o.qaAnswer = '';
-      const ocrState = {
-        text: o.result || '',
-        table: structured.pairs.length ? structured.pairs : null,
-        imageMeta: { name: o.file.name, size: o.file.size, type: o.file.type },
-        status: o.result ? 'success' : 'failed',
-        quality
-      };
+      result.fields = OCRArchitecture.normalizeFields(result.fields, structured.fields || {}, result.confidence);
+      result.documentType = structured.template || result.documentType;
+      result.sourceFile = { ...o.sourceFile };
+      this.persistOcrResult(result);
+      const garbage = OCRArchitecture.detectGarbled(result.rawText);
+      if (garbage.garbled) this.recordOcrProviderError({ requestId, provider: registry.get(result.providerId) || {},
+        error: Object.assign(new Error('疑似乱码或模型兼容异常'), { code: 'garbled_text' }), file: o.file,
+        startedAt: result.startedAt, fallbackUsed: result.fallbackUsed });
+      const ocrState = { ...result, text: result.rawText, table: structured.pairs.length ? structured.pairs : null,
+        imageMeta: o.sourceFile, status: result.status, quality };
       Store.state.ocrResult = ocrState;
       if (typeof emit === 'function') emit('ocr:completed', ocrState);
+      syncGlobalSystemState({ ocrResult: ocrState });
       this.recordTask({
         type: 'OCR识别',
         fileName: o.file.name,
         module: 'ocr',
-        status: '完成',
-        summary: o.mock ? (attemptedReal ? 'real_ocr_failed' : 'mock_ocr_used') : 'real_ocr_success',
-        result: o.result
+        status: result.status === 'fallback' ? '完成' : result.status,
+        summary: `${result.providerName} · ${result.status} · 待人工复核`, result: o.result,
+        requestId: result.requestId, durationMs: result.durationMs, retryCount,
+        fallbackUsed: result.fallbackUsed, providerId: result.providerId
       });
-      o.retryCount = 0;
+      o.retryCount = retryCount;
       this.upsertStabilityTask({
         id: stabilityTaskId,
         type: 'OCR识别',
         fileName: o.file.name,
         module: 'ocr',
-        status: 'success',
+        status: result.success ? 'success' : result.status,
         startedAt,
         updatedAt: Date.now(),
         finishedAt: Date.now(),
         durationMs: Date.now() - startedAt,
         retryCount,
-        mockFallbackCount: o.mock ? 1 : 0,
-        summary: o.mock ? (attemptedReal ? 'real_ocr_failed_fallback' : 'mock_ocr_used') : 'real_ocr_success',
+        requestId: result.requestId,
+        mockFallbackCount: result.fallbackUsed ? 1 : 0,
+        summary: `${result.providerName} · ${result.status} · ${result.fallbackUsed ? '演示降级' : '未降级'}`,
         result: o.result,
         cancellable: false,
         retryable: false,
@@ -4656,16 +4954,17 @@ const App = {
       });
       Store.addActivity(`OCR 识别：${o.file.name}`, 'ai');
       this.rerender();
-      this.toast(o.mock ? '当前环境无法运行真实 OCR，已使用 Mock 兜底。' : quality.low ? quality.summary : '真实 OCR 成功');
+      this.toast(result.fallbackUsed ? '真实识别不可用，已使用明确标注的演示降级结果。' : result.status === 'partial_success' ? '识别结果疑似异常，请人工复核或更换 Provider。' : 'OCR 识别完成，请人工复核。', result.status === 'partial_success' ? 'warning' : 'success');
     }).catch(error => {
       o.retryCount = retryCount + 1;
-      o.status = error?.status === 'timeout' || error?.code === 'TIMEOUT' ? 'OCR 超时' : 'OCR 失败';
+      o.status = error?.code === 'request_timeout' || error?.code === 'TIMEOUT' ? 'OCR 超时' : `OCR 失败：${Utils.friendlyErrorMessage(error?.message || error)}`;
+      this.updateOcrDailyStats({ success: false, fallbackUsed: false });
       this.upsertStabilityTask({
         id: stabilityTaskId,
         type: 'OCR识别',
         fileName: o.file?.name || '图片',
         module: 'ocr',
-        status: error?.status === 'timeout' || error?.code === 'TIMEOUT' ? 'timeout' : error?.code === 'CANCELLED' ? 'cancelled' : error?.code === 'INTERRUPTED' ? 'interrupted' : 'failed',
+        status: error?.code === 'request_timeout' || error?.code === 'TIMEOUT' ? 'timeout' : error?.code === 'CANCELLED' ? 'cancelled' : 'failed',
         startedAt,
         updatedAt: Date.now(),
         finishedAt: Date.now(),
@@ -4677,6 +4976,8 @@ const App = {
         retryable: true,
         source: 'ocr'
       });
+      Store.save();
+      this.rerender();
       throw error;
     }).finally(() => {
       o.loading = false;

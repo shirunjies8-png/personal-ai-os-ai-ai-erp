@@ -82,6 +82,17 @@ const DefaultState = {
     imageMeta: {},
     status: 'idle'
   },
+  ocrData: {
+    schemaVersion: 2,
+    tasks: [],
+    results: [],
+    reviews: [],
+    providerConfig: { selectedProviderId: 'auto', lowConfidenceThreshold: 0.85, highRiskThreshold: 0.65 },
+    providerHealth: {},
+    errors: [],
+    stats: { date: '', todayCount: 0, todayFailureCount: 0, todayFallbackCount: 0 }
+  },
+  ocrInquiries: [],
   runtimeMonitor: {
     totalTasks: 0,
     successTasks: 0,
@@ -650,6 +661,34 @@ const Store = {
       if (typeof this.state.ocrResult.text !== 'string') this.state.ocrResult.text = '';
       if (!('table' in this.state.ocrResult)) this.state.ocrResult.table = null;
       if (!this.state.ocrResult.imageMeta || typeof this.state.ocrResult.imageMeta !== 'object') this.state.ocrResult.imageMeta = {};
+      const savedOcrData = this.state.ocrData && typeof this.state.ocrData === 'object' ? this.state.ocrData : {};
+      this.state.ocrData = {
+        ...structuredClone(DefaultState.ocrData),
+        ...savedOcrData,
+        schemaVersion: 2,
+        providerConfig: { ...DefaultState.ocrData.providerConfig, ...(savedOcrData.providerConfig || {}) },
+        stats: { ...DefaultState.ocrData.stats, ...(savedOcrData.stats || {}) },
+        tasks: Array.isArray(savedOcrData.tasks) ? savedOcrData.tasks : [],
+        results: Array.isArray(savedOcrData.results) ? savedOcrData.results : [],
+        reviews: Array.isArray(savedOcrData.reviews) ? savedOcrData.reviews : [],
+        errors: Array.isArray(savedOcrData.errors) ? savedOcrData.errors : [],
+        providerHealth: savedOcrData.providerHealth && typeof savedOcrData.providerHealth === 'object' ? savedOcrData.providerHealth : {}
+      };
+      if (!this.state.ocrData.results.length && this.state.ocrResult.text && typeof OCRArchitecture !== 'undefined') {
+        this.state.ocrData.results.push(OCRArchitecture.normalizeLegacyResult(this.state.ocrResult));
+      }
+      if (typeof OCRArchitecture !== 'undefined') {
+        this.state.ocrData.results = this.state.ocrData.results.map(item => {
+          try { return OCRArchitecture.normalizeLegacyResult(item); } catch { return item; }
+        });
+        this.state.ocrData.reviews = this.state.ocrData.reviews.map(item => {
+          try {
+            const source = this.state.ocrData.results.find(result => result.requestId === item.requestId) || { requestId: item.requestId, fields: item.fields || [] };
+            return OCRArchitecture.createReview(source, item);
+          } catch { return item; }
+        });
+      }
+      if (!Array.isArray(this.state.ocrInquiries)) this.state.ocrInquiries = [];
       if (!this.state.runtimeMonitor || typeof this.state.runtimeMonitor !== 'object') this.state.runtimeMonitor = structuredClone(DefaultState.runtimeMonitor);
       if (!this.state.systemHealth || typeof this.state.systemHealth !== 'object') this.state.systemHealth = {};
       if (!Array.isArray(this.state.errorLog)) this.state.errorLog = [];

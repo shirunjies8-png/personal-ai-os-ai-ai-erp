@@ -1745,6 +1745,26 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 - RFQ 报价审批闭环已完成本地发布验收。
 - 该能力仍定位为 Resume Demo / 本地 MVP，不代表正式生产级报价、审批或企业审计系统。
 
+## 2026-07-15 — OCR 多 Provider 和人工复核专项
+
+### 自动化验证
+
+- `git diff --check`：通过。
+- `npm run check`：通过，覆盖 OCR Provider、主应用、UI 与现有 APQP/路由文件语法。
+- `npm run test:unit`：通过。
+- `scripts/ocr-provider-test.mjs`：覆盖 Provider 注册/能力、当前 Provider、mock、未配置 Provider、超时、空结果、降级、乱码、低置信度、必填缺失、人工修改/批准门禁、旧数据归一化和诊断脱敏。
+- `scripts/ocr-page-test.mjs`：覆盖三栏复核、低置信度标签、演示降级诚实标识、主操作入口、未批准禁止转入报价/询价、迁移和静态构建脚本接入。
+
+### 构建与浏览器验证
+
+- `npm run build`：通过，`ocr-provider.js` 已进入现有 public 同步和 dist 构建链路。
+- 本地 `http://127.0.0.1:3000/#/ocr`：通过真实浏览器验证页面载入、示例图片、Provider 选择、mock 识别、低置信度标签、字段来源、人工修改留痕和复核草稿。
+- 复核门禁：未批准时“转入报价/询价”禁用；人工批准后按钮解锁。
+- 报价联动：人工批准后实际转入 `#/quotation`，客户字段和 `ocrSource.reviewStatus=approved` 已保留。
+- 系统状态中心：已显示最近 Provider、可用数、最近结果与 OCR 当日统计。
+- 手机 390×844：`scrollWidth = clientWidth = 390`，复核页没有水平溢出；页面将三栏自动收口为单栏。
+- 浏览器控制台：OCR 与系统状态页最终检查为 0 errors / 0 warnings。验收过程中人工首次漏填登录邮箱产生的一条表单错误属测试操作，不是 OCR 代码异常。
+
 ## 2026-07-13 — v1.4 RFQ Demo 版本收尾
 
 ### 版本口径
