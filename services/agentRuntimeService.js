@@ -9,6 +9,8 @@ const permissionService = require('./permissionService');
 const approvalService = require('./approvalService');
 const { recoveryPlan } = require('./taskRecoveryService');
 const { sanitize } = require('../utils/logger');
+const workflowService = require('./agentWorkflowService');
+const logService = require('./logService');
 
 const ACTIVE_RUNS = new Map();
 const TASK_STATES = ['pending', 'running', 'waiting_human', 'success', 'failed', 'timeout', 'cancelled'];
@@ -49,7 +51,15 @@ function addTaskLog(task, entry = {}) {
   });
 }
 
-function buildPlan(goal = '', role = 'operator') {
+function buildPlan(goal = '', role = 'operator', input = {}) {
+  if (input.workflowType === '8d') {
+    return [
+      { key: 'analyze_goal', label: '确认 8D 问题范围', type: 'agent' },
+      { key: 'run_8d', label: '执行 8D 闭环检查', type: 'workflow', workflowName: '8d' },
+      { key: 'close_8d', label: '确认 8D 结案', type: 'approval', toolName: '8d_closure', actionLabel: '8D 结案确认' },
+      { key: 'summarize', label: '汇总 8D 报告', type: 'ai' }
+    ];
+  }
   const text = String(goal || '');
   const plan = [];
   const toolName = detectTool(text);
@@ -65,7 +75,7 @@ function buildPlan(goal = '', role = 'operator') {
 
 async function createTask({ enterpriseId, userId, role, goal, input = {} }) {
   permissionService.authorizeAgent({ role });
-  const plan = buildPlan(goal, role);
+  const plan = buildPlan(goal, role, input);
   const now = new Date().toISOString();
   const task = agentTaskModel.create({
     id: uuidv4(),
@@ -88,6 +98,7 @@ async function createTask({ enterpriseId, userId, role, goal, input = {} }) {
     updated_at: now
   });
   addTaskLog(task, { status: 'pending', detail: '任务已创建' });
+  logService.add({ enterpriseId, userId, type: input.workflowType === '8d' ? '8d_workflow_created' : 'agent_task_created', title: task.title, detail: `任务 ${task.id} 已创建` });
   runTask(task.id).catch(() => {});
   return getTask(task.id);
 }
@@ -225,6 +236,22 @@ async function runTask(taskId) {
           retryCount: result.retryCount,
           detail: JSON.stringify(result.data).slice(0, 2000)
         });
+        continue;
+      }
+      if (step.type === 'workflow' && step.workflowName === '8d') {
+        const output = task.output_payload || {};
+        const report = workflowService.run8DWorkflow(task.input_payload?.eightD || task.input_payload || {});
+        output.eightD = report;
+        output.logs = output.logs || [];
+        output.logs.push({ step: step.label, status: 'success', durationMs: Date.now() - started, completionRate: report.completionRate });
+        agentTaskModel.update(task.id, { current_step: index + 1, output_payload: output, confidence: report.canRequestClosure ? 0.9 : 0.7 });
+        addTaskLog(task, { status: 'success', durationMs: Date.now() - started, detail: sanitize(report.auditSummary) });
+        logService.add({ enterpriseId: task.enterprise_id, userId: task.user_id, type: '8d_workflow_checked', title: '8D 闭环检查', detail: report.auditSummary });
+        if (!report.canRequestClosure) {
+          agentTaskModel.update(task.id, { status: 'waiting_human', needs_approval: 0, error_code: '8d_evidence_required', error_message: report.nextAction });
+          addTaskLog(task, { status: 'waiting_human', detail: report.nextAction });
+          return getTask(task.id);
+        }
         continue;
       }
       if (step.type === 'agent') {

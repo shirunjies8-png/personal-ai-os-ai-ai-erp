@@ -1,7 +1,7 @@
 const env = require('../config/env');
 
 const RANK = Object.freeze({ viewer: 1, operator: 2, admin: 3 });
-const HIGH_RISK_ACTIONS = new Set(['file_generate_tool', 'web_api_tool', 'human_approval_tool']);
+const HIGH_RISK_ACTIONS = new Set(['file_generate_tool', 'web_api_tool', 'human_approval_tool', '8d_closure']);
 
 function bool(value, fallback = true) {
   if (value == null || value === '') return fallback;
