@@ -3,9 +3,10 @@
   "version": "1.4.0",
   "private": true,
   "description": "Personal AI OS 个人AI工作操作系统",
+  "engines": { "node": ">=22 <23", "npm": ">=10" },
   "scripts": {
-    "prestart": "node scripts/sync-public.mjs",
-    "prebuild": "node scripts/sync-public.mjs",
+    "prestart": "node scripts/check-node-version.mjs && node scripts/sync-public.mjs",
+    "prebuild": "node scripts/check-node-version.mjs && node scripts/sync-public.mjs",
     "check": "node --check app.js core.js ui.js rfq-store.js rfq-validation.js rfq-risk.js services/aiGateway.js services/aiService.js services/aiQualityCheckService.js services/toolRegistry.js services/agentRuntimeService.js services/agentWorkflowService.js services/memoryService.js services/mcpAdapter.js services/securityPolicyService.js services/permissionService.js services/approvalService.js services/costControlService.js services/taskRecoveryService.js controllers/agentController.js middleware/errorHandler.js api/chat.js logger.js utils/logger.js routes/index.js",
     "build": "node scripts/build-static.mjs",
     "start": "node server.js",

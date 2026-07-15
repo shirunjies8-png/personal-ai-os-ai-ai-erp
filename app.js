@@ -7366,6 +7366,13 @@ const App = {
       this.rerender();
       return;
     }
+    if (Utils.isGitHubPagesHost()) {
+      ws.result = '当前为静态演示模式，真实 8D API 需连接本地或生产服务。\n\nD0–D7 将基于问题、遏制、根因、纠正、验证和防再发证据推进；D8 必须管理员审批，绝不会自动结案。';
+      ws.updatedAt = Date.now();
+      Store.save();
+      this.rerender();
+      return;
+    }
     try {
       const created = await APIClient.request('/api/agents/8d', { method: 'POST', body: JSON.stringify({ incident }) });
       const taskId = created?.data?.task?.id;

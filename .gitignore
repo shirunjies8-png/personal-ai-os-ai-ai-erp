@@ -14,7 +14,15 @@ private/
 local-data/
 backup/
 *.sqlite
+*.sqlite3
 *.db
 database/*.sqlite3-shm
 database/*.sqlite3-wal
 database/*.sqlite3-journal
+logs/*.log
+BUG_REPORT.md
+TEST_REPORT.md
+dist/
+public/
+!dist/.gitkeep
+!public/.gitkeep
