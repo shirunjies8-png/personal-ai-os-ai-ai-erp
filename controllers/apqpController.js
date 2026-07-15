@@ -21,7 +21,12 @@ module.exports = {
   task: wrap(req => ({ project: apqp.task(req.params.id, req.body || {}, req.user) })),
   close: wrap(req => ({ project: apqp.close(req.params.id, req.user, String(req.body.reason || '')) })),
   history: wrap(req => ({ items: apqp.history(req.params.id, req.user) })),
-  records: wrap(req => ({ items: apqp.records(req.params.id, req.user, req.params.kind), assessment: apqp.assessment(req.params.id, req.user) })),
-  update: wrap(req => ({ project: apqp.update(req.params.id, req.params.kind, req.params.recordId, req.body || {}, req.user) })),
+  deliverables: wrap(req => ({ items: apqp.records(req.params.id, req.user, 'deliverables'), assessment: apqp.assessment(req.params.id, req.user) })),
+  evidenceRecords: wrap(req => ({ items: apqp.records(req.params.id, req.user, 'evidence'), assessment: apqp.assessment(req.params.id, req.user) })),
+  risks: wrap(req => ({ items: apqp.records(req.params.id, req.user, 'risks'), assessment: apqp.assessment(req.params.id, req.user) })),
+  tasks: wrap(req => ({ items: apqp.records(req.params.id, req.user, 'tasks'), assessment: apqp.assessment(req.params.id, req.user) })),
+  updateDeliverable: wrap(req => ({ project: apqp.update(req.params.id, 'deliverables', req.params.recordId, req.body || {}, req.user) })),
+  updateRisk: wrap(req => ({ project: apqp.update(req.params.id, 'risks', req.params.recordId, req.body || {}, req.user) })),
+  updateTask: wrap(req => ({ project: apqp.update(req.params.id, 'tasks', req.params.recordId, req.body || {}, req.user) })),
   removeEvidence: wrap(req => ({ project: apqp.removeEvidence(req.params.id, req.params.evidenceId, req.body || {}, req.user) }))
 };
