@@ -46,7 +46,7 @@ const fallback = await fallbackRegistry.run({ providerId: 'auto', file: {}, time
 assert.equal(fallback.status, 'fallback');
 assert.equal(fallback.fallbackUsed, true);
 assert.equal(fallback.providerId, 'mock');
-assert.match(fallback.rawText, /演示数据（非真实识别）/);
+assert.match(fallback.rawText, /当前为演示数据，非真实 OCR 识别结果。/);
 assert.ok(fallbackLogs.some(entry => entry.action === 'fallback'));
 assert.equal(fallbackErrors.length, 1);
 assert.equal(fallbackErrors[0].error.code, 'model_unavailable');
@@ -76,6 +76,10 @@ const payload = OCR.confirmedPayload(review, result);
 assert.equal(payload.fields.customer_name, '人工修正客户');
 assert.equal('contact' in payload.fields, false, '未识别空字段不得冒充已确认数据');
 assert.equal(payload.reviewStatus, 'approved');
+assert.equal(payload.fieldDetails.find(field => field.key === 'customer_name').manuallyEdited, true);
+assert.equal(payload.fieldDetails.find(field => field.key === 'customer_name').sourceText, '测试客户');
+assert.equal(payload.modifications.length, 1);
+assert.ok(payload.confidence >= 0 && payload.confidence <= 1);
 assert.equal(OCR.reviewSummary(review).canTransferToQuotation, true);
 assert.throws(() => OCR.rejectReview(review, ''), error => error.code === 'review_reason_required');
 
@@ -89,5 +93,12 @@ assert.equal(sanitized.apiKey, '[REDACTED]');
 assert.equal(sanitized.authorization, '[REDACTED]');
 assert.equal(sanitized.nested.token, '[REDACTED]');
 assert.match(sanitized.message, /\[REDACTED\]/);
+const privateDiagnostic = OCR.sanitizeDiagnostics({
+  rawError: '手机13812345678 身份证11010519491231002X 银行卡6222021234567890123 路径/Users/demo/Documents/customer.png',
+  rawText: '客户完整截图原文', screenshot: 'base64-customer-image'
+});
+assert.doesNotMatch(privateDiagnostic.rawError, /13812345678|11010519491231002X|6222021234567890123|\/Users\/demo/);
+assert.equal(privateDiagnostic.rawText, '[REDACTED_CONTENT]');
+assert.equal(privateDiagnostic.screenshot, '[REDACTED_CONTENT]');
 
 console.log('ocr provider, review, fallback and diagnostics tests passed');

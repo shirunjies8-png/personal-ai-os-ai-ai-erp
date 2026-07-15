@@ -148,6 +148,7 @@ const App = {
     this.bindGlobalEvents();
     await Store.hydrateFromServer();
     this.setupOcrProviders();
+    this.restoreOcrSession();
     if (!AuthClient.isLoggedIn() && window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
       AuthClient.save({
         token: 'demo-local-session',
@@ -197,6 +198,7 @@ const App = {
   navigate(route, updateHash = true) {
     if (!AuthClient.isLoggedIn() && route !== 'login') route = 'login';
     this.route = moduleById(route).id;
+    if (this.route === 'ocr' && !this.temp.ocr.providerResult) this.restoreOcrSession();
     if (updateHash) history.replaceState(null, '', `#/${this.route}`);
     document.getElementById('topTitle').textContent = moduleById(this.route).name;
     document.getElementById('workspace').innerHTML = UI.render(this.route);
@@ -1221,7 +1223,7 @@ const App = {
     try {
       if (handlers[action]) await handlers[action]();
     } catch (error) {
-      console.error(error);
+      if (!String(action || '').startsWith('ocr-')) console.error(error);
       const message = this.recordAiError(error, action);
       this.toast(message || '操作失败', 'error');
     }
@@ -2291,6 +2293,34 @@ const App = {
     return registry;
   },
 
+  restoreOcrSession() {
+    if (typeof OCRArchitecture === 'undefined') return null;
+    const data = Store.state.ocrData || {};
+    const result = Array.isArray(data.results) ? data.results[0] : null;
+    if (!result?.requestId) return null;
+    let review = (data.reviews || []).find(item => item.requestId === result.requestId);
+    if (!review) {
+      review = OCRArchitecture.createReview(result);
+      data.reviews = [review, ...(data.reviews || [])].slice(0, 50);
+      Store.save();
+    }
+    const o = this.temp.ocr;
+    o.providerResult = result;
+    o.review = review;
+    o.result = result.rawText || '';
+    o.original = result.rawText || '';
+    o.providerId = data.providerConfig?.selectedProviderId || result.providerId || 'auto';
+    o.sourceFile = { ...(result.sourceFile || review.source?.sourceFile || {}) };
+    o.mock = result.providerId === 'mock' || Boolean(result.fallbackUsed);
+    o.mockReason = result.fallbackUsed ? result.warnings?.[0] || '真实识别不可用，已使用演示降级' : '';
+    o.status = o.mock ? (result.fallbackUsed ? '已使用降级模式（演示数据，非真实识别）' : '演示数据（非真实识别）')
+      : result.status === 'partial_success' ? '部分成功：疑似乱码或模型兼容异常'
+        : result.success ? '真实 OCR 成功' : 'OCR 失败';
+    o.progress = result.success ? 1 : 0;
+    o.diagnostics = data.errors?.[0] || null;
+    return { result, review };
+  },
+
   ocrEnvironment() {
     const nav = typeof navigator !== 'undefined' ? navigator : {};
     return {
@@ -2456,12 +2486,16 @@ const App = {
     if (!confirm('确认将已人工批准的 OCR 字段转入报价工作台？\n空字段保持为空，不会自动编造。')) return;
     const fields = payload.fields;
     const ws = this.getQuotationWorkspace();
-    Object.assign(ws, {
-      customerName: fields.customer_name || '', productName: fields.product_name || '', materialName: fields.material || '',
-      quantity: fields.quantity || '', deliveryDate: fields.delivery_date || fields.date || '',
-      requirements: [fields.specification && `规格：${fields.specification}`, fields.notes, fields.unit_price && `OCR单价：${fields.unit_price}`, fields.total_amount && `OCR总金额：${fields.total_amount}`].filter(Boolean).join('\n'),
-      ocrSource: payload, updatedAt: Date.now()
-    });
+    const patch = {};
+    if (fields.customer_name) patch.customerName = fields.customer_name;
+    if (fields.product_name) patch.productName = fields.product_name;
+    if (fields.material) patch.materialName = fields.material;
+    if (fields.quantity) patch.quantity = fields.quantity;
+    if (fields.delivery_date || fields.date) patch.deliveryDate = fields.delivery_date || fields.date;
+    const requirements = [fields.specification && `规格：${fields.specification}`, fields.notes,
+      fields.unit_price && `OCR单价：${fields.unit_price}`, fields.total_amount && `OCR总金额：${fields.total_amount}`].filter(Boolean).join('\n');
+    if (requirements) patch.requirements = requirements;
+    Object.assign(ws, patch, { ocrSource: payload, updatedAt: Date.now() });
     this.saveQuotationAudit('OCR人工确认结果转入', { status: 'draft', message: `requestId: ${payload.requestId}` });
     Store.save();
     this.navigate('quotation');
