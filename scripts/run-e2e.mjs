@@ -152,7 +152,7 @@ async function testChat() {
     const input = document.getElementById('chatInput');
     input.value = ${JSON.stringify(prompt)};
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('[data-form="chat"]').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    document.querySelector('[data-form="chat"]').requestSubmit();
   })()`);
   await sleep(12000);
   const chatState = await evalValue(send, `(() => {
@@ -169,7 +169,7 @@ async function testChat() {
   })()`);
   const parsedChat = JSON.parse(chatState);
   const body = parsedChat.body || '';
-  if (!parsedChat.assistantCount || !parsedChat.lastText.trim()) throw new Error('AI Chat 未生成可见回复');
+  if (!parsedChat.assistantCount || !parsedChat.lastText.trim()) throw new Error(`AI Chat 未生成可见回复：${JSON.stringify(parsedChat)}`);
   if (parsedChat.inputDisabled) throw new Error('AI Chat 回复后输入框不可用');
   if (body.includes('模型返回为空')) throw new Error('仍出现模型返回为空');
   ws.close();

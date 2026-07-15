@@ -18,6 +18,18 @@ async function createTask(req, res) {
   }
 }
 
+async function create8DTask(req, res) {
+  try {
+    const incident = req.body.incident || req.body || {};
+    const task = await agentRuntimeService.createTask({
+      enterpriseId: req.user.enterprise_id, userId: req.user.id, role: req.user.role,
+      goal: `8D 闭环：${String(incident.problem || incident.description || '未命名异常')}`,
+      input: { workflowType: '8d', eightD: incident }
+    });
+    ok(res, { task }, '8D 闭环任务已创建');
+  } catch (error) { fail(res, error.status || 400, error.message || '8D 任务创建失败'); }
+}
+
 function listTasks(req, res) {
   ok(res, {
     items: agentRuntimeService.listTasks(req.user.enterprise_id)
@@ -99,6 +111,7 @@ function clearMemory(req, res) {
 
 module.exports = {
   createTask,
+  create8DTask,
   listTasks,
   getTask,
   approveTask,

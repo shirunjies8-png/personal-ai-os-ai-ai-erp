@@ -5,6 +5,7 @@ const { authRequired } = require('../middleware/auth');
 const router = express.Router();
 router.post('/run', authRequired, controller.createTask);
 router.post('/tasks', authRequired, controller.createTask);
+router.post('/8d', authRequired, controller.create8DTask);
 router.get('/tasks', authRequired, controller.listTasks);
 router.get('/tasks/:id', authRequired, controller.getTask);
 router.post('/tasks/:id/approve', authRequired, controller.approveTask);

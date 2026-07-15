@@ -137,6 +137,8 @@ const App = {
 
   async init() {
     if (!Store.state.chats.length) this.createChat(false);
+    // 先绑定交互事件，避免状态同步较慢时聊天提交被丢失。
+    this.bindGlobalEvents();
     await Store.hydrateFromServer();
     if (!AuthClient.isLoggedIn() && window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
       AuthClient.save({
@@ -159,7 +161,6 @@ const App = {
     this.normalizeBugAlerts();
     this.applyTheme();
     this.renderNav();
-    this.bindGlobalEvents();
     this.bindGlobalErrors();
     const initialRoute = AuthClient.isLoggedIn() ? (location.hash.replace('#/', '') || 'home') : 'login';
     this.navigate(initialRoute, false);
@@ -6373,7 +6374,7 @@ const App = {
           this.detectCostCalculationBug({ ...ws, costPlan: ws.costPlan, result: ws.result });
           break;
         case 'prodexception':
-          this.exceptionReport();
+          await this.exceptionReport();
           return;
         case 'inspection':
           this.inspectionReport();
@@ -7347,13 +7348,38 @@ const App = {
     this.rerender();
   },
 
-  exceptionReport() {
+  async exceptionReport() {
     const ws = this.getWorkspace('prodexception');
     const records = ws.records || [];
-    ws.result = records.length ? [
-      '生产异常/8D报告',
-      ...records.map((item, index) => `${index + 1}. 问题：${item.problem}；责任人：${item.owner}；措施：${item.action}；状态：${item.status}`)
-    ].join('\n') : '暂无异常记录，无法生成报告。';
+    const kv = this.parseKeyValueText(ws.prompt || '');
+    const split = value => String(value || '').split(/[；;、,，\n]/).map(item => item.trim()).filter(Boolean);
+    const incident = {
+      caseId: kv.编号 || `8D-${Date.now()}`,
+      problem: kv.问题 || kv.异常 || records[0]?.problem || '', owner: kv.责任人 || records[0]?.owner || '',
+      team: kv.团队 || '', location: kv.地点 || '', impact: kv.影响 || '',
+      containmentActions: split(kv.临时措施 || kv.遏制措施), rootCauses: split(kv.根因 || kv.原因),
+      correctiveActions: split(kv.纠正措施 || kv.处理措施 || records[0]?.action),
+      evidence: split(kv.验证证据 || kv.证据), preventiveActions: split(kv.防再发措施 || kv.预防措施)
+    };
+    if (!incident.problem) {
+      ws.result = '请先填写问题，再生成 8D 闭环。';
+      this.rerender();
+      return;
+    }
+    try {
+      const created = await APIClient.request('/api/agents/8d', { method: 'POST', body: JSON.stringify({ incident }) });
+      const taskId = created?.data?.task?.id;
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const latest = taskId ? await APIClient.request(`/api/agents/tasks/${taskId}`) : created;
+      const task = latest?.data?.task || created?.data?.task || {};
+      const report = task.output_payload?.eightD;
+      ws.result = report ? [
+        `8D 任务：${task.id}`, `完成度：${report.completionRate}%`, `下一步：${report.nextAction}`, '',
+        ...report.stages.map(stage => `${stage.code} ${stage.name}｜${stage.status}｜${stage.output}`)
+      ].join('\n') : `8D 任务已创建：${taskId || '处理中'}，请在 Agent 监控中心查看进度。`;
+    } catch (error) {
+      ws.result = `8D 任务创建失败：${this.recordAiError(error, '8d-workflow')}`;
+    }
     ws.updatedAt = Date.now();
     Store.save();
     this.rerender();
