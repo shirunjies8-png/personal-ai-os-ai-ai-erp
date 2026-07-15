@@ -51,7 +51,7 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
    本地规则助手，用于引导用户进入 OCR、成本核算、Skill 模板、Error Center 等模块。
 
 2. OCR
-   单据识别演示，支持结构化字段表和原始 OCR 拆行结果。
+   单据识别与人工复核，支持统一 Provider、低置信度提示、诊断、明确降级和确认后转入报价/询价。
 
 3. 成本核算助手
    适合小工厂报价场景，支持材料成本、加工成本、人工成本、利润、建议报价和风险提示。
@@ -61,6 +61,20 @@ Industrial AI OS 是面向制造业与企业办公的网页型 AI 工作台，�
 
 5. Error Center / Bug Monitor
    支持错误聚合、active / ignored / resolved 三态生命周期、错误中心自检和健康统计。
+
+## OCR 可扩展架构与复核流程
+
+页面只调用统一 `OCRArchitecture.ProviderRegistry`，不直接绑定任何厂商。当前 Provider 状态：
+
+- `current`：封装项目现有 Tesseract OCR 能力，引擎可用时返回真实本地识别结果。
+- `mock`：稳定演示/测试 Provider，界面始终标注“演示数据（非真实识别）”。
+- `local` / `cloud` / `vision`：仅为占位接口，显示“未配置/暂不可用”，本轮未接入付费 API。
+
+新增 Provider 时，实现 `recognize()`、`healthCheck()`、`normalizeResult()` 和 `getCapabilities()`，再向 Registry 注册即可。Provider 结果必须转为统一结构，包含 requestId、原文、文字块、字段、置信度、警告/错误、耗时、降级与环境信息。旧 OCR 结果在读取时会迁移为新结构，不清空原有 localStorage。
+
+业务流程为：上传/拍照 → Provider 原文识别 → 确定性格式与一致性检查 → 低置信度标记 → 人工修改留痕 → 人工批准 → 转入报价/询价或导出。未批准结果不能进入正式业务；AI 纠错仅为建议，不会自动覆盖字段。诊断复制会脱敏密钥/令牌字段，不包含客户结构化内容。
+
+后续可通过同一接口接入本地 OCR、豆包/火山引擎、腾讯 OCR 或其他视觉服务；当前版本没有调用这些真实收费接口，也没有写入任何新密钥。
 
 ## 当前版本能力
 

@@ -985,3 +985,19 @@
   - `database/*.sqlite3-wal`
   - `database/*.sqlite3-journal`
 - 本轮未修改 RFQ 风险、审批、报价和审计核心业务逻辑。
+## 2026-07-15 — OCR 多 Provider、人工复核与错误诊断
+
+### Added
+
+- 新增统一 OCR Provider Registry，封装现有 OCR，预留本地、云端、视觉模型和稳定演示 Provider。
+- 新增统一 OCR 结果/字段模型、明确降级状态、超时、空结果、乱码和数字/日期/金额一致性检查。
+- 新增原图、原文、结构化字段三栏人工复核，支持草稿、批准、驳回、修改留痕、置信度/高风险文字标签。
+- 只有人工批准的字段才能转入报价和询价草稿，空字段不自动编造。
+- OCR 运行接入任务记录、错误中心 signature 聚合、系统状态统计和脱敏诊断复制。
+- 新增 OCR Provider/复核/降级/兼容与页面门禁专项测试。
+
+### Compatibility and boundaries
+
+- 原有 OCR TXT / Word / Excel 导出、AI 总结/翻译/问答保留。
+- 新本地数据使用 schemaVersion 2 增量迁移，旧 `ocrResult` 自动归一化，不删除旧数据。
+- 本轮未接入任何新收费 API，`local` / `cloud` / `vision` 仍为明确的未配置占位。
