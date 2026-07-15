@@ -12,6 +12,7 @@ const feedbackRoutes = require('./feedbackRoutes');
 const logRoutes = require('./logRoutes');
 const excelRoutes = require('./excelRoutes');
 const chatRoutes = require('./chatRoutes');
+const apqpRoutes = require('./apqpRoutes');
 const qualityService = require('../services/aiQualityCheckService');
 const env = require('../config/env');
 const toolRegistry = require('../services/toolRegistry');
@@ -32,6 +33,7 @@ router.use('/feedback', feedbackRoutes);
 router.use('/logs', logRoutes);
 router.use('/excel', excelRoutes);
 router.use('/chat', chatRoutes);
+router.use('/apqp', apqpRoutes);
 
 router.post('/quality/check', async (req, res, next) => {
   try {

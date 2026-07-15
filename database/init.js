@@ -169,7 +169,25 @@ CREATE TABLE IF NOT EXISTS memory_entries (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS apqp_projects (id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, project_no TEXT NOT NULL, project_name TEXT NOT NULL, customer_or_source TEXT DEFAULT '', product_description TEXT DEFAULT '', project_owner TEXT DEFAULT '', project_team TEXT DEFAULT '', project_type TEXT DEFAULT '', importance_level TEXT DEFAULT 'medium', current_stage INTEGER DEFAULT 1, overall_progress REAL DEFAULT 0, planned_start_date TEXT DEFAULT '', planned_end_date TEXT DEFAULT '', actual_end_date TEXT DEFAULT '', customer_requirements TEXT DEFAULT '', special_requirements TEXT DEFAULT '', risk_summary TEXT DEFAULT '', status TEXT DEFAULT 'draft', version INTEGER DEFAULT 1, created_by TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_apqp_project_no ON apqp_projects(tenant_id, project_no);
+CREATE TABLE IF NOT EXISTS apqp_stages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_no INTEGER NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, progress REAL DEFAULT 0, owner TEXT DEFAULT '', start_date TEXT DEFAULT '', due_date TEXT DEFAULT '', approval_status TEXT DEFAULT 'not_required', blocker_reason TEXT DEFAULT '', next_step TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS apqp_deliverables (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, name TEXT NOT NULL, required INTEGER DEFAULT 1, status TEXT DEFAULT 'not_started', evidence_count INTEGER DEFAULT 0, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS apqp_risks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL, level TEXT DEFAULT 'medium', status TEXT DEFAULT 'open', owner TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS apqp_tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, title TEXT NOT NULL, owner TEXT DEFAULT '', status TEXT DEFAULT 'not_started', due_date TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS apqp_evidence (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, deliverable_id TEXT NOT NULL, file_name TEXT NOT NULL, note TEXT DEFAULT '', uploaded_by TEXT DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS apqp_stage_approvals (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, status TEXT NOT NULL, requested_by TEXT DEFAULT '', decided_by TEXT DEFAULT '', reason TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS apqp_history (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, tenant_id TEXT NOT NULL, action TEXT NOT NULL, detail TEXT DEFAULT '', actor TEXT DEFAULT '', created_at TEXT NOT NULL);
 `);
+
+function ensureColumns(table, columns) {
+  const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(item => item.name));
+  for (const [name, type] of Object.entries(columns)) if (!existing.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
+}
+ensureColumns('apqp_evidence', { deleted_at: 'TEXT', deleted_by: 'TEXT', delete_reason: 'TEXT', storage_status: "TEXT DEFAULT 'metadata_only'", file_type: 'TEXT DEFAULT \'\'', file_size: 'INTEGER DEFAULT 0', checksum: 'TEXT DEFAULT \'\'' });
+ensureColumns('apqp_deliverables', { owner: 'TEXT DEFAULT \'\'', due_date: 'TEXT DEFAULT \'\'', notes: 'TEXT DEFAULT \'\'', is_applicable: 'INTEGER DEFAULT 1', not_applicable_reason: 'TEXT DEFAULT \'\'', required_evidence_count: 'INTEGER DEFAULT 1', completed_at: 'TEXT', completed_by: 'TEXT' });
+ensureColumns('apqp_risks', { description: 'TEXT DEFAULT \'\'', severity: "TEXT DEFAULT 'medium'", probability: 'INTEGER DEFAULT 0', impact: 'INTEGER DEFAULT 0', risk_level: "TEXT DEFAULT 'medium'", is_blocking: 'INTEGER DEFAULT 0', due_date: 'TEXT DEFAULT \'\'', mitigation: 'TEXT DEFAULT \'\'', acceptance_reason: 'TEXT DEFAULT \'\'', closure_evidence: 'TEXT DEFAULT \'\'' });
+ensureColumns('apqp_tasks', { description: 'TEXT DEFAULT \'\'', priority: "TEXT DEFAULT 'medium'", evidence_required: 'INTEGER DEFAULT 0', completion_note: 'TEXT DEFAULT \'\'', completed_at: 'TEXT' });
 
 async function seed() {
   const now = new Date().toISOString();
