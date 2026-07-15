@@ -160,7 +160,14 @@
       if (!candidates.length) throw ocrError('所选 OCR Provider 不存在', 'provider_unavailable', { providerId });
       let lastError = null;
       for (const provider of candidates) {
-        if (!provider.available || !provider.enabled) { lastError = ocrError(provider.availabilityReason || '所选 OCR Provider 暂不可用', 'provider_unavailable', { providerId: provider.providerId }); continue; }
+        if (!provider.available || !provider.enabled) {
+          lastError = ocrError(provider.availabilityReason || '所选 OCR Provider 暂不可用', 'provider_unavailable', { providerId: provider.providerId });
+          this.onError({ requestId, provider, error: lastError, file, startedAt, fallbackUsed: false });
+          this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
+            fileName: file?.name || context.sourceFile?.name || '', status: 'failed', error: lastError.message,
+            errorSummary: String(lastError.message || '').slice(0, 160) });
+          continue;
+        }
         try {
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: 'processing', startedAt });

@@ -27,7 +27,13 @@ assert.equal(result.fields.find(field => field.key === 'customer_name').value, '
 assert.ok(['success', 'partial_success'].includes(result.status));
 assert.ok(result.confidence >= 0 && result.confidence <= 1);
 
-await assert.rejects(() => registry.run({ providerId: 'local', file: {}, timeoutMs: 20 }), error => error.code === 'provider_unavailable');
+const unavailableErrors = [];
+const unavailableLogs = [];
+const unavailableRegistry = new OCR.ProviderRegistry({ onError: entry => unavailableErrors.push(entry), onLog: entry => unavailableLogs.push(entry) });
+unavailableRegistry.register(OCR.createPlaceholderProvider('local', '本地 OCR', 'local'));
+await assert.rejects(() => unavailableRegistry.run({ providerId: 'local', file: {}, timeoutMs: 20 }), error => error.code === 'provider_unavailable');
+assert.equal(unavailableErrors[0].error.code, 'provider_unavailable');
+assert.equal(unavailableLogs[0].status, 'failed');
 
 const timeoutRegistry = new OCR.ProviderRegistry();
 timeoutRegistry.register(OCR.createCurrentProvider({ recognize: () => new Promise(() => {}) }));

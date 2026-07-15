@@ -66,5 +66,6 @@ assert.match(coreSource, /personal-ai-os-v1-migration-backup/);
 assert.match(coreSource, /withoutKnownTesseractWarnings/);
 assert.match(indexSource, /rel="icon" href="data:image\/svg\+xml/);
 assert.match(fs.readFileSync(new URL('../ui.js', import.meta.url), 'utf8'), /OCR Mock 状态/);
+assert.match(fs.readFileSync(new URL('../ui.js', import.meta.url), 'utf8'), /todayRejectedOcrIds/);
 
 console.log('ocr review page and business gating tests passed');
