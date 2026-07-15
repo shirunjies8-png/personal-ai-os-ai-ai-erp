@@ -674,18 +674,42 @@ const Store = {
         errors: Array.isArray(savedOcrData.errors) ? savedOcrData.errors : [],
         providerHealth: savedOcrData.providerHealth && typeof savedOcrData.providerHealth === 'object' ? savedOcrData.providerHealth : {}
       };
+      const recordOcrMigrationFailure = (error, requestId = '', recordType = 'result') => {
+        const diagnostic = typeof OCRArchitecture !== 'undefined' ? OCRArchitecture.sanitizeDiagnostics({
+          errorType: 'migration_failed', requestId, providerId: 'migration', recordType,
+          rawError: String(error?.message || error || 'OCR 数据迁移失败')
+        }) : { errorType: 'migration_failed', requestId, providerId: 'migration', recordType, rawError: 'OCR 数据迁移失败' };
+        const signature = ['OCR', 'migration_failed', recordType, requestId || 'legacy'].join('|');
+        if (!this.state.ocrData.errors.some(item => item.signature === signature)) {
+          this.state.ocrData.errors.unshift({ ...diagnostic, signature, time: Date.now() });
+        }
+        if (!this.state.bugAlerts.some(item => item.signature === signature)) {
+          this.state.bugAlerts.unshift(Stability.normalizeError({
+            id: uid(), module: 'OCR', feature: '旧数据迁移', type: 'migration_failed',
+            message: 'OCR 旧数据迁移失败，原记录已保留', description: JSON.stringify(diagnostic),
+            suggestion: '请保留本地备份并人工检查该条 OCR 记录。', requestId, signature,
+            source: 'ocr-migration', time: Date.now()
+          }));
+        }
+      };
       if (!this.state.ocrData.results.length && this.state.ocrResult.text && typeof OCRArchitecture !== 'undefined') {
         this.state.ocrData.results.push(OCRArchitecture.normalizeLegacyResult(this.state.ocrResult));
       }
       if (typeof OCRArchitecture !== 'undefined') {
-        this.state.ocrData.results = this.state.ocrData.results.map(item => {
-          try { return OCRArchitecture.normalizeLegacyResult(item); } catch { return item; }
+        this.state.ocrData.results = this.state.ocrData.results.map((item, index) => {
+          try { return OCRArchitecture.normalizeLegacyResult(item); } catch (error) {
+            recordOcrMigrationFailure(error, item?.requestId || `legacy-result-${index}`, 'result');
+            return item;
+          }
         });
-        this.state.ocrData.reviews = this.state.ocrData.reviews.map(item => {
+        this.state.ocrData.reviews = this.state.ocrData.reviews.map((item, index) => {
           try {
             const source = this.state.ocrData.results.find(result => result.requestId === item.requestId) || { requestId: item.requestId, fields: item.fields || [] };
             return OCRArchitecture.createReview(source, item);
-          } catch { return item; }
+          } catch (error) {
+            recordOcrMigrationFailure(error, item?.requestId || `legacy-review-${index}`, 'review');
+            return item;
+          }
         });
       }
       if (!Array.isArray(this.state.ocrInquiries)) this.state.ocrInquiries = [];
@@ -732,8 +756,22 @@ const Store = {
         gateway: this.state.aiGatewayStatus
       });
       this.syncGlobalState();
-    } catch {
+    } catch (error) {
+      const rawState = localStorage.getItem(APP_KEY) || '';
+      if (rawState) localStorage.setItem(`${APP_KEY}-migration-backup`, rawState);
       this.state = structuredClone(DefaultState);
+      const diagnostic = typeof OCRArchitecture !== 'undefined' ? OCRArchitecture.sanitizeDiagnostics({
+        errorType: 'migration_failed', providerId: 'migration', recordType: 'state',
+        rawError: String(error?.message || error || 'OCR 数据迁移失败')
+      }) : { errorType: 'migration_failed', providerId: 'migration', recordType: 'state', rawError: 'OCR 数据迁移失败' };
+      const signature = 'OCR|migration_failed|state|legacy';
+      this.state.ocrData.errors.unshift({ ...diagnostic, signature, time: Date.now() });
+      this.state.bugAlerts.unshift(Stability.normalizeError({
+        id: uid(), module: 'OCR', feature: '旧数据迁移', type: 'migration_failed',
+        message: 'OCR 本地数据迁移失败，原始内容已保存在迁移备份中', description: JSON.stringify(diagnostic),
+        suggestion: '请保留 personal-ai-os-v1-migration-backup 并人工恢复。', signature,
+        source: 'ocr-migration', time: Date.now()
+      }));
       this.syncGlobalState();
     }
     return this.state;
@@ -1516,6 +1554,20 @@ const OCRService = {
   worker: null,
   engineState: 'unknown',
   engineError: '',
+  async withoutKnownTesseractWarnings(work) {
+    const originalWarn = console.warn;
+    const filteredWarn = (...args) => {
+      const message = args.map(item => String(item || '')).join(' ');
+      if (/^Warning:\s*Parameter not found:/i.test(message)) return;
+      originalWarn(...args);
+    };
+    console.warn = filteredWarn;
+    try {
+      return await work();
+    } finally {
+      if (console.warn === filteredWarn) console.warn = originalWarn;
+    }
+  },
   async getWorker(onProgress = () => {}) {
     if (!window.Tesseract) {
       this.engineState = 'unavailable';
@@ -1525,7 +1577,7 @@ const OCRService = {
     if (!this.worker) {
       this.engineState = 'loading';
       try {
-        this.worker = await Tesseract.createWorker('chi_sim', 1, {
+        this.worker = await this.withoutKnownTesseractWarnings(() => Tesseract.createWorker('chi_sim', 1, {
           workerPath: './vendor/tesseract/worker.min.js',
           corePath: './vendor/tesseract-core',
           langPath: './assets/ocr',
@@ -1537,7 +1589,7 @@ const OCRService = {
           errorHandler: error => {
             this.engineError = String(error?.message || error || '');
           }
-        });
+        }));
         this.engineState = 'ready';
       } catch (error) {
         this.worker = null;

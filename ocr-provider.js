@@ -219,7 +219,7 @@
   }
 
   function createMockProvider() {
-    const rawText = ['演示数据（非真实识别）', '单据编号：DEMO-2026-001', '客户名称：示例客户', '日期：2026-07-15', '产品名称：示例连接件', '材料：304不锈钢', '数量：100', '单价：20.00', '总金额：2000.00', '交期：2026-08-15', '备注：仅用于演示与测试'].join('\n');
+    const rawText = ['当前为演示数据，非真实 OCR 识别结果。', '单据编号：DEMO-2026-001', '客户名称：示例客户', '日期：2026-07-15', '产品名称：示例连接件', '材料：304不锈钢', '数量：100', '单价：20.00', '总金额：2000.00', '交期：2026-08-15', '备注：仅用于演示与测试'].join('\n');
     const values = { document_no: 'DEMO-2026-001', customer_name: '示例客户', date: '2026-07-15', product_name: '示例连接件',
       material: '304不锈钢', quantity: '100', unit_price: '20.00', total_amount: '2000.00', delivery_date: '2026-08-15', notes: '仅用于演示与测试' };
     return { providerId: 'mock', providerName: '演示模式', providerType: 'mock', version: '1.0', enabled: true, available: true,
@@ -227,7 +227,7 @@
       async recognize() { return { rawText, status: 'success', documentType: '报价单', confidence: 0.72,
         fields: FIELD_DEFINITIONS.map(definition => ({ ...definition, value: values[definition.key] || '', originalValue: values[definition.key] || '',
           sourceText: values[definition.key] ? `${definition.label}：${values[definition.key]}` : '', confidence: values[definition.key] ? 0.72 : 0 })),
-        warnings: ['当前为演示数据，不代表真实 OCR 识别结果'], mode: 'mock' }; },
+        warnings: ['当前为演示数据，非真实 OCR 识别结果。'], mode: 'mock' }; },
       async healthCheck() { return { available: true, status: 'demo', message: '稳定演示 Provider，不处理真实图片内容' }; },
       normalizeResult(raw, context) { return normalizeResult(raw, context, this); }, getCapabilities() { return metadata(this); } };
   }
@@ -280,16 +280,33 @@
 
   function confirmedPayload(review, result) {
     if (!reviewSummary(review).canTransferToQuotation) throw ocrError('OCR 结果尚未人工确认，不能转入正式业务', 'review_not_approved');
-    return { schemaVersion: SCHEMA_VERSION, fields: Object.fromEntries(review.fields.filter(field => field.verified && field.value).map(field => [field.key, field.value])),
+    const confirmedFields = review.fields.filter(field => field.verified && String(field.value || '').trim());
+    return { schemaVersion: SCHEMA_VERSION, fields: Object.fromEntries(confirmedFields.map(field => [field.key, field.value])),
+      fieldDetails: confirmedFields.map(field => ({ key: field.key, label: field.label, value: field.value,
+        originalValue: field.originalValue, confidence: field.confidence, sourceText: field.sourceText,
+        status: field.status, warnings: [...(field.warnings || [])], manuallyEdited: Boolean(field.manuallyEdited), verified: true })),
+      modifications: (review.modifications || []).map(item => ({ ...item })), warnings: [...(result?.warnings || [])],
+      confidence: Number(result?.confidence || 0), fallbackUsed: Boolean(result?.fallbackUsed), mode: result?.mode || '',
       source: 'ocr', requestId: review.requestId, documentType: result?.documentType || review.source?.documentType || '', reviewedAt: review.reviewedAt,
-      reviewStatus: review.status, providerId: result?.providerId || review.source?.providerId || '', sourceFile: result?.sourceFile || review.source?.sourceFile || {} };
+      reviewer: review.reviewer || '', reviewStatus: review.status, providerId: result?.providerId || review.source?.providerId || '',
+      providerName: result?.providerName || '', sourceFile: result?.sourceFile || review.source?.sourceFile || {} };
   }
 
   function sanitizeDiagnostics(input = {}) {
     const secrets = /(api[_-]?key|token|secret|authorization|password)/i;
+    const privateContent = /(raw[_-]?(text|content|response)|ocr[_-]?text|customer[_-]?(data|content)|screenshot|image[_-]?content)/i;
+    const redactString = value => String(value)
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+      .replace(/(?:sk|key|token)[-_a-z0-9]{8,}/gi, '[REDACTED]')
+      .replace(/\b1[3-9]\d{9}\b/g, '[REDACTED_PHONE]')
+      .replace(/\b\d{17}[0-9Xx]\b/g, '[REDACTED_ID]')
+      .replace(/\b\d{16,19}\b/g, '[REDACTED_CARD]')
+      .replace(/\/Users\/[^/\s]+(?:\/[^\s]*)?/g, '[REDACTED_LOCAL_PATH]')
+      .replace(/[A-Za-z]:\\Users\\[^\s]+/g, '[REDACTED_LOCAL_PATH]');
     const redact = value => Array.isArray(value) ? value.map(redact) : value && typeof value === 'object'
-      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, secrets.test(key) ? '[REDACTED]' : redact(item)]))
-      : typeof value === 'string' ? value.replace(/(?:sk|key|token)[-_a-z0-9]{8,}/gi, '[REDACTED]') : value;
+      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, secrets.test(key) ? '[REDACTED]'
+        : privateContent.test(key) && typeof item === 'string' ? '[REDACTED_CONTENT]' : redact(item)]))
+      : typeof value === 'string' ? redactString(value) : value;
     return redact(input);
   }
 
