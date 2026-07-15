@@ -114,6 +114,7 @@ const App = {
     approvalSelectedId: '',
     toolSelectedName: '',
     integrationSelectedId: 'erp',
+    apqp: { open: false, loading: false, projects: [], selectedId: '', project: null, error: '' },
     agent: {
       goal: '',
       steps: [],
@@ -1056,6 +1057,23 @@ const App = {
       'quality-check': () => this.qualityCheck(el),
       'quality-fix': () => this.qualityFix(el),
       'quality-export': () => this.qualityExport(el),
+      'apqp-open': () => this.apqpOpen(),
+      'apqp-back': () => this.apqpBack(),
+      'apqp-refresh': () => this.apqpRefresh(),
+      'apqp-select': () => this.apqpSelect(el.dataset.id),
+      'apqp-create': () => this.apqpCreate(),
+      'apqp-update-project': () => this.apqpUpdateProject(),
+      'apqp-deliverable-update': () => this.apqpUpdateDeliverable(el.dataset.id),
+      'apqp-evidence-add': () => this.apqpAddEvidence(),
+      'apqp-evidence-delete': () => this.apqpDeleteEvidence(el.dataset.id),
+      'apqp-risk-add': () => this.apqpAddRisk(),
+      'apqp-risk-update': () => this.apqpUpdateRisk(el.dataset.id),
+      'apqp-task-add': () => this.apqpAddTask(),
+      'apqp-task-update': () => this.apqpUpdateTask(el.dataset.id),
+      'apqp-stage-submit': () => this.apqpStageAction(el.dataset.stageId, 'submit'),
+      'apqp-stage-approve': () => this.apqpStageAction(el.dataset.stageId, 'approve'),
+      'apqp-stage-reject': () => this.apqpStageAction(el.dataset.stageId, 'reject'),
+      'apqp-close-project': () => this.apqpCloseProject(),
       'skill-enterprise-intro': () => this.skillEnterpriseIntro(),
       'skills-filter': () => this.skillsSetFilter(el.dataset.category),
       'skills-select': () => this.skillsSelect(el.dataset.id),
@@ -6493,6 +6511,321 @@ const App = {
     Store.save();
     Store.addActivity(`执行数据校验：${mode}`, 'ai');
     this.rerender();
+  },
+
+  apqpState() {
+    this.temp.apqp ||= { open: false, loading: false, projects: [], selectedId: '', project: null, error: '' };
+    return this.temp.apqp;
+  },
+
+  apqpIsStatic() {
+    return Utils.isGitHubPagesHost();
+  },
+
+  apqpEnsureWritable() {
+    const state = this.apqpState();
+    try {
+      APQPWorkspace.assertWritable(this.apqpIsStatic());
+      return true;
+    } catch (error) {
+      state.error = error.message;
+      this.rerender();
+      this.toast(error.message, 'warning');
+      return false;
+    }
+  },
+
+  apqpConfirm(action, message) {
+    if (!APQPWorkspace.requiresConfirmation(action)) return true;
+    return window.confirm(message);
+  },
+
+  apqpSetError(error) {
+    const state = this.apqpState();
+    state.error = Utils.friendlyErrorMessage(error?.message || error || 'APQP 操作失败');
+    this.rerender();
+    this.toast(state.error, 'error');
+  },
+
+  async apqpOpen() {
+    const state = this.apqpState();
+    state.open = true;
+    state.error = '';
+    if (this.apqpIsStatic()) {
+      const demo = APQPWorkspace.demoProject();
+      state.projects = [demo];
+      state.selectedId = demo.id;
+      state.project = demo;
+      this.rerender();
+      return;
+    }
+    this.rerender();
+    await this.apqpLoadProjects();
+  },
+
+  apqpBack() {
+    const state = this.apqpState();
+    state.open = false;
+    state.error = '';
+    this.rerender();
+  },
+
+  async apqpLoadProjects() {
+    const state = this.apqpState();
+    state.loading = true;
+    try {
+      const response = await APIClient.request('/api/apqp/projects');
+      state.projects = response.data?.items || [];
+      state.error = '';
+      if (state.selectedId && state.projects.some(item => item.id === state.selectedId)) await this.apqpLoadDetail(state.selectedId, false);
+      else state.project = null;
+      this.rerender();
+    } catch (error) {
+      this.apqpSetError(error);
+    } finally {
+      state.loading = false;
+    }
+  },
+
+  async apqpLoadDetail(projectId, render = true) {
+    const state = this.apqpState();
+    try {
+      const [detailResponse, deliverablesResponse, evidenceResponse, risksResponse, tasksResponse, historyResponse] = await Promise.all([
+        APIClient.request(`/api/apqp/projects/${projectId}`),
+        APIClient.request(`/api/apqp/projects/${projectId}/deliverables`),
+        APIClient.request(`/api/apqp/projects/${projectId}/evidence`),
+        APIClient.request(`/api/apqp/projects/${projectId}/risks`),
+        APIClient.request(`/api/apqp/projects/${projectId}/tasks`),
+        APIClient.request(`/api/apqp/projects/${projectId}/history`)
+      ]);
+      const item = detailResponse.data?.project;
+      state.selectedId = projectId;
+      state.project = {
+        ...item,
+        assessment: detailResponse.data?.project?.assessment || deliverablesResponse.data?.assessment || {},
+        deliverables: deliverablesResponse.data?.items || [],
+        evidence: evidenceResponse.data?.items || [],
+        risks: risksResponse.data?.items || [],
+        tasks: tasksResponse.data?.items || [],
+        history: historyResponse.data?.items || []
+      };
+      state.error = '';
+      if (render) this.rerender();
+    } catch (error) {
+      this.apqpSetError(error);
+    }
+  },
+
+  async apqpRefresh() {
+    if (this.apqpIsStatic()) {
+      const demo = APQPWorkspace.demoProject();
+      Object.assign(this.apqpState(), { projects: [demo], selectedId: demo.id, project: demo, error: '' });
+      this.rerender();
+      return;
+    }
+    await this.apqpLoadProjects();
+  },
+
+  async apqpSelect(projectId) {
+    if (this.apqpIsStatic()) {
+      const state = this.apqpState();
+      state.selectedId = projectId;
+      state.project = state.projects.find(item => item.id === projectId) || null;
+      this.rerender();
+      return;
+    }
+    await this.apqpLoadDetail(projectId);
+  },
+
+  async apqpAfterWrite(projectId, message) {
+    await this.apqpLoadProjects();
+    if (projectId) await this.apqpLoadDetail(projectId);
+    this.toast(message);
+  },
+
+  async apqpCreate() {
+    if (!this.apqpEnsureWritable()) return;
+    const input = {
+      project_no: document.getElementById('apqpCreateNo')?.value.trim(),
+      project_name: document.getElementById('apqpCreateName')?.value.trim(),
+      customer_or_source: document.getElementById('apqpCreateCustomer')?.value.trim(),
+      project_owner: document.getElementById('apqpCreateOwner')?.value.trim(),
+      planned_start_date: document.getElementById('apqpCreateStart')?.value,
+      planned_end_date: document.getElementById('apqpCreateEnd')?.value
+    };
+    const errors = APQPWorkspace.validateProject(input);
+    if (errors.length) return this.apqpSetError(new Error(errors.join('；')));
+    try {
+      const response = await APIClient.request('/api/apqp/projects', { method: 'POST', body: JSON.stringify(input) });
+      const projectId = response.data?.project?.id;
+      await this.apqpAfterWrite(projectId, 'APQP 项目已创建');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpUpdateProject() {
+    const state = this.apqpState();
+    if (!state.project || !this.apqpEnsureWritable()) return;
+    const input = {
+      project_name: document.getElementById('apqpEditName')?.value.trim(),
+      customer_or_source: document.getElementById('apqpEditCustomer')?.value.trim(),
+      project_owner: document.getElementById('apqpEditOwner')?.value.trim(),
+      planned_end_date: document.getElementById('apqpEditEnd')?.value,
+      importance_level: document.getElementById('apqpEditImportance')?.value
+    };
+    const errors = APQPWorkspace.validateProject(input);
+    if (errors.length) return this.apqpSetError(new Error(errors.join('；')));
+    const sensitiveChanged = input.project_owner !== state.project.project_owner
+      || input.planned_end_date !== state.project.planned_end_date
+      || input.importance_level !== state.project.importance_level;
+    if (sensitiveChanged && !this.apqpConfirm('project-owner', '负责人、截止日期或重要等级发生变化，确认提交受控修改？')) return;
+    try {
+      await APIClient.request(`/api/apqp/projects/${state.project.id}`, { method: 'PATCH', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(state.project.id, 'APQP 项目已更新');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpUpdateDeliverable(recordId) {
+    const project = this.apqpState().project;
+    const projectId = project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const input = {
+      status: document.getElementById(`apqpDeliverableStatus-${recordId}`)?.value,
+      owner: document.getElementById(`apqpDeliverableOwner-${recordId}`)?.value.trim(),
+      due_date: document.getElementById(`apqpDeliverableDue-${recordId}`)?.value,
+      is_applicable: document.getElementById(`apqpDeliverableApplicable-${recordId}`)?.checked ? 1 : 0,
+      not_applicable_reason: document.getElementById(`apqpDeliverableReason-${recordId}`)?.value.trim()
+    };
+    if (!input.is_applicable && !input.not_applicable_reason) return this.apqpSetError(new Error('标记不适用必须填写理由'));
+    const current = (project.deliverables || []).find(item => item.id === recordId);
+    if (current && (input.owner !== current.owner || input.due_date !== current.due_date)
+      && !this.apqpConfirm(input.owner !== current.owner ? 'project-owner' : 'project-due-date', '负责人或截止日期发生变化，确认提交受控修改？')) return;
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/deliverables/${recordId}`, { method: 'PATCH', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(projectId, '交付物已更新');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpAddEvidence() {
+    const projectId = this.apqpState().project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const input = { deliverable_id: document.getElementById('apqpEvidenceDeliverable')?.value.trim(), file_name: document.getElementById('apqpEvidenceFile')?.value.trim() };
+    if (!input.deliverable_id || !input.file_name) return this.apqpSetError(new Error('交付物 ID 和证据文件名不能为空'));
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/evidence`, { method: 'POST', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(projectId, '证据元数据记录已新增');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpDeleteEvidence(evidenceId) {
+    const projectId = this.apqpState().project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const deleteReason = window.prompt('请输入证据软删除原因：', '') || '';
+    const errors = APQPWorkspace.validateEvidenceDelete(deleteReason);
+    if (errors.length) return this.apqpSetError(new Error(errors.join('；')));
+    if (!this.apqpConfirm('evidence-delete', '证据删除会重新计算交付物与阶段阻塞，确认软删除？')) return;
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/evidence/${evidenceId}`, {
+        method: 'DELETE', body: JSON.stringify({ delete_reason: deleteReason })
+      });
+      await this.apqpAfterWrite(projectId, '证据记录已软删除');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpAddRisk() {
+    const projectId = this.apqpState().project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const input = { title: document.getElementById('apqpRiskTitle')?.value.trim(), severity: document.getElementById('apqpRiskSeverity')?.value };
+    if (!input.title) return this.apqpSetError(new Error('风险标题不能为空'));
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/risks`, { method: 'POST', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(projectId, '风险已新增');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpUpdateRisk(recordId) {
+    const project = this.apqpState().project;
+    const projectId = project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const status = document.getElementById(`apqpRiskStatus-${recordId}`)?.value;
+    const reason = document.getElementById(`apqpRiskReason-${recordId}`)?.value.trim();
+    const input = { status, owner: document.getElementById(`apqpRiskOwner-${recordId}`)?.value.trim() };
+    const current = (project.risks || []).find(item => item.id === recordId);
+    if (current && input.owner !== current.owner
+      && !this.apqpConfirm('project-owner', '风险负责人发生变化，确认提交受控修改？')) return;
+    if (status === 'accepted') {
+      if (!reason) return this.apqpSetError(new Error('风险接受必须填写接受理由'));
+      if (!this.apqpConfirm('risk-accept', '确认接受该风险？接受不代表风险自动关闭。')) return;
+      input.acceptance_reason = reason;
+    }
+    if (status === 'closed') {
+      if (!reason) return this.apqpSetError(new Error('风险关闭必须填写关闭说明或证据'));
+      if (!this.apqpConfirm('risk-close', '确认关闭该风险？')) return;
+      input.closure_evidence = reason;
+    }
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/risks/${recordId}`, { method: 'PATCH', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(projectId, '风险已更新');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpAddTask() {
+    const projectId = this.apqpState().project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const input = { stage_id: document.getElementById('apqpTaskStage')?.value, title: document.getElementById('apqpTaskTitle')?.value.trim() };
+    if (!input.stage_id || !input.title) return this.apqpSetError(new Error('阶段和任务标题不能为空'));
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/tasks`, { method: 'POST', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(projectId, '任务已新增');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpUpdateTask(recordId) {
+    const project = this.apqpState().project;
+    const projectId = project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const input = {
+      owner: document.getElementById(`apqpTaskOwner-${recordId}`)?.value.trim(),
+      due_date: document.getElementById(`apqpTaskDue-${recordId}`)?.value,
+      status: document.getElementById(`apqpTaskStatus-${recordId}`)?.value
+    };
+    const current = (project.tasks || []).find(item => item.id === recordId);
+    if (current && (input.owner !== current.owner || input.due_date !== current.due_date)
+      && !this.apqpConfirm(input.owner !== current.owner ? 'project-owner' : 'project-due-date', '任务负责人或截止日期发生变化，确认提交受控修改？')) return;
+    if (['completed', 'cancelled'].includes(input.status)
+      && !window.confirm(`确认将任务状态修改为 ${input.status}？`)) return;
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/tasks/${recordId}`, { method: 'PATCH', body: JSON.stringify(input) });
+      await this.apqpAfterWrite(projectId, '任务已更新');
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpStageAction(stageId, action) {
+    const projectId = this.apqpState().project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    const labels = { submit: '提交阶段评审', approve: '批准阶段', reject: '驳回阶段' };
+    if (!this.apqpConfirm(`stage-${action}`, `确认${labels[action]}？`)) return;
+    const reason = action === 'submit' ? '' : (window.prompt(`请输入${action === 'approve' ? '审批' : '驳回'}意见：`, '') || '');
+    if (action === 'reject' && !reason.trim()) return this.apqpSetError(new Error('阶段驳回必须填写原因'));
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/stages/${stageId}/${action}`, {
+        method: 'POST', body: JSON.stringify({ reason })
+      });
+      await this.apqpAfterWrite(projectId, `${labels[action]}操作已完成`);
+    } catch (error) { this.apqpSetError(error); }
+  },
+
+  async apqpCloseProject() {
+    const state = this.apqpState();
+    const projectId = state.project?.id;
+    if (!projectId || !this.apqpEnsureWritable()) return;
+    if (!state.project.assessment?.can_close_project) return this.apqpSetError(new Error('项目不可关闭：请先处理后端 assessment 返回的阻塞项'));
+    if (!this.apqpConfirm('project-close', '确认关闭 APQP 项目？该操作需要管理员审批权限。')) return;
+    const reason = window.prompt('请输入项目关闭意见：', '') || '';
+    if (!reason.trim()) return this.apqpSetError(new Error('项目关闭必须填写意见'));
+    try {
+      await APIClient.request(`/api/apqp/projects/${projectId}/close`, { method: 'POST', body: JSON.stringify({ reason }) });
+      await this.apqpAfterWrite(projectId, 'APQP 项目已关闭');
+    } catch (error) { this.apqpSetError(error); }
   },
 
   qualityModuleMap(label) {
