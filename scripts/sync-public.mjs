@@ -13,6 +13,7 @@ const entries = [
   'rfq-store.js',
   'rfq-validation.js',
   'rfq-risk.js',
+  'apqp-workspace.js',
   'core.js',
   'ui.js',
   'app.js',
