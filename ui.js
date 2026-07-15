@@ -574,8 +574,16 @@ const UI = {
     const todayMockOcr = todayOcrResults.filter(item => item.providerId === 'mock').length;
     const todayOcrFailures = todayOcrTasks.filter(item => ['failed', 'timeout'].includes(item.status)).length;
     const todayOcrFallbacks = todayOcrTasks.filter(item => item.status === 'fallback' || item.action === 'fallback' || item.fallbackUsed).length;
-    const todayApprovedOcr = (ocrData.reviews || []).filter(item => item.status === 'approved' && Utils.sameDate(item.reviewedAt, Date.now())).length;
-    const todayRejectedOcr = (ocrData.reviews || []).filter(item => item.status === 'rejected' && Utils.sameDate(item.reviewedAt, Date.now())).length;
+    const todayApprovedOcrIds = new Set((Store.state.taskRecords || [])
+      .filter(item => item.type === 'OCR人工复核' && item.status === 'success' && Utils.sameDate(item.time || item.updatedAt, Date.now()))
+      .map(item => item.requestId || item.id));
+    (ocrData.reviews || []).filter(item => item.status === 'approved' && Utils.sameDate(item.reviewedAt, Date.now()))
+      .forEach(item => todayApprovedOcrIds.add(item.requestId || item.id));
+    const todayRejectedOcrIds = new Set((ocrData.errors || [])
+      .filter(item => item.errorType === 'user_rejected' && Utils.sameDate(item.time, Date.now()))
+      .map(item => item.requestId || item.signature || item.time));
+    (ocrData.reviews || []).filter(item => item.status === 'rejected' && Utils.sameDate(item.reviewedAt, Date.now()))
+      .forEach(item => todayRejectedOcrIds.add(item.requestId || item.id));
     const latestOcrError = ocrData.errors?.[0];
     const defaultOcrProvider = ocrData.providerConfig?.selectedProviderId || 'auto';
     const mockOcrProvider = ocrProviders.find(item => item.providerId === 'mock');
@@ -595,7 +603,7 @@ const UI = {
       ['OCR Mock 状态', mockOcrProvider?.available ? '演示可用（不计真实成功）' : '不可用'],
       ['OCR最近结果', `${ocrLatest.status || '无'}${ocrLatest.durationMs ? ` · ${ocrLatest.durationMs} ms` : ''}${ocrLatest.fallbackUsed ? ' · 演示降级' : ''}`],
       ['OCR今日统计', `任务 ${todayOcrTasks.length || ocrStats.todayCount || 0} · 真实成功 ${todayRealOcrSuccess} · 失败 ${todayOcrFailures} · 降级 ${todayOcrFallbacks} · Mock ${todayMockOcr}`],
-      ['OCR复核统计', `待复核 ${pendingOcrReviews} · 已批准 ${todayApprovedOcr} · 已驳回 ${todayRejectedOcr}`],
+      ['OCR复核统计', `待复核 ${pendingOcrReviews} · 已批准 ${todayApprovedOcrIds.size} · 已驳回 ${todayRejectedOcrIds.size}`],
       ['OCR最近错误', latestOcrError ? `${latestOcrError.errorType || 'unknown'} · ${latestOcrError.providerId || 'unknown'}` : '无'],
       ['PDF状态', App.temp.pdf?.scanMode ? `已处理 · ${App.temp.pdf.scanMode}` : '未开始'],
       ['Excel状态', App.temp.excel?.rows?.length ? `已加载 · ${App.temp.excel.rows.length} 行` : '未开始'],
