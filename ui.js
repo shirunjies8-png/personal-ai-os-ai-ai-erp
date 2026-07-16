@@ -547,7 +547,7 @@ const UI = {
     const serverUsage = Store.state.aiServerUsage || {};
     const history = Store.state.aiHistory || [];
     const hostname = String(window.location.hostname || '');
-    const displayMode = Utils.isGitHubPagesHost();
+    const displayMode = Utils.isDisplayMode();
     const runtime = /render\.com$/i.test(hostname) || /render/i.test(hostname) ? 'Render' : /127\.0\.0\.1|localhost/i.test(hostname) ? '本地开发' : '生产环境';
     const today = new Date();
     const todayCount = history.filter(item => Utils.sameDate(item.time, Date.now())).length;
@@ -611,7 +611,7 @@ const UI = {
       ['PDF状态', App.temp.pdf?.scanMode ? `已处理 · ${App.temp.pdf.scanMode}` : '未开始'],
       ['Excel状态', App.temp.excel?.rows?.length ? `已加载 · ${App.temp.excel.rows.length} 行` : '未开始'],
       ['数据库', (Store.state.orders.length || Store.state.inventory.length) ? '🟢 正常' : '🟡 空库'],
-      ['GitHub Pages', displayMode ? '🟢 展示模式' : '🟢 正常'],
+      ['GitHub Pages', Utils.isGitHubPagesHost() ? (displayMode ? '🟡 本地演示降级' : '🟢 私有网关已配置') : '🟢 非 Pages 环境'],
       ['Vercel', Store.state.settings.apiUrl ? '🟢 正常' : '🟡 未连接'],
       ['Build Time', Store.state.buildTime || '未注入'],
       ['GitHub Commit', Store.state.commitHash || '未注入'],
@@ -619,7 +619,7 @@ const UI = {
       ['Agent', Store.state.agentRuns.length ? '🟢 正常' : '🟡 待执行'],
       ['RL', Store.state.rlFeedback?.length ? '🟢 正常' : '🟡 待学习'],
       ['最近错误', latestError ? `${latestError.message}` : '无'],
-      ['运行环境', displayMode ? 'GitHub Pages' : runtime],
+      ['运行环境', Utils.isGitHubPagesHost() ? 'GitHub Pages + Private Gateway' : runtime],
       ['月度预算状态', serverUsage.budget ? `${serverUsage.budget.status} · ${(Number(serverUsage.budget.ratio || 0) * 100).toFixed(1)}%` : '未获取'],
       ['熔断状态', serverStatus.circuit?.state || '未获取'],
       ['缓存状态', serverStatus.cache?.enabled ? `已启用 · TTL ${serverStatus.cache.ttlSeconds}s` : '未启用或未获取'],
@@ -776,10 +776,12 @@ const UI = {
   systemcheck() {
     const globalState = window.GlobalSystemState && typeof window.GlobalSystemState === 'object' ? window.GlobalSystemState : {};
     const report = Array.isArray(globalState.systemHealth?.checks) ? globalState.systemHealth.checks : [];
+    const hasBackend = Boolean(Store.state.settings.apiEnabled && Store.state.settings.apiUrl);
+    const staticFallback = Utils.isGitHubPagesHost() && !hasBackend;
     const checks = report.length ? report : [
       { name: '登录', status: AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常', reason: AuthClient.isLoggedIn() ? '已登录。' : '请先登录。', suggestion: AuthClient.isLoggedIn() ? '保持当前登录状态。' : '请使用演示账号或正式账号登录。', time: Date.now() },
-      { name: 'AI Gateway', status: globalState.aiGateway?.state === 'online' ? '🟢 正常' : globalState.aiGateway?.state === 'mock' ? '🟡 展示模式 / Mock 演示' : globalState.aiGateway?.state === 'error' ? '🔴 异常' : (Utils.isGitHubPagesHost() ? '🟡 展示模式 / Mock 演示' : Store.state.settings.apiEnabled ? '🟡 待自检' : '⚪ 未配置'), reason: globalState.aiGateway?.message || (Utils.isGitHubPagesHost() ? 'GitHub Pages 无后端。' : Store.state.settings.apiEnabled ? '等待一键自检。' : '未启用远程 AI。'), suggestion: Utils.isGitHubPagesHost() ? '部署后端后再启用真实 AI。' : Store.state.settings.apiEnabled ? '点击“一键自检”执行真实检测。' : '在 AI 设置中心开启远程 AI。', time: Date.now() },
-      { name: 'DeepSeek', status: globalState.aiGateway?.state === 'online' ? '🟢 已连接' : Utils.isGitHubPagesHost() ? '🟡 未连接' : Store.state.settings.apiEnabled ? '🟡 待自检' : '⚪ 未配置', reason: globalState.aiGateway?.message || (Utils.isGitHubPagesHost() ? '展示模式不连接 DeepSeek。' : Store.state.settings.apiEnabled ? '等待真实请求检测。' : '未启用远程 AI。'), suggestion: Utils.isGitHubPagesHost() ? '部署后端后再连接 DeepSeek。' : Store.state.settings.apiEnabled ? '点击“一键自检”验证 /api/chat。' : '请先开启远程 AI。', time: Date.now() },
+      { name: 'AI Gateway', status: globalState.aiGateway?.state === 'online' ? '🟢 正常' : globalState.aiGateway?.state === 'mock' ? '🟡 展示模式 / Mock 演示' : globalState.aiGateway?.state === 'error' ? '🔴 异常' : staticFallback ? '🟡 私有网关未连接' : '🟡 待自检', reason: globalState.aiGateway?.message || (staticFallback ? '普通功能仍可使用，AI 与服务端能力暂不可用。' : '等待一键自检。'), suggestion: staticFallback ? '请连接 Tailscale 后重试。' : '点击“一键自检”执行真实检测。', time: Date.now() },
+      { name: 'DeepSeek', status: globalState.aiGateway?.state === 'online' ? '🟢 已连接' : '⚪ 未配置', reason: globalState.aiGateway?.message || (staticFallback ? '私有 AI 网关未连接。' : 'AI 服务暂未配置。'), suggestion: staticFallback ? '请连接 Tailscale 后重试。' : '请在服务端配置 DeepSeek。', time: Date.now() },
       { name: 'localStorage', status: typeof localStorage !== 'undefined' ? '🟢 正常' : '🔴 异常', reason: typeof localStorage !== 'undefined' ? '浏览器本地存储可读写。' : '本地存储不可用。', suggestion: typeof localStorage !== 'undefined' ? '可正常保存本地数据。' : '请检查浏览器隐私设置。', time: Date.now() }
     ];
     return `${this.pageHead('系统验收中心', '自动检测登录、Word、Excel、PDF、OCR、SQL、生产计划助手、AI、Agent、RL、数据库、API、GitHub Pages、Vercel、模型。', `<button class="primary-btn" data-action="systemcheck-run">${icon('check')}开始检测</button>`)}<section class="panel"><div class="panel-head"><div><h3>验收结果</h3></div><span class="badge">${checks.length}</span></div><div class="panel-body">${checks.map(item => `<div class="activity"><span class="activity-icon">${icon(item.status.startsWith('🟢') ? 'check' : item.status.startsWith('⚪') ? 'dot' : item.status.startsWith('🟡') ? 'clock' : 'x')}</span><span><b>${Utils.escape(item.name)}</b><small>${Utils.escape(item.status)}${item.reason ? ` · ${Utils.escape(item.reason)}` : ''}${item.suggestion ? ` · ${Utils.escape(item.suggestion)}` : ''}</small></span></div>`).join('')}<div class="privacy-note" style="margin-top:12px">${icon('clock')}<span>记录测试时间、修复状态和版本号后，可作为现场演示验收记录。</span></div></div></section>`;
@@ -803,7 +805,7 @@ const UI = {
       .replace('AI Gateway 会自动处理降级与错误翻译；页面不会直接暴露模型异常英文信息。', 'AI Gateway 会执行脱敏、预算、缓存、超时和熔断控制；真实调用失败不会伪装成功。');
     if (App.temp.settingsTab !== 'ai') return html;
     const s = Store.state.settings;
-    const keyPanel = `<div class="privacy-note" style="border-color:rgba(245,158,11,.45)">${icon('shield')}<span><b>DeepSeek API Key 只能配置在独立服务端环境变量中。</b><br>浏览器、localStorage、GitHub Pages 和构建产物均不保存密钥。</span></div><div class="privacy-note" style="border-color:rgba(59,130,246,.35)">${icon('database')}<span>当前数据处理模式：<b>${Utils.escape(Utils.isGitHubPagesHost() ? 'Pages 静态安全模式（AI disabled）' : s.accessMode === 'local' ? 'Local Mock' : 'Server Gateway')}</b>。远程内容默认脱敏后发送。</span></div>`;
+    const keyPanel = `<div class="privacy-note" style="border-color:rgba(245,158,11,.45)">${icon('shield')}<span><b>DeepSeek API Key 只能配置在独立服务端环境变量中。</b><br>浏览器、localStorage、GitHub Pages 和构建产物均不保存密钥。</span></div><div class="privacy-note" style="border-color:rgba(59,130,246,.35)">${icon('database')}<span>当前数据处理模式：<b>${Utils.escape(Utils.isGitHubPagesHost() && !s.apiEnabled ? 'Pages 本地演示降级' : s.accessMode === 'local' ? 'Local Mock' : 'Private Server Gateway')}</b>。远程内容默认脱敏后发送。</span></div>`;
     return html.replace('<div class="field-row"><div class="field"><label>Base URL</label>', `${keyPanel}<div class="field-row"><div class="field"><label>Base URL</label>`);
   },
   integration() {

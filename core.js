@@ -459,13 +459,14 @@ const APIClient = {
       ...(options.headers || {})
     };
     if (AuthClient.token) headers.Authorization = `Bearer ${AuthClient.token}`;
-    const controller = meta.timeout ? new AbortController() : null;
-    const timer = controller ? setTimeout(() => controller.abort(), meta.timeout) : null;
+    const timeout = Math.max(1000, Number(meta.timeout || RuntimeConfig.REQUEST_TIMEOUT_MS || 10000));
+    const controller = options.signal ? null : new AbortController();
+    const timer = controller ? setTimeout(() => controller.abort(), timeout) : null;
     try {
-      const response = await fetch(this.resolveUrl(path, meta.baseUrl), {
+      const response = await fetch(this.resolveUrl(path, meta.baseUrl || this.resolveGatewayBase()), {
         ...options,
         headers,
-        signal: controller?.signal
+        signal: options.signal || controller?.signal
       });
       if (!response.ok) {
         const { raw, json } = await this.safeReadResponse(response);
@@ -474,6 +475,12 @@ const APIClient = {
       }
       const { json, raw } = await this.safeReadResponse(response);
       return json ?? { ok: true, data: raw };
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error(`后端请求超时（${timeout}ms），已保留本地演示数据。`);
+      if (/Failed to fetch|Load failed|NetworkError|fetch/i.test(String(error?.message || error))) {
+        throw new Error('私有 AI 网关未连接，已保留本地演示功能。请确认设备已连接 Tailscale。');
+      }
+      throw error;
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -481,6 +488,7 @@ const APIClient = {
   async chat(messages, module = 'ai-chat', extra = {}) {
     const baseUrl = this.resolveGatewayBase();
     if (!baseUrl || /your-vercel-backend\.vercel\.app/.test(baseUrl)) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
+    await this.ensureAiConfigured(baseUrl);
     const displayMode = Utils.isDisplayMode();
     try {
       return await this.request('/api/ai/chat', {
@@ -513,6 +521,7 @@ const APIClient = {
     const settings = Store.state.settings;
     const baseUrl = this.resolveGatewayBase();
     if (!baseUrl) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
+    await this.ensureAiConfigured(baseUrl);
     const displayMode = Utils.isDisplayMode();
     return this.request('/api/ai/chat', {
       method: 'POST',
@@ -546,18 +555,17 @@ const APIClient = {
     return res;
   },
   async health(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
-    if (Utils.isGitHubPagesHost()) {
-      return {
-        ok: true,
-        mode: 'display',
-        provider: 'mock',
-        model: Store.state.settings.model || 'deepseek-v4-flash',
-        message: '当前为 GitHub Pages 展示模式，真实 AI 后端未连接。',
-        displayMode: true
-      };
-    }
     if (!baseUrl) throw new Error('未配置后端地址');
-    return this.request('/api/health', {}, { baseUrl });
+    return this.request('/api/health', {}, { baseUrl, timeout: RuntimeConfig.REQUEST_TIMEOUT_MS || 10000 });
+  },
+  async systemStatus(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
+    if (!baseUrl) throw new Error('未配置后端地址');
+    return this.request('/api/self-test', {}, { baseUrl, timeout: RuntimeConfig.REQUEST_TIMEOUT_MS || 10000 });
+  },
+  async ensureAiConfigured(baseUrl = Store.state.settings.apiUrl || RuntimeConfig.API_BASE_URL || '') {
+    const health = await this.health(baseUrl);
+    if (!health?.deepseekConfigured) throw new Error('AI 服务暂未配置');
+    return health;
   }
 };
 
@@ -740,7 +748,9 @@ const Store = {
       if (!Array.isArray(this.state.equipment) || !this.state.equipment.length) this.state.equipment = structuredClone(DefaultState.equipment);
       if (!this.state.dashboard || typeof this.state.dashboard !== 'object') this.state.dashboard = structuredClone(DefaultState.dashboard);
       if (!Array.isArray(this.state.mailInbox) || !this.state.mailInbox.length) this.state.mailInbox = structuredClone(DefaultState.mailInbox);
-      if (!this.state.settings.apiUrl && RuntimeConfig.API_BASE_URL) this.state.settings.apiUrl = RuntimeConfig.API_BASE_URL;
+      const storedApiUrl = String(this.state.settings.apiUrl || '').trim();
+      const insecurePagesApi = Utils.isGitHubPagesHost() && storedApiUrl && !/^https:\/\//i.test(storedApiUrl);
+      if ((!storedApiUrl || insecurePagesApi) && RuntimeConfig.API_BASE_URL) this.state.settings.apiUrl = RuntimeConfig.API_BASE_URL;
       if (this.state.settings.apiUrl && this.state.settings.accessMode === 'local' && !RuntimeConfig.DEMO_LOGIN_ONLY) {
         this.state.settings.accessMode = 'cloud';
         this.state.settings.apiEnabled = true;
@@ -1005,7 +1015,7 @@ const Utils = {
     return /(^|\.)github\.io$/i.test(String(location.hostname || '').trim());
   },
   isDisplayMode() {
-    return this.isGitHubPagesHost();
+    return this.isGitHubPagesHost() && !String(RuntimeConfig.API_BASE_URL || '').trim();
   },
   async safeReadResponse(response) {
     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
@@ -1019,7 +1029,7 @@ const Utils = {
     const text = String(message || '');
     if (/Selected model is at capacity|Rate limit exceeded|429|503|Timeout|Network Error/i.test(text)) return '当前 AI 模型繁忙，请稍后重试。';
     if (/Failed to execute 'text' on 'Response'|body used already|already been read|response.*used/i.test(text)) return '接口返回解析失败，请刷新后重试。';
-    if (/API Key|api key|KEY/i.test(text) && /missing|not configured|未配置|缺失/i.test(text)) return '未配置 API Key，已切换 Mock 模式。';
+    if (/API Key|api key|KEY|DeepSeek|AI 服务/i.test(text) && /missing|not configured|未配置|缺失|暂未配置/i.test(text)) return 'AI 服务暂未配置。';
     if (/PDF/i.test(text) && /fail|error|missing|parse/i.test(text)) return 'PDF 无法提取文字，请尝试 OCR。';
     if (/File too large|too large|超过/i.test(text)) return '文件过大，请压缩或拆分后上传。';
     if (/Failed to fetch|Load failed|NetworkError/i.test(text)) return '网络连接失败，请检查本地服务或网络状态。';
