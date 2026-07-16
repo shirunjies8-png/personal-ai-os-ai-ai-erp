@@ -45,3 +45,5 @@ services:
         value: 100000
       - key: DEEPSEEK_MAX_CONTEXT_TOKENS
         value: 64000
+      - key: AI_IP_RATE_LIMIT
+        value: 120

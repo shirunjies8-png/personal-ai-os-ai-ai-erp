@@ -68,6 +68,7 @@ module.exports = {
   deepseekCacheTtlSeconds: numberEnv('DEEPSEEK_CACHE_TTL_SECONDS', 86400, { min: 0 }),
   deepseekCircuitFailureThreshold: numberEnv('DEEPSEEK_CIRCUIT_FAILURE_THRESHOLD', 3, { min: 1, max: 20 }),
   deepseekCircuitCooldownMs: numberEnv('DEEPSEEK_CIRCUIT_COOLDOWN_MS', 60000, { min: 1000, max: 3600000 }),
+  aiIpRateLimit: numberEnv('AI_IP_RATE_LIMIT', 120, { min: 1, max: 10000 }),
   capabilityAi: process.env.CAPABILITY_AI,
   capabilityAgents: process.env.CAPABILITY_AGENTS,
   capabilitySkills: process.env.CAPABILITY_SKILLS,

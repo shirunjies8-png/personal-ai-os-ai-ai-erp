@@ -17,17 +17,26 @@ gateway.resetCircuitForTests();
 
 const base = (suffix, extra = {}) => ({
   requestId: `test-ai-${suffix}`, enterpriseId: tenant, userId: 'test-user', role: 'admin',
-  agentId: 'quality-agent', module: 'ocr', taskType: 'correct', promptVersion: 'test-v1',
+  agentId: 'agent-runtime', module: 'ocr', taskType: 'correct', promptVersion: 'test-v1',
   messages: [{ role: 'user', content: `测试任务 ${suffix}` }], maxTokens: 100, forceRegenerate: true,
   ...extra
 });
 const jsonResponse = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(body) });
 const successFetch = async () => jsonResponse({ choices: [{ message: { content: '仅为测试响应' }, finish_reason: 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, prompt_cache_hit_tokens: 0 } });
 
+assert.deepEqual(costs.PRICING_CNY_PER_MILLION['deepseek-v4-flash'], {
+  currency: 'CNY', effectiveDate: '2026-04-24', inputCacheHitPerMillion: 0.02, inputCacheMissPerMillion: 1, outputPerMillion: 2
+});
+assert.equal(costs.estimateCost({ model: 'unsupported-model', inputTokens: 1, outputTokens: 1 }), null);
+
 const disabled = await gateway.chat(base('disabled'), { apiKey: '' });
 assert.equal(disabled.status, 'disabled');
 assert.equal(disabled.content, '');
 assert.match(disabled.errors[0], /未配置真实 DeepSeek/);
+
+const unsupportedModel = costs.preflight({ enterpriseId: tenant, userId: 'test-user', model: 'unsupported-model', messages: [{ role: 'user', content: 'test' }], maxOutputTokens: 10 });
+assert.equal(unsupportedModel.allowed, false);
+assert.equal(unsupportedModel.code, 'UNSUPPORTED_MODEL');
 
 const mock = await gateway.chat(base('mock', { demoMode: true, provider: 'mock' }), { apiKey: '' });
 assert.equal(mock.status, 'mock_completed');
@@ -113,7 +122,7 @@ const usage = costs.usage({ enterpriseId: tenant, isAdmin: true });
 assert.ok(usage.today.requests > 0);
 assert.ok(usage.today.inputTokens >= 11);
 assert.ok(usage.byModule.some(item => item.name === 'ocr'));
-assert.ok(usage.byAgent.some(item => item.name === 'quality-agent'));
+assert.ok(usage.byAgent.some(item => item.name === 'agent-runtime'));
 assert.ok(usage.byUser.some(item => item.name === 'test-user'));
 assert.ok(usage.byProvider.some(item => item.name === 'deepseek'));
 assert.ok(usage.byModel.some(item => item.name === 'deepseek-v4-flash'));

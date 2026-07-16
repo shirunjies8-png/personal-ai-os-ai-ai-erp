@@ -3,6 +3,7 @@ const costControl = require('../services/costControlService');
 const policy = require('../services/securityPolicyService');
 
 const MODULES = new Set(['ai-office', 'ocr', 'inquiry', 'quotation', 'rfq', '8d', 'apqp', 'customer-reply', 'document-summary', 'contract-risk', 'agent', 'gateway-test', 'general', 'default']);
+const AGENT_IDS = new Set(['', 'EnterpriseAgentRuntimeV1', 'agent-runtime']);
 
 function context(req, taskType) {
   const moduleName = MODULES.has(String(req.body?.module || '')) ? String(req.body.module) : 'general';
@@ -16,7 +17,7 @@ function context(req, taskType) {
     userId: req.user.id,
     enterpriseId: req.user.enterprise_id,
     role: req.user.role,
-    agentId: String(req.body?.agentId || '').slice(0, 100),
+    agentId: AGENT_IDS.has(String(req.body?.agentId || '')) ? String(req.body?.agentId || '') : '',
     temperature: req.body?.temperature,
     maxTokens: req.body?.max_tokens,
     timeout: req.body?.timeout,

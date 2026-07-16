@@ -180,6 +180,12 @@ async function chat(input = {}, runtime = {}) {
     return result;
   }
 
+  if (!costControl.getPrice(config.model)) {
+    const result = responseShape({ ...base, status: 'failed', errors: ['当前模型未配置受控价格，已阻止调用。'] });
+    recordOutcome(input, result, { errorSignature: 'deepseek-unsupported-model' });
+    return result;
+  }
+
   let protectedPayload;
   try {
     protectedPayload = redaction.protectMessages(messages, { mode: input.sensitiveMode || 'mask', confirmed: input.sensitiveConfirmed === true });
@@ -189,7 +195,7 @@ async function chat(input = {}, runtime = {}) {
     return result;
   }
   const maxTokens = Math.min(Number(input.maxTokens || env.deepseekMaxOutputTokens), env.deepseekMaxOutputTokens);
-  const budget = costControl.preflight({ ...input, messages: protectedPayload.messages, maxOutputTokens: maxTokens, now: new Date(startedAt) }, runtime.limits);
+  const budget = costControl.preflight({ ...input, model: config.model, messages: protectedPayload.messages, maxOutputTokens: maxTokens, now: new Date(startedAt) }, runtime.limits);
   if (!budget.allowed) {
     const signature = ['CONTEXT_TOO_LARGE', 'REQUEST_TOO_LARGE', 'CONTEXT_TOKEN_LIMIT'].includes(budget.code) ? 'deepseek-context-too-large' : 'deepseek-budget-blocked';
     const result = responseShape({ ...base, status: 'budget_blocked', budgetStatus: 'blocked', errors: [budget.reason] });
@@ -228,8 +234,10 @@ async function chat(input = {}, runtime = {}) {
       const inputTokens = Number(usage.prompt_tokens ?? usage.input_tokens ?? budget.estimatedInputTokens ?? 0);
       const outputTokens = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
       const totalTokens = Number(usage.total_tokens ?? inputTokens + outputTokens);
-      const cachedInputTokens = Number(usage.prompt_cache_hit_tokens || 0);
+      const hasCacheUsage = Number.isFinite(Number(usage.prompt_cache_hit_tokens));
+      const cachedInputTokens = hasCacheUsage ? Number(usage.prompt_cache_hit_tokens) : 0;
       const warnings = [];
+      if (!hasCacheUsage) warnings.push('上游未返回输入缓存命中 Token，费用按未命中保守估算。');
       let status = 'success';
       if (provider.finishReason === 'length') { status = 'partial_success'; warnings.push('模型输出达到长度上限，结果可能被截断。'); }
       if (/(.{20,})\1\1/.test(provider.content)) { status = 'partial_success'; warnings.push('检测到明显重复文本，请人工复核。'); }

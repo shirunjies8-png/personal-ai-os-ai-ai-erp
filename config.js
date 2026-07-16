@@ -9,15 +9,16 @@
     ? window.localStorage.getItem('personal_ai_os_api_base_url')
     : '';
 
-  const fallbackRemoteApi = 'https://your-render-service.onrender.com';
+  // GitHub Pages never guesses a backend URL: an operator must explicitly publish
+  // the HTTPS gateway URL through the runtime config or local override.
+  const fallbackRemoteApi = '';
 
   const apiBaseUrl =
     storedApiBase ||
     (typeof window !== 'undefined' && window.PERSONAL_AI_OS_API_BASE_URL) ||
     (isLocalhost ? currentOrigin : '') ||
     (isRender ? currentOrigin : '') ||
-    (isGithubPages ? fallbackRemoteApi : '') ||
-    fallbackRemoteApi;
+    (isGithubPages ? fallbackRemoteApi : '');
 
   window.PERSONAL_AI_OS_CONFIG = {
     API_BASE_URL: apiBaseUrl,
