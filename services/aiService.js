@@ -58,6 +58,7 @@ async function completeChat({ messages, prompt, moduleName = 'default', taskType
     status: payload.status,
     structuredData: payload.structuredData,
     estimatedCost: payload.estimatedCost,
+    cost: payload.cost,
     cached: payload.cached,
     cacheCreatedAt: payload.cacheCreatedAt,
     retryCount: payload.retryCount,

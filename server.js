@@ -13,6 +13,10 @@ const errorHandler = require('./middleware/errorHandler');
 const app = express();
 const publicDir = path.join(process.cwd(), 'public');
 
+if (env.nodeEnv === 'production' && (env.jwtSecret === 'change-me' || String(env.jwtSecret).length < 32)) {
+  throw new Error('Production requires a strong JWT_SECRET configured only in the deployment environment.');
+}
+
 const deepseekStatus = env.deepseekApiKey
   ? `DeepSeek 网关已配置 | Model: ${env.deepseekModel}`
   : '未检测到 DEEPSEEK_API_KEY';

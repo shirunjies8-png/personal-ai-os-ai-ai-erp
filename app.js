@@ -5255,7 +5255,7 @@ const App = {
         o.aiSuggestionMeta = {
           provider: 'deepseek', model: ai.model || '', createdAt: new Date().toISOString(),
           inputTokens: ai.usage?.prompt_tokens || 0, outputTokens: ai.usage?.completion_tokens || 0,
-          totalTokens: ai.usage?.total_tokens || 0, estimatedCost: ai.estimatedCost || 0,
+          totalTokens: ai.usage?.total_tokens || 0, estimatedCost: ai.estimatedCost || 0, cost: ai.cost || null,
           cached: Boolean(ai.cached), confirmed: false
         };
       } catch (error) {

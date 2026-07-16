@@ -80,7 +80,7 @@ function responseShape(overrides = {}) {
     requestId: overrides.requestId || '', provider: overrides.provider || 'deepseek', model: overrides.model || '',
     mode: overrides.mode || 'disabled', status: overrides.status || 'failed', content: overrides.content || '',
     structuredData: overrides.structuredData ?? null, inputTokens: Number(overrides.inputTokens || 0), outputTokens: Number(overrides.outputTokens || 0),
-    totalTokens: Number(overrides.totalTokens || 0), estimatedCost: Number(overrides.estimatedCost || 0), durationMs: Number(overrides.durationMs || 0),
+    totalTokens: Number(overrides.totalTokens || 0), estimatedCost: Number(overrides.estimatedCost || 0), cost: overrides.cost || costControl.costView(overrides.estimatedCost || 0), durationMs: Number(overrides.durationMs || 0),
     cached: Boolean(overrides.cached), cacheCreatedAt: overrides.cacheCreatedAt || '', retryCount: Number(overrides.retryCount || 0),
     budgetStatus: overrides.budgetStatus || 'normal', warnings: Array.isArray(overrides.warnings) ? overrides.warnings : [],
     errors: Array.isArray(overrides.errors) ? overrides.errors : [], createdAt: overrides.createdAt || new Date().toISOString()
@@ -246,7 +246,8 @@ async function chat(input = {}, runtime = {}) {
         try { structuredData = JSON.parse(provider.content); } catch { status = 'partial_success'; warnings.push('结构化响应格式不符合要求，请人工复核。'); }
         if (structuredData && typeof structuredData === 'object' && Object.values(structuredData).every(value => value == null || value === '')) { status = 'partial_success'; warnings.push('结构化字段全部为空。'); }
       }
-      const result = responseShape({ ...base, mode: 'live', status, content: provider.content, structuredData, inputTokens, outputTokens, totalTokens, estimatedCost: costControl.estimateCost({ model: config.model, inputTokens, outputTokens, cachedInputTokens }), durationMs: Date.now() - startedAt, retryCount: attempt, budgetStatus: budget.status, warnings });
+      const estimatedCost = costControl.estimateCost({ model: config.model, inputTokens, outputTokens, cachedInputTokens });
+      const result = responseShape({ ...base, mode: 'live', status, content: provider.content, structuredData, inputTokens, outputTokens, totalTokens, estimatedCost, cost: costControl.costView(estimatedCost), durationMs: Date.now() - startedAt, retryCount: attempt, budgetStatus: budget.status, warnings });
       registerSuccess(createdAt);
       recordOutcome(input, result, { errorSignature: provider.finishReason === 'length' ? 'deepseek-output-truncated' : '', redactionCount: protectedPayload.total });
       try {
