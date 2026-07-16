@@ -3,8 +3,12 @@ const db = require('../database/init');
 const env = require('../config/env');
 
 const PRICING_CNY_PER_MILLION = Object.freeze({
-  'deepseek-v4-flash': { inputMiss: 1, inputHit: 0.02, output: 2 },
-  'deepseek-v4-pro': { inputMiss: 3, inputHit: 0.025, output: 6 }
+  'deepseek-v4-flash': Object.freeze({
+    currency: 'CNY', effectiveDate: '2026-04-24', inputCacheHitPerMillion: 0.02, inputCacheMissPerMillion: 1, outputPerMillion: 2
+  }),
+  'deepseek-v4-pro': Object.freeze({
+    currency: 'CNY', effectiveDate: '2026-04-24', inputCacheHitPerMillion: 0.025, inputCacheMissPerMillion: 3, outputPerMillion: 6
+  })
 });
 
 function clamp(value, min = 0, max = Number.MAX_SAFE_INTEGER) {
@@ -23,11 +27,14 @@ function estimate(messages = []) {
 }
 
 function estimateCost({ model, inputTokens = 0, outputTokens = 0, cachedInputTokens = 0 } = {}) {
-  const price = PRICING_CNY_PER_MILLION[model] || PRICING_CNY_PER_MILLION['deepseek-v4-flash'];
+  const price = PRICING_CNY_PER_MILLION[model];
+  if (!price) return null;
   const hit = clamp(cachedInputTokens, 0, inputTokens);
   const miss = Math.max(0, clamp(inputTokens) - hit);
-  return Number(((miss * price.inputMiss + hit * price.inputHit + clamp(outputTokens) * price.output) / 1000000).toFixed(8));
+  return Number(((miss * price.inputCacheMissPerMillion + hit * price.inputCacheHitPerMillion + clamp(outputTokens) * price.outputPerMillion) / 1000000).toFixed(8));
 }
+
+function getPrice(model) { return PRICING_CNY_PER_MILLION[model] || null; }
 
 function configuredLimits(overrides = {}) {
   return {
@@ -84,6 +91,7 @@ function preflight(context = {}, overrides = {}) {
   const enterpriseMonthly = sum('enterprise_id = ? AND created_at LIKE ?', [context.enterpriseId, month]);
   const systemMonthly = sum('created_at LIKE ?', [month]);
   const estimatedCostForRequest = estimateCost({ model: context.model, inputTokens: estimatedInputTokens, outputTokens: maxOutputTokens });
+  if (estimatedCostForRequest == null) return { allowed: false, code: 'UNSUPPORTED_MODEL', status: 'blocked', reason: '当前模型未配置受控价格，已阻止调用。', estimatedInputTokens, maxOutputTokens };
   const blocks = [
     [userDaily.request_count >= limits.dailyRequestLimit, 'USER_DAILY_REQUEST_LIMIT', '用户今日 AI 请求次数已达上限。'],
     [enterpriseDaily.request_count >= limits.enterpriseDailyRequestLimit, 'ENTERPRISE_DAILY_REQUEST_LIMIT', '企业今日 AI 请求次数已达上限。'],
@@ -178,4 +186,4 @@ function resetForTests() {
   db.prepare("DELETE FROM ai_cache_entries WHERE cache_key LIKE 'test-%'").run();
 }
 
-module.exports = { PRICING_CNY_PER_MILLION, estimate, estimateCost, configuredLimits, preflight, record, usage, cacheGet, cacheSet, cacheDelete, resetForTests, budgetStatus };
+module.exports = { PRICING_CNY_PER_MILLION, getPrice, estimate, estimateCost, configuredLimits, preflight, record, usage, cacheGet, cacheSet, cacheDelete, resetForTests, budgetStatus };
