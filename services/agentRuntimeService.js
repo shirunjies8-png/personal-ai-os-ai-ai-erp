@@ -275,6 +275,10 @@ async function runTask(taskId) {
         const ai = await gatewayChat({
           module: 'agent-runtime',
           enterpriseId: task.enterprise_id,
+          userId: task.user_id,
+          agentId: task.agent_name || 'agent-runtime',
+          role: 'operator',
+          taskType: 'agent-summary',
           messages: [{
             role: 'user',
             content: `请基于以下任务与工具结果生成中文汇总。\n任务：${task.goal}\n\n工具结果：\n${toolResults || '未引用来源'}\n\n要求：1. 如果没有来源，明确写“未引用来源”。2. 不确定时写“无法确认”。3. 输出 confidence 字段。`
@@ -283,6 +287,11 @@ async function runTask(taskId) {
           demoMode: false,
           timeout: 30000
         });
+        if (!['success', 'partial_success'].includes(ai.status) || !String(ai.content || '').trim()) {
+          const error = new Error(ai.errors?.[0] || 'AI 汇总失败');
+          error.code = ai.status || 'AI_FAILED';
+          throw error;
+        }
         output.result = ai.content;
         output.summary = ai.content.slice(0, 800);
         output.confidence = toolResults ? 0.82 : 0.4;

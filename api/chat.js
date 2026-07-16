@@ -1,46 +1,32 @@
-const env = require('../config/env');
-const { complete } = require('../services/aiService');
+const aiGateway = require('../services/aiGateway');
+const { verifyToken } = require('../utils/jwt');
+const userModel = require('../models/userModel');
 
 module.exports = async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Origin', process.env.APP_URL || 'http://127.0.0.1:3000');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') {
-    return res.status(405).json({ ok: false, message: 'Method Not Allowed' });
-  }
+  if (req.method !== 'POST') return res.status(405).json({ ok: false, message: 'Method Not Allowed' });
   try {
-    const result = await complete({
+    const authorization = String(req.headers.authorization || '');
+    if (!authorization.startsWith('Bearer ')) return res.status(401).json({ ok: false, message: '请先登录' });
+    const decoded = verifyToken(authorization.slice(7));
+    const user = userModel.findById(decoded.userId);
+    if (!user) return res.status(401).json({ ok: false, message: '登录已失效' });
+    const result = await aiGateway.chat({
       messages: req.body?.messages,
-      moduleName: req.body?.module || 'default',
-      model: req.body?.model || env.deepseekModel || 'deepseek-v4-flash',
-      temperature: req.body?.temperature ?? 0.2,
-      maxTokens: req.body?.max_tokens ?? 2048,
-      timeout: req.body?.timeout ?? 30000,
-      provider: req.body?.provider || env.aiProvider || 'deepseek',
-      baseUrl: req.body?.providerBaseUrl || env.deepseekBaseUrl,
+      provider: req.body?.demoMode ? 'mock' : 'deepseek',
       demoMode: Boolean(req.body?.demoMode),
-      allowMockFallback: req.body?.allowMockFallback !== false
+      module: String(req.body?.module || 'general').slice(0, 60),
+      taskType: 'chat', userId: user.id, enterpriseId: user.enterprise_id, role: user.role,
+      maxTokens: req.body?.max_tokens, timeout: req.body?.timeout,
+      sensitiveMode: req.body?.sensitiveMode || 'mask', sensitiveConfirmed: req.body?.sensitiveConfirmed === true,
+      highCostConfirmed: false, forceRegenerate: Boolean(req.body?.forceRegenerate)
     });
-    return res.status(200).json({
-      ok: true,
-      reply: result.text,
-      text: result.text,
-      provider: result.provider || req.body?.provider || env.aiProvider || 'deepseek',
-      model: result.model || req.body?.model || env.deepseekModel || 'deepseek-v4-flash',
-      requestId: result.requestId || '',
-      httpStatus: result.httpStatus || 200,
-      promptTokens: result.usage?.prompt_tokens || 0,
-      completionTokens: result.usage?.completion_tokens || 0,
-      totalTokens: result.usage?.total_tokens || 0,
-      rawError: result.rawError || '',
-      latencyMs: result.latencyMs || 0,
-      mock: result.mode === 'mock'
-    });
-  } catch (error) {
-    return res.status(error.status || 500).json({
-      ok: false,
-      message: error.message || '当前未配置 DeepSeek API Key，无法调用真实 AI。'
-    });
+    const ok = ['success', 'partial_success', 'mock_completed'].includes(result.status);
+    return res.status(ok ? 200 : result.status === 'disabled' ? 503 : result.status === 'budget_blocked' ? 429 : 502).json({ ok, data: result, ...result });
+  } catch {
+    return res.status(500).json({ ok: false, message: 'AI 网关处理失败' });
   }
 };

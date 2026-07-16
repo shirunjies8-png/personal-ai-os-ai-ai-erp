@@ -14,8 +14,9 @@ const app = express();
 const publicDir = path.join(process.cwd(), 'public');
 
 const deepseekStatus = env.deepseekApiKey
-  ? `DeepSeek 已连接 | Base URL: ${env.deepseekBaseUrl} | Model: ${env.deepseekModel}`
+  ? `DeepSeek 网关已配置 | Model: ${env.deepseekModel}`
   : '未检测到 DEEPSEEK_API_KEY';
+const corsOrigins = new Set(env.corsAllowedOrigins);
 
 app.use(helmet({
   crossOriginResourcePolicy: false,
@@ -31,13 +32,21 @@ app.use(helmet({
       objectSrc: ["'none'"],
       scriptSrc: ["'self'"],
       scriptSrcAttr: ["'none'"],
+      connectSrc: ["'self'", 'https:'],
       styleSrc: ["'self'", 'https:', "'unsafe-inline'"],
       workerSrc: ["'self'", 'blob:'],
       upgradeInsecureRequests: []
     }
   }
 }));
-app.use(cors());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || corsOrigins.has(origin)) return callback(null, true);
+    return callback(new Error('CORS origin is not allowed'));
+  },
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan('dev'));

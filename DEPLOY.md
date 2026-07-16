@@ -44,18 +44,19 @@ npm start
 5. 在 Render 环境变量中配置：
 
 ```env
-DEEPSEEK_API_KEY=你的真实DeepSeekKey
+DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 HOST=0.0.0.0
 PORT=3000
-APP_URL=https://你的Render后端地址
+APP_URL=https://你的前端地址
+CORS_ALLOWED_ORIGINS=https://shirunjies8-png.github.io,https://你的前端地址
 ```
 
 6. 部署后后端会提供：
 
 - `GET /api/health`
-- `POST /api/chat`
+- `POST /api/ai/chat`（需认证；服务端网关）
 
 ## 三、前端如何连接 Render 后端
 
@@ -82,7 +83,7 @@ https://your-render-service.onrender.com
 DeepSeek Key 只放在 Render 环境变量里：
 
 ```env
-DEEPSEEK_API_KEY=你的真实DeepSeekKey
+DEEPSEEK_API_KEY=
 ```
 
 不要写进前端代码、不要提交到 GitHub Pages、不要放进 `config.js`。

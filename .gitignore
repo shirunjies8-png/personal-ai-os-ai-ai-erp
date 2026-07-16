@@ -20,6 +20,9 @@ database/*.sqlite3-shm
 database/*.sqlite3-wal
 database/*.sqlite3-journal
 logs/*.log
+logs/ai-*
+ai-cache/
+*.cache.json
 BUG_REPORT.md
 TEST_REPORT.md
 dist/
