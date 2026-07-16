@@ -66,7 +66,7 @@ function detectQuality(input = {}, moduleName = 'general') {
   };
 }
 
-async function maybeAiRefine(report, allowAi = false) {
+async function maybeAiRefine(report, allowAi = false, context = {}) {
   if (!allowAi || !env.deepseekApiKey) return report;
   try {
     const prompt = [
@@ -79,10 +79,13 @@ async function maybeAiRefine(report, allowAi = false) {
       moduleName: 'quality-check',
       model: env.deepseekModel,
       provider: env.aiProvider || 'deepseek',
-      baseUrl: env.deepseekBaseUrl,
       timeout: 30000,
       allowMockFallback: false,
-      demoMode: false
+      demoMode: false,
+      userId: context.userId,
+      enterpriseId: context.enterpriseId,
+      role: context.role,
+      taskType: 'quality-review'
     });
     const content = String(response.text || response.content || '').trim();
     if (!content) return report;
@@ -136,9 +139,9 @@ function exportReport(report, moduleName = 'general') {
   return lines.join('\n');
 }
 
-async function checkQuality(payload = {}) {
+async function checkQuality(payload = {}, context = {}) {
   const report = detectQuality(payload, payload.module || 'general');
-  const refined = await maybeAiRefine(report, Boolean(payload.allowAi));
+  const refined = await maybeAiRefine(report, Boolean(payload.allowAi), context);
   logger.info('quality check', {
     requestId: refined.requestId,
     module: `quality-${payload.module || 'general'}`,
@@ -149,8 +152,8 @@ async function checkQuality(payload = {}) {
   return refined;
 }
 
-async function fixQuality(payload = {}) {
-  const checked = await checkQuality(payload);
+async function fixQuality(payload = {}, context = {}) {
+  const checked = await checkQuality(payload, context);
   const requireApproval = checked.risk === '高' || Boolean(payload.requireApproval);
   const fixed = {
     ...checked,

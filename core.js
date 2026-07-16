@@ -19,7 +19,6 @@ const DefaultState = {
     accessMode: RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY ? 'cloud' : 'local',
     apiEnabled: Boolean(RuntimeConfig.API_BASE_URL && !RuntimeConfig.DEMO_LOGIN_ONLY),
     apiUrl: RuntimeConfig.API_BASE_URL || '',
-    apiKey: '',
     model: 'deepseek-v4-flash',
     backupModels: ['deepseek-v4-pro', 'qwen-plus'],
     temperature: 0.2,
@@ -448,13 +447,6 @@ const APIClient = {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     return base ? `${base}${normalizedPath}` : normalizedPath;
   },
-  resolveOpenAIEndpoint(baseUrl = '') {
-    const normalized = String(baseUrl || '').trim().replace(/\/$/, '');
-    if (!normalized) return '';
-    if (/\/chat\/completions$/i.test(normalized)) return normalized;
-    if (/\/v1$/i.test(normalized)) return `${normalized}/chat/completions`;
-    return `${normalized}/v1/chat/completions`;
-  },
   resolveGatewayBase() {
     const configured = String(RuntimeConfig.API_BASE_URL || '').trim().replace(/\/$/, '');
     if (configured) return configured;
@@ -491,19 +483,23 @@ const APIClient = {
     if (!baseUrl || /your-vercel-backend\.vercel\.app/.test(baseUrl)) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
     const displayMode = Utils.isDisplayMode();
     try {
-      return await this.request('/api/chat', {
+      return await this.request('/api/ai/chat', {
         method: 'POST',
         body: JSON.stringify({
           messages,
           module,
-          provider: extra.provider || Store.state.settings.provider || 'deepseek',
-          model: extra.model || Store.state.settings.model || 'deepseek-v4-flash',
           temperature: extra.temperature ?? Store.state.settings.temperature ?? 0.2,
           max_tokens: extra.max_tokens ?? Store.state.settings.maxTokens ?? 2048,
           timeout: extra.timeout ?? (Store.state.settings.timeout || 30000),
           demoMode: extra.demoMode ?? (displayMode || Store.state.settings.accessMode === 'local'),
-          allowMockFallback: extra.allowMockFallback ?? true,
-          stream: extra.stream ?? false
+          stream: false,
+          agentId: extra.agentId || '',
+          promptVersion: extra.promptVersion || 'v1',
+          forceRegenerate: Boolean(extra.forceRegenerate),
+          sensitiveMode: extra.sensitiveMode || 'mask',
+          sensitiveConfirmed: extra.sensitiveConfirmed === true,
+          highCostConfirmed: extra.highCostConfirmed === true,
+          expectStructured: Boolean(extra.expectStructured)
         })
       }, { baseUrl, timeout: Store.state.settings.timeout || 30000 });
     } catch (error) {
@@ -518,19 +514,19 @@ const APIClient = {
     const baseUrl = this.resolveGatewayBase();
     if (!baseUrl) throw new Error('AI 后端连接失败：未配置有效的 API_BASE_URL');
     const displayMode = Utils.isDisplayMode();
-    return this.request('/api/chat', {
+    return this.request('/api/ai/chat', {
       method: 'POST',
       body: JSON.stringify({
         messages,
         module: extra.module || 'general',
-        provider: extra.provider || settings.provider || 'deepseek',
-        model: extra.model || settings.model || 'deepseek-v4-flash',
         temperature: extra.temperature ?? settings.temperature ?? 0.2,
         max_tokens: extra.max_tokens ?? settings.maxTokens ?? 2048,
         timeout: extra.timeout ?? (settings.timeout || 30000),
         demoMode: extra.demoMode ?? (displayMode || settings.accessMode === 'local'),
-        allowMockFallback: extra.allowMockFallback ?? true,
-        stream: extra.stream ?? false
+        stream: false,
+        sensitiveMode: extra.sensitiveMode || 'mask',
+        sensitiveConfirmed: extra.sensitiveConfirmed === true,
+        forceRegenerate: Boolean(extra.forceRegenerate)
       })
     }, { baseUrl, timeout: Math.max(1000, Number(settings.timeout || 30000)) });
   },
@@ -633,6 +629,12 @@ const Store = {
         settings: { ...DefaultState.settings, ...(saved.settings || {}) },
         recentOpenIds: Array.isArray(saved.recentOpenIds) ? saved.recentOpenIds : []
       } : structuredClone(DefaultState);
+      if (this.state.settings && Object.prototype.hasOwnProperty.call(this.state.settings, 'apiKey')) {
+        delete this.state.settings.apiKey;
+        localStorage.setItem(APP_KEY, JSON.stringify(this.state));
+      }
+      sessionStorage.removeItem('deepseek_api_key');
+      localStorage.removeItem('deepseek_api_key');
       if (!Array.isArray(this.state.files)) this.state.files = [];
       if (!Array.isArray(this.state.knowledge)) this.state.knowledge = [];
       if (!Array.isArray(this.state.agentRuns)) this.state.agentRuns = [];
@@ -804,7 +806,6 @@ const Store = {
   },
   backup() {
     const clone = structuredClone(this.state);
-    clone.settings.apiKey = '';
     if (clone.settings.agentMail) clone.settings.agentMail.apiKey = '';
     if (Array.isArray(clone.connectors)) {
       clone.connectors = clone.connectors.map(item => ({
@@ -878,7 +879,6 @@ const Store = {
   },
   restore(data) {
     if (!data || typeof data !== 'object' || !data.settings) throw new Error('备份文件格式不正确');
-    const currentKey = this.state.settings.apiKey;
     const currentMailKey = this.state.settings.agentMail?.apiKey || '';
     this.state = {
       ...structuredClone(DefaultState),
@@ -886,7 +886,6 @@ const Store = {
       settings: {
         ...DefaultState.settings,
         ...data.settings,
-        apiKey: currentKey,
         agentMail: {
           ...structuredClone(DefaultState.settings.agentMail),
           ...(data.settings.agentMail || {}),
@@ -911,14 +910,12 @@ const Store = {
         APIClient.request('/api/logs?limit=100')
       ]);
       if (stateRes.data?.state) {
-        const localApiKey = this.state.settings.apiKey || '';
         this.state = {
           ...this.state,
           ...stateRes.data.state,
           settings: {
             ...this.state.settings,
-            ...(stateRes.data.state.settings || {}),
-            apiKey: localApiKey
+            ...(stateRes.data.state.settings || {})
           }
         };
       }
@@ -948,7 +945,7 @@ const Store = {
     this.syncing = true;
     try {
       const syncState = structuredClone(this.state);
-      if (syncState.settings) syncState.settings.apiKey = '';
+      if (syncState.settings) delete syncState.settings.apiKey;
       if (syncState.settings?.agentMail) syncState.settings.agentMail.apiKey = '';
       if (Array.isArray(syncState.connectors)) {
         syncState.connectors = syncState.connectors.map(item => ({
@@ -2255,7 +2252,7 @@ const AIService = {
     const system = options.system || '你是 Personal AI OS 企业版中的严谨中文办公助手。回答必须可执行、保留关键业务字段、避免空泛表述。';
     const provider = settings.provider || 'deepseek';
     const model = settings.model || 'deepseek-v4-flash';
-    const allowMockFallback = options.allowMockFallback ?? (settings.accessMode !== 'api');
+    const allowMockFallback = false;
     const displayMode = Utils.isDisplayMode();
     const messages = Array.isArray(prompt)
       ? prompt
@@ -2263,22 +2260,25 @@ const AIService = {
           { role: 'system', content: system },
           { role: 'user', content: String(prompt || '') }
         ];
-    if (displayMode || settings.accessMode === 'local') {
-      const fallbackMessage = displayMode
-        ? '当前为 GitHub Pages 展示模式，真实 AI 后端未连接。'
-        : 'AI Gateway 未启用，当前使用 Mock 兜底。';
+    if (displayMode) {
+      const disabledMessage = '当前为 GitHub Pages 静态安全模式，未配置独立服务端 DeepSeek 网关。';
+      this.lastMode = 'disabled';
+      this.setStatus('disabled', disabledMessage, model);
+      Store.logAiHistory({ module: options.module || options.mode || 'general', provider, model, success: false, mock: false, duration: 0, error: disabledMessage, rawError: disabledMessage });
+      throw new Error(disabledMessage);
+    }
+    if (settings.accessMode === 'local') {
+      const fallbackMessage = 'AI Gateway 未启用，当前使用 Mock 兜底。';
       const fallback = typeof options.mockFallback === 'function'
         ? options.mockFallback(fallbackMessage)
-        : options.mockFallback ?? (displayMode
-          ? `当前为 GitHub Pages 展示模式，真实 AI 后端未连接。\n已使用 Mock 演示回复。\n如需真实AI，请部署后端并配置 DEEPSEEK_API_KEY。`
-          : fallbackMessage);
+        : options.mockFallback ?? `当前为 Mock 演示数据，非真实 DeepSeek 结果。\n${fallbackMessage}`;
       this.lastMode = 'mock';
       this.setStatus('mock', fallbackMessage, model);
       Store.logAiHistory({
         module: options.module || options.mode || 'general',
         provider,
         model,
-        success: true,
+        success: false,
         mock: true,
         duration: 0,
         error: fallbackMessage,
@@ -2296,20 +2296,27 @@ const AIService = {
         timeout: options.timeout ?? settings.timeout ?? 30000,
         demoMode: displayMode || settings.accessMode === 'local',
         allowMockFallback,
+        agentId: options.agentId || '',
+        promptVersion: options.promptVersion || 'v1',
+        forceRegenerate: Boolean(options.forceRegenerate),
+        sensitiveMode: options.sensitiveMode || 'mask',
+        sensitiveConfirmed: options.sensitiveConfirmed === true,
+        highCostConfirmed: options.highCostConfirmed === true,
+        expectStructured: Boolean(options.expectStructured),
         stream: false
       });
       const text = String(payload.content || payload.reply || payload.text || '').trim();
       if (!text) throw new Error(payload.rawError || '模型响应为空，请检查模型名称或请求格式。');
       const duration = Date.now() - startedAt;
       const usage = {
-        prompt_tokens: payload.promptTokens ?? 0,
-        completion_tokens: payload.completionTokens ?? 0,
+        prompt_tokens: payload.inputTokens ?? payload.promptTokens ?? 0,
+        completion_tokens: payload.outputTokens ?? payload.completionTokens ?? 0,
         total_tokens: payload.totalTokens ?? 0
       };
-      this.lastMode = payload.mock ? 'mock' : 'api';
+      this.lastMode = payload.status === 'mock_completed' ? 'mock' : 'api';
       Store.state.aiResult = {
         text,
-        mode: payload.mock ? 'mock' : 'api',
+        mode: payload.status === 'mock_completed' ? 'mock' : 'api',
         model: payload.model || model,
         requestId: payload.requestId || '',
         module: options.module || options.mode || 'general',
@@ -2317,14 +2324,14 @@ const AIService = {
         latencyMs: payload.latencyMs || duration
       };
       Store.save();
-      this.setStatus(payload.mock ? 'fallback' : 'online', payload.mock ? (payload.rawError || '真实 AI 调用失败，已自动切换 Mock。') : '真实 AI 调用成功', model);
+      this.setStatus(payload.status === 'mock_completed' ? 'mock' : 'online', payload.status === 'mock_completed' ? '当前为 Mock 演示数据，非真实 DeepSeek 结果。' : '真实 AI 调用成功', model);
       Store.logAiHistory({
         requestId: payload.requestId,
         module: options.module || options.mode || 'general',
         provider: payload.provider || provider,
         model: payload.model || model,
-        success: true,
-        mock: !!payload.mock,
+        success: ['success', 'partial_success'].includes(payload.status),
+        mock: payload.status === 'mock_completed',
         duration,
         error: payload.mock ? (payload.rawError || '已切换 Mock') : '',
         rawError: payload.rawError || '',
@@ -2333,23 +2340,28 @@ const AIService = {
         inputTokens: usage.prompt_tokens,
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
-        estimatedCost: usage.total_tokens ? Number((usage.total_tokens * 0.00001).toFixed(6)) : null,
+        estimatedCost: payload.estimatedCost ?? null,
         httpStatus: payload.httpStatus || 200
       });
       emit('ai:completed', Store.state.aiResult);
       return {
         text,
-        mode: payload.mock ? 'mock' : 'api',
+        mode: payload.status === 'mock_completed' ? 'mock' : 'api',
         model: payload.model || model,
         usage,
         requestId: payload.requestId,
-        rawError: payload.rawError || '',
         latencyMs: payload.latencyMs || duration,
-        fallbackReason: payload.fallbackReason || ''
+        estimatedCost: payload.estimatedCost || 0,
+        cached: Boolean(payload.cached),
+        cacheCreatedAt: payload.cacheCreatedAt || '',
+        retryCount: payload.retryCount || 0,
+        budgetStatus: payload.budgetStatus || 'normal',
+        warnings: payload.warnings || [],
+        status: payload.status
       };
     } catch (error) {
       const friendly = this.friendlyMessage(error);
-      this.lastMode = 'mock';
+      this.lastMode = 'error';
       Store.state.aiResult = {
         text: '',
         mode: 'error',
@@ -2361,7 +2373,7 @@ const AIService = {
         rawError: String(error?.rawError || error?.message || error || '')
       };
       Store.save();
-      this.setStatus('fallback', friendly, model);
+      this.setStatus('error', friendly, model);
       Store.logAiHistory({
         requestId: error.requestId,
         module: options.module || options.mode || 'general',
@@ -2374,13 +2386,6 @@ const AIService = {
         rawError: String(error?.rawError || error?.message || error || ''),
         httpStatus: error?.httpStatus || error?.status || null
       });
-      if (allowMockFallback) {
-        const fallback = typeof options.mockFallback === 'function'
-          ? options.mockFallback(friendly)
-          : options.mockFallback ?? `当前为演示模式，已使用内置演示数据生成结果。\n如需真实AI，请配置 Vercel + DEEPSEEK_API_KEY。\n原因：${friendly}`;
-        emit('ai:completed', Store.state.aiResult);
-        return { text: String(fallback || ''), mode: 'mock', model, error: friendly };
-      }
       throw new Error(friendly);
     }
   },

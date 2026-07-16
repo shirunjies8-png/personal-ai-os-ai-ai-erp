@@ -10,27 +10,43 @@ function buildMessages(prompt, options = {}) {
   ];
 }
 
-async function completeChat({ messages, prompt, moduleName = 'default', model, temperature = 0.2, maxTokens = 2048, timeout = 30000, apiKey, baseUrl, provider, mockFallback, demoMode, allowMockFallback }) {
+async function completeChat({ messages, prompt, moduleName = 'default', taskType = 'chat', model, temperature = 0.2, maxTokens, timeout, provider, demoMode, userId, enterpriseId, role, agentId, promptVersion, forceRegenerate, sensitiveMode, sensitiveConfirmed, highCostConfirmed, expectStructured, allowTools }, runtime = {}) {
   const payload = await chat({
     requestId: undefined,
     provider: provider || env.aiProvider || 'deepseek',
-    model: model || env.deepseekModel || 'deepseek-v4-flash',
+    model: model || env.deepseekModel,
     messages: messages || buildMessages(prompt, { moduleName }),
     module: moduleName,
+    taskType,
     temperature,
-    maxTokens,
-    timeout,
-    apiKey,
-    baseUrl,
-    mockFallback,
+    maxTokens: maxTokens || env.deepseekMaxOutputTokens,
+    timeout: timeout || env.deepseekTimeoutMs,
     demoMode: demoMode ?? false,
-    allowMockFallback: allowMockFallback ?? true
-  });
+    userId,
+    enterpriseId,
+    role,
+    agentId,
+    promptVersion,
+    forceRegenerate,
+    sensitiveMode,
+    sensitiveConfirmed,
+    highCostConfirmed,
+    expectStructured,
+    allowTools
+  }, runtime);
+  if (!['success', 'partial_success', 'mock_completed'].includes(payload.status)) {
+    const error = new Error(payload.errors?.[0] || 'AI 调用失败');
+    error.code = payload.status;
+    error.status = payload.status === 'disabled' ? 503 : payload.status === 'budget_blocked' ? 429 : 502;
+    error.result = payload;
+    error.requestId = payload.requestId;
+    throw error;
+  }
   const text = String(payload.content || '').trim();
   if (!text) throw new Error('模型响应为空，请检查模型名称或请求格式。');
   return {
     text,
-    mode: payload.mock ? 'mock' : 'api',
+    mode: payload.status === 'mock_completed' ? 'mock' : 'api',
     model: payload.model,
     usage: {
       prompt_tokens: payload.promptTokens || 0,
@@ -39,11 +55,17 @@ async function completeChat({ messages, prompt, moduleName = 'default', model, t
     },
     provider: payload.provider,
     requestId: payload.requestId,
-    raw: payload.raw || null,
-    httpStatus: payload.httpStatus || 200,
-    rawError: payload.rawError || '',
-    latencyMs: payload.latencyMs || 0,
-    fallbackReason: payload.fallbackReason || ''
+    status: payload.status,
+    structuredData: payload.structuredData,
+    estimatedCost: payload.estimatedCost,
+    cached: payload.cached,
+    cacheCreatedAt: payload.cacheCreatedAt,
+    retryCount: payload.retryCount,
+    budgetStatus: payload.budgetStatus,
+    warnings: payload.warnings,
+    errors: payload.errors,
+    latencyMs: payload.durationMs || 0,
+    durationMs: payload.durationMs || 0
   };
 }
 

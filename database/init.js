@@ -178,6 +178,50 @@ CREATE TABLE IF NOT EXISTS apqp_tasks (id TEXT PRIMARY KEY, project_id TEXT NOT 
 CREATE TABLE IF NOT EXISTS apqp_evidence (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, deliverable_id TEXT NOT NULL, file_name TEXT NOT NULL, note TEXT DEFAULT '', uploaded_by TEXT DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS apqp_stage_approvals (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, stage_id TEXT NOT NULL, status TEXT NOT NULL, requested_by TEXT DEFAULT '', decided_by TEXT DEFAULT '', reason TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS apqp_history (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, tenant_id TEXT NOT NULL, action TEXT NOT NULL, detail TEXT DEFAULT '', actor TEXT DEFAULT '', created_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS ai_usage_records (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL UNIQUE,
+  enterprise_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  agent_id TEXT DEFAULT '',
+  module TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cost REAL NOT NULL DEFAULT 0,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  cached INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  request_status TEXT NOT NULL,
+  budget_status TEXT NOT NULL DEFAULT 'normal',
+  error_signature TEXT DEFAULT '',
+  redaction_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_enterprise_date ON ai_usage_records(enterprise_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_user_date ON ai_usage_records(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_agent_date ON ai_usage_records(agent_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_module_date ON ai_usage_records(module, created_at);
+
+CREATE TABLE IF NOT EXISTS ai_cache_entries (
+  cache_key TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  user_scope TEXT NOT NULL,
+  module TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  sensitive INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_cache_enterprise ON ai_cache_entries(enterprise_id, created_at);
 `);
 
 function ensureColumns(table, columns) {

@@ -1169,7 +1169,7 @@ const App = {
       'aihistory-refresh': () => this.rerender(),
       'aihistory-export': () => this.aiHistoryExport(),
       'aihistory-clear': () => this.aiHistoryClear(),
-      'refresh-ai-status': () => this.rerender(),
+      'refresh-ai-status': () => this.refreshAiStatus(),
       'monitor-refresh': () => this.refreshAgentRuntime(true),
       'systemcheck-run': () => this.runSystemCheck(),
       'settings-tab': () => { this.temp.settingsTab = el.dataset.tab; this.rerender(); },
@@ -3700,6 +3700,30 @@ const App = {
     this.navigate('systemcheck');
   },
 
+  async refreshAiStatus() {
+    if (Utils.isGitHubPagesHost()) {
+      Store.state.aiServerStatus = { provider: 'deepseek', mode: 'disabled', enabled: false, healthy: false, pagesStaticSafeMode: true, message: '未配置独立服务端网关，Pages 不直接调用 DeepSeek。' };
+      Store.state.aiServerUsage = null;
+      Store.save();
+      this.rerender();
+      return;
+    }
+    try {
+      const [config, usage] = await Promise.all([
+        APIClient.request('/api/ai/config-safe'),
+        APIClient.request('/api/ai/usage')
+      ]);
+      Store.state.aiServerStatus = config.data || {};
+      Store.state.aiServerUsage = usage.data || {};
+      Store.save();
+      this.rerender();
+    } catch (error) {
+      Store.state.aiServerStatus = { provider: 'deepseek', mode: 'degraded', enabled: false, healthy: false, message: Utils.friendlyErrorMessage(error?.message || error) };
+      Store.save();
+      this.rerender();
+    }
+  },
+
   retryLastAiAction() {
     if (this.route === 'chat') return this.sendChat();
     if (this.route === 'assistant') return this.assistantRun();
@@ -3773,8 +3797,8 @@ const App = {
     let backendSuggestion = displayMode ? '部署真实后端后再切换到生产模式。' : '请先配置后端地址。';
 
     if (displayMode) {
-      gatewayStatus = '🟡 Mock 演示';
-      gatewayReason = 'GitHub Pages 无后端，已自动使用 Mock 演示。';
+      gatewayStatus = '⚪ disabled';
+      gatewayReason = 'GitHub Pages 静态安全模式不直接调用 DeepSeek。';
       gatewaySuggestion = '如需真实 AI，请部署后端。';
       deepseekStatus = '🟡 未连接';
       deepseekReason = 'GitHub Pages 展示模式不连接 DeepSeek。';
@@ -3794,22 +3818,15 @@ const App = {
       if (backendOk) {
         if (apiHealth?.deepseekConfigured) {
           try {
-            const probe = await AIService.complete('请只回复：pong', {
-              module: 'systemcheck',
-              mode: 'health-check',
-              temperature: 0,
-              maxTokens: 16,
-              timeout: 8000,
-              allowMockFallback: false
-            });
-            gatewayStatus = probe.mode === 'api' ? '🟢 真实 AI 可用' : '🟡 降级可用';
-            gatewayReason = probe.mode === 'api'
-              ? '通过 /api/chat 成功返回真实 DeepSeek 响应。'
-              : 'AI 调用已降级。';
-            gatewaySuggestion = probe.mode === 'api' ? 'AI Gateway 正常。' : '请检查模型配置。';
-            deepseekStatus = probe.mode === 'api' ? '🟢 已连接' : '🟡 降级';
-            deepseekReason = probe.mode === 'api' ? 'DeepSeek 真实调用成功。' : (probe.error || '暂未获得有效响应，当前可能已降级。');
-            deepseekSuggestion = probe.mode === 'api' ? 'DeepSeek 可用。' : '请检查模型名称、Key 权限或配额。';
+            const configSafe = await APIClient.request('/api/ai/config-safe', {}, { baseUrl: apiUrl, timeout: 8000 });
+            const gateway = configSafe?.data || configSafe || {};
+            const healthy = gateway.enabled && gateway.healthy && gateway.circuit?.state !== 'open';
+            gatewayStatus = healthy ? '🟢 已配置 / 待调用验证' : '🟡 降级或受限';
+            gatewayReason = healthy ? '已通过安全状态接口验证网关配置；未发送测试提示词，不产生模型调用费用。' : (gateway.reason || 'AI Gateway 当前不可用或受限。');
+            gatewaySuggestion = healthy ? '真实调用将在用户提交任务时按预算与权限执行。' : '请检查模型配置、预算或熔断状态。';
+            deepseekStatus = healthy ? '🟢 已配置' : '🟡 未就绪';
+            deepseekReason = healthy ? 'DeepSeek Key 仅保存在服务端；本检查未执行真实模型请求。' : gatewayReason;
+            deepseekSuggestion = gatewaySuggestion;
           } catch (error) {
             const friendly = AIService.friendlyMessage(error);
             gatewayStatus = '🔴 真实错误';
@@ -3832,8 +3849,8 @@ const App = {
 
     if (displayMode) {
       backendReason = '当前运行在 GitHub Pages 展示模式，后端不可用。';
-      gatewayStatus = '🟡 Mock 演示';
-      gatewayReason = 'GitHub Pages 无法连接后端，已自动使用 Mock 演示。';
+      gatewayStatus = '⚪ disabled';
+      gatewayReason = 'GitHub Pages 未配置独立服务端网关，真实 AI 已禁用。';
       deepseekStatus = '🟡 未连接';
       deepseekReason = '展示模式不连接 DeepSeek。';
     }
@@ -5139,30 +5156,9 @@ const App = {
     const stateOcr = window.GlobalSystemState?.ocrResult || {};
     const source = this.getOcrSourceText();
     if (!source) {
-      await this.busy(btn, async () => {
-        o.aiMode = 'mock';
-        o.aiError = '';
-        o.aiFix = [
-          '【Mock AI 纠错结果】',
-          '当前为本地演示模式，系统未连接真实 AI。',
-          '已保留 OCR 原文，并尝试按行整理。',
-          '请以人工确认字段表为准。'
-        ].join('\n');
-        o.status = 'AI 纠错完成';
-        o.edited = false;
-        o.fieldDrafts = this.buildOcrFieldDrafts(o.aiFix, OCRService.assessQuality(o.aiFix), o.confirmedFields?.fields || o.demoFields?.fields || {});
-        o.structured = this.renderOcrFieldTable('current');
-        this.recordTask({
-          type: 'OCR纠错',
-          fileName: o.file?.name || '图片',
-          module: 'ocr',
-          status: '完成',
-          summary: 'ocr_ai_fix_mock',
-          result: o.aiFix
-        });
-        this.rerender();
-        this.toast('当前未检测到 OCR 原文，已使用 Mock 纠错结果。');
-      });
+      o.aiMode = 'disabled';
+      o.aiError = '未检测到 OCR 原文，无法生成 AI 纠错建议。';
+      this.toast(o.aiError, 'error');
       return;
     }
     if (String(stateOcr.text || '').trim() !== source) {
@@ -5199,6 +5195,14 @@ const App = {
     };
     const confirmText = '当前 OCR 内容将发送至第三方 AI 进行纠错，请确认不包含企业机密或已完成脱敏。';
     const remoteReady = Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled && Store.state.settings.apiUrl;
+    if (Utils.isGitHubPagesHost()) {
+      o.aiMode = 'disabled';
+      o.aiError = '当前为 GitHub Pages 静态安全模式，OCR AI 纠错需连接独立服务端网关。';
+      this.reportBug({ module: 'OCR', feature: 'AI 纠错建议', type: 'deepseek-not-configured', message: o.aiError, signature: 'deepseek-not-configured' });
+      this.rerender();
+      this.toast(o.aiError, 'warning');
+      return;
+    }
     if (!remoteReady || this.shouldUseOcrMockAi()) {
       await this.busy(btn, async () => {
         o.aiMode = 'mock';
@@ -5224,22 +5228,10 @@ const App = {
     }
     if (remoteReady) {
       if (!confirm(confirmText)) {
-        await this.busy(btn, async () => {
-          o.aiMode = 'mock';
-          o.aiError = '用户未授权远程 AI';
-          o.aiFix = buildMock('用户未授权远程 AI');
-          o.status = '已使用 Mock 纠错';
-          this.recordTask({
-            type: 'OCR纠错',
-            fileName: o.file?.name || '图片',
-            module: 'ocr',
-            status: '完成',
-            summary: 'ocr_ai_fix_mock',
-            result: o.aiFix
-          });
-          this.rerender();
-          this.toast('用户未授权远程 AI，已使用 Mock 纠错。');
-        });
+        o.aiMode = 'cancelled';
+        o.aiError = '用户未授权发送脱敏 OCR 文字，未调用 DeepSeek。';
+        this.rerender();
+        this.toast(o.aiError, 'warning');
         return;
       }
     }
@@ -5250,22 +5242,32 @@ const App = {
           mode: 'ocr-correct',
           module: 'ocr-ai-fix',
           temperature: 0.1,
-          mockFallback: buildMock
+          allowMockFallback: false,
+          sensitiveMode: 'mask',
+          sensitiveConfirmed: true,
+          promptVersion: 'ocr-correct-v1'
         });
         const repaired = String(ai.text || '').trim();
-        o.aiFix = repaired || buildMock('暂未获得有效纠错结果');
-        o.aiMode = ai.mode || (repaired ? 'api' : 'mock');
-        o.aiError = repaired ? (ai.error || '') : '暂未获得有效纠错结果，已使用本地规则清洗。';
+        if (!repaired) throw new Error('DeepSeek 未返回有效 OCR 纠错建议。');
+        o.aiFix = repaired;
+        o.aiMode = ai.mode || 'api';
+        o.aiError = '';
+        o.aiSuggestionMeta = {
+          provider: 'deepseek', model: ai.model || '', createdAt: new Date().toISOString(),
+          inputTokens: ai.usage?.prompt_tokens || 0, outputTokens: ai.usage?.completion_tokens || 0,
+          totalTokens: ai.usage?.total_tokens || 0, estimatedCost: ai.estimatedCost || 0,
+          cached: Boolean(ai.cached), confirmed: false
+        };
       } catch (error) {
-        o.aiFix = buildMock(AIService.friendlyMessage?.(error) || error.message);
-        o.aiMode = 'mock';
+        o.aiMode = 'failed';
         o.aiError = Utils.friendlyErrorMessage(AIService.friendlyMessage?.(error) || error.message);
+        o.status = 'AI 纠错建议生成失败';
+        this.reportBug({ module: 'OCR', feature: 'AI 纠错建议', type: 'deepseek-ocr-suggestion-failed', message: o.aiError, signature: 'deepseek-ocr-suggestion-failed' });
+        this.rerender();
+        this.toast(o.aiError, 'error');
+        return;
       }
-      o.edited = false;
-      o.status = 'AI 纠错完成';
-      const structured = OCRService.structure(o.aiFix || source);
-      o.fieldDrafts = this.buildOcrFieldDrafts(o.aiFix || source, quality, o.confirmedFields?.fields || o.demoFields?.fields || {});
-      o.structured = this.renderOcrFieldTable('current');
+      o.status = 'AI 纠错建议已生成，等待人工采用';
       this.recordTask({
         type: 'OCR纠错',
         fileName: o.file?.name || '图片',
@@ -6570,8 +6572,8 @@ const App = {
         Store.save();
         return;
       case 'goal_check':
-        if (Store.state.settings.accessMode === 'cloud' && !Store.state.settings.apiKey) {
-          throw new Error('云端模式未配置 API Key');
+        if (Store.state.settings.accessMode === 'cloud' && !Store.state.settings.apiUrl) {
+          throw new Error('云端模式未配置服务端 AI Gateway 地址');
         }
         return;
       case 'run_best_effort':
@@ -8254,9 +8256,9 @@ const App = {
   applyProviderPreset(provider) {
     const presets = {
       '本地模式': ['', 'deepseek-v4-flash'],
-      'DeepSeek OpenAI-compatible API': ['https://api.deepseek.com', 'deepseek-v4-flash'],
-      OpenAI: ['https://api.openai.com/v1', 'gpt-4o-mini'],
-      DeepSeek: ['https://api.deepseek.com', 'deepseek-v4-flash'],
+      'DeepSeek OpenAI-compatible API': [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
+      OpenAI: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
+      DeepSeek: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
       Claude: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
       Gemini: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
       Qwen: [window.PERSONAL_AI_OS_CONFIG?.API_BASE_URL || '', 'deepseek-v4-flash'],
@@ -8276,7 +8278,6 @@ const App = {
     const syncMode = document.getElementById('syncMode')?.value || 'local';
     const provider = document.getElementById('apiProvider')?.value || '自定义';
     const apiUrl = document.getElementById('apiUrl')?.value.trim();
-    const apiKey = document.getElementById('apiKey')?.value.trim() || Store.state.settings.apiKey || '';
     const model = document.getElementById('apiModel')?.value.trim();
     const githubPagesUrl = document.getElementById('githubPagesUrl')?.value.trim();
     const temperature = Number(document.getElementById('apiTemperature')?.value || 0.2);
@@ -8291,7 +8292,6 @@ const App = {
       provider,
       apiEnabled: accessMode !== 'local',
       apiUrl: accessMode === 'local' ? '' : apiUrl,
-      apiKey,
       model,
       githubPagesUrl,
       temperature,
@@ -8302,7 +8302,8 @@ const App = {
     Store.save();
     this.updateApiState();
     this.rerender();
-    this.toast('AI Gateway 配置已保存到当前浏览器 localStorage');
+    delete Store.state.settings.apiKey;
+    this.toast('AI Gateway 地址已保存；DeepSeek Key 仅允许配置在服务端环境变量中');
   },
 
   settingsDevToggle() {

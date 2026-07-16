@@ -180,7 +180,7 @@ npm run verify
 后端环境变量参考 `.env.example`：
 
 ```env
-DEEPSEEK_API_KEY=你的DeepSeekKey
+DEEPSEEK_API_KEY=
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-flash
 ```
@@ -189,7 +189,7 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 - `GET /api/health`
 - `GET /api/self-test`
-- `POST /api/chat`
+- `POST /api/ai/chat`（需认证；服务端网关）
 
 ## 目录结构
 
