@@ -69,6 +69,8 @@ module.exports = {
   deepseekCircuitFailureThreshold: numberEnv('DEEPSEEK_CIRCUIT_FAILURE_THRESHOLD', 3, { min: 1, max: 20 }),
   deepseekCircuitCooldownMs: numberEnv('DEEPSEEK_CIRCUIT_COOLDOWN_MS', 60000, { min: 1000, max: 3600000 }),
   aiIpRateLimit: numberEnv('AI_IP_RATE_LIMIT', 120, { min: 1, max: 10000 }),
+  aiUsdToCnyRate: numberEnv('AI_USD_TO_CNY_RATE', 0, { min: 0, max: 100 }),
+  aiUsdToCnyUpdatedAt: normalizeEnvText(process.env.AI_USD_TO_CNY_UPDATED_AT),
   capabilityAi: process.env.CAPABILITY_AI,
   capabilityAgents: process.env.CAPABILITY_AGENTS,
   capabilitySkills: process.env.CAPABILITY_SKILLS,

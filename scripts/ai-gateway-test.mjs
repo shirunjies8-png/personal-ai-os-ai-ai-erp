@@ -24,8 +24,8 @@ const base = (suffix, extra = {}) => ({
 const jsonResponse = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(body) });
 const successFetch = async () => jsonResponse({ choices: [{ message: { content: '仅为测试响应' }, finish_reason: 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18, prompt_cache_hit_tokens: 0 } });
 
-assert.deepEqual(costs.PRICING_CNY_PER_MILLION['deepseek-v4-flash'], {
-  currency: 'CNY', effectiveDate: '2026-04-24', inputCacheHitPerMillion: 0.02, inputCacheMissPerMillion: 1, outputPerMillion: 2
+assert.deepEqual(costs.PRICING_USD_PER_MILLION['deepseek-v4-flash'], {
+  currency: 'USD', inputCacheHitPerMillionUsd: 0.0028, inputCacheMissPerMillionUsd: 0.14, outputPerMillionUsd: 0.28
 });
 assert.equal(costs.estimateCost({ model: 'unsupported-model', inputTokens: 1, outputTokens: 1 }), null);
 

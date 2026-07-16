@@ -2,12 +2,12 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('../database/init');
 const env = require('../config/env');
 
-const PRICING_CNY_PER_MILLION = Object.freeze({
+const PRICING_USD_PER_MILLION = Object.freeze({
   'deepseek-v4-flash': Object.freeze({
-    currency: 'CNY', effectiveDate: '2026-04-24', inputCacheHitPerMillion: 0.02, inputCacheMissPerMillion: 1, outputPerMillion: 2
+    currency: 'USD', inputCacheHitPerMillionUsd: 0.0028, inputCacheMissPerMillionUsd: 0.14, outputPerMillionUsd: 0.28
   }),
   'deepseek-v4-pro': Object.freeze({
-    currency: 'CNY', effectiveDate: '2026-04-24', inputCacheHitPerMillion: 0.025, inputCacheMissPerMillion: 3, outputPerMillion: 6
+    currency: 'USD', inputCacheHitPerMillionUsd: 0.003625, inputCacheMissPerMillionUsd: 0.435, outputPerMillionUsd: 0.87
   })
 });
 
@@ -27,14 +27,21 @@ function estimate(messages = []) {
 }
 
 function estimateCost({ model, inputTokens = 0, outputTokens = 0, cachedInputTokens = 0 } = {}) {
-  const price = PRICING_CNY_PER_MILLION[model];
+  const price = PRICING_USD_PER_MILLION[model];
   if (!price) return null;
   const hit = clamp(cachedInputTokens, 0, inputTokens);
   const miss = Math.max(0, clamp(inputTokens) - hit);
-  return Number(((miss * price.inputCacheMissPerMillion + hit * price.inputCacheHitPerMillion + clamp(outputTokens) * price.outputPerMillion) / 1000000).toFixed(8));
+  return Number(((miss * price.inputCacheMissPerMillionUsd + hit * price.inputCacheHitPerMillionUsd + clamp(outputTokens) * price.outputPerMillionUsd) / 1000000).toFixed(10));
 }
 
-function getPrice(model) { return PRICING_CNY_PER_MILLION[model] || null; }
+function getPrice(model) { return PRICING_USD_PER_MILLION[model] || null; }
+function estimateCny(usd) {
+  if (!Number.isFinite(Number(usd)) || !env.aiUsdToCnyRate) return null;
+  return Number((Number(usd) * env.aiUsdToCnyRate).toFixed(8));
+}
+function costView(usd) {
+  return { usd: Number(usd || 0), cnyEstimate: estimateCny(usd), exchangeRate: env.aiUsdToCnyRate || null, exchangeRateUpdatedAt: env.aiUsdToCnyUpdatedAt || '' };
+}
 
 function configuredLimits(overrides = {}) {
   return {
@@ -145,8 +152,8 @@ function usage(context = {}, now = new Date()) {
     .get(day, day, day, day, day, day, day, day, ...(context.enterpriseId ? [context.enterpriseId] : []));
   const limits = configuredLimits();
   return {
-    today: { requests: today.request_count, inputTokens: detailed.today_input_tokens, outputTokens: detailed.today_output_tokens, totalTokens: today.total_tokens, estimatedCost: today.estimated_cost },
-    month: { requests: monthly.request_count, totalTokens: monthly.total_tokens, estimatedCost: monthly.estimated_cost },
+    today: { requests: today.request_count, inputTokens: detailed.today_input_tokens, outputTokens: detailed.today_output_tokens, totalTokens: today.total_tokens, estimatedCost: today.estimated_cost, cost: costView(today.estimated_cost) },
+    month: { requests: monthly.request_count, totalTokens: monthly.total_tokens, estimatedCost: monthly.estimated_cost, cost: costView(monthly.estimated_cost) },
     budget: { status: budgetStatus(monthly.estimated_cost, limits.enterpriseMonthlyBudget), used: monthly.estimated_cost, limit: limits.enterpriseMonthlyBudget, ratio: limits.enterpriseMonthlyBudget > 0 ? Math.min(1, monthly.estimated_cost / limits.enterpriseMonthlyBudget) : 0 },
     cache: { hits: detailed.cache_hits, savedRequests: detailed.cache_hits },
     failures: { failed: detailed.failures, timeout: detailed.timeouts, rateLimited: detailed.rate_limited, circuitOpen: detailed.circuit_open, averageDurationMs: Math.round(Number(detailed.average_duration_ms || 0)) },
@@ -186,4 +193,4 @@ function resetForTests() {
   db.prepare("DELETE FROM ai_cache_entries WHERE cache_key LIKE 'test-%'").run();
 }
 
-module.exports = { PRICING_CNY_PER_MILLION, getPrice, estimate, estimateCost, configuredLimits, preflight, record, usage, cacheGet, cacheSet, cacheDelete, resetForTests, budgetStatus };
+module.exports = { PRICING_USD_PER_MILLION, getPrice, estimate, estimateCost, estimateCny, costView, configuredLimits, preflight, record, usage, cacheGet, cacheSet, cacheDelete, resetForTests, budgetStatus };
