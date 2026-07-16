@@ -3701,14 +3701,15 @@ const App = {
   },
 
   async refreshAiStatus() {
-    if (Utils.isGitHubPagesHost()) {
-      Store.state.aiServerStatus = { provider: 'deepseek', mode: 'disabled', enabled: false, healthy: false, pagesStaticSafeMode: true, message: '未配置独立服务端网关，Pages 不直接调用 DeepSeek。' };
-      Store.state.aiServerUsage = null;
-      Store.save();
-      this.rerender();
-      return;
-    }
     try {
+      const health = await APIClient.health();
+      if (!health?.deepseekConfigured) {
+        Store.state.aiServerStatus = { provider: health?.provider || 'deepseek', model: health?.model || 'deepseek-v4-flash', mode: 'disabled', enabled: false, healthy: false, backendOnline: true, message: 'AI 服务暂未配置' };
+        Store.state.aiServerUsage = null;
+        Store.save();
+        this.rerender();
+        return;
+      }
       const [config, usage] = await Promise.all([
         APIClient.request('/api/ai/config-safe'),
         APIClient.request('/api/ai/usage')
@@ -3718,7 +3719,7 @@ const App = {
       Store.save();
       this.rerender();
     } catch (error) {
-      Store.state.aiServerStatus = { provider: 'deepseek', mode: 'degraded', enabled: false, healthy: false, message: Utils.friendlyErrorMessage(error?.message || error) };
+      Store.state.aiServerStatus = { provider: 'deepseek', mode: 'degraded', enabled: false, healthy: false, backendOnline: false, message: Utils.friendlyErrorMessage(error?.message || error) };
       Store.save();
       this.rerender();
     }
@@ -3746,7 +3747,7 @@ const App = {
   async runSystemCheck() {
     const ws = this.getWorkspace('systemcheck');
     const apiUrl = Store.state.settings.apiUrl;
-    const displayMode = Utils.isGitHubPagesHost();
+    const displayMode = Utils.isGitHubPagesHost() && !(apiUrl && Store.state.settings.apiEnabled);
     const now = Date.now();
     const report = [];
     const push = (name, status, reason, suggestion) => {
@@ -3786,6 +3787,7 @@ const App = {
     })();
     let backendOk = false;
     let apiHealth = null;
+    let serverSelfTest = null;
     let gatewayStatus = '⚪ 未配置';
     let gatewayReason = '未配置后端地址或未启用远程 AI。';
     let gatewaySuggestion = '请在 AI 设置中心配置 API Base URL 并开启远程 AI。';
@@ -3805,7 +3807,10 @@ const App = {
       deepseekSuggestion = '部署后端并配置 DeepSeek Key。';
     } else if (apiUrl && Store.state.settings.apiEnabled) {
       try {
-        apiHealth = await APIClient.health(apiUrl);
+        [apiHealth, serverSelfTest] = await Promise.all([
+          APIClient.health(apiUrl),
+          APIClient.systemStatus(apiUrl)
+        ]);
         backendOk = Boolean(apiHealth?.ok);
         backendStatus = backendOk ? '🟢 正常' : '🔴 异常';
         backendReason = backendOk ? 'GET /api/health 返回正常。' : 'GET /api/health 返回异常。';
@@ -3838,7 +3843,7 @@ const App = {
           }
         } else {
           gatewayStatus = '⚪ 未配置';
-          gatewayReason = '后端可达，但 DeepSeek 未配置。';
+          gatewayReason = 'AI 服务暂未配置。';
           gatewaySuggestion = '请在后端环境变量中配置 DEEPSEEK_API_KEY。';
           deepseekStatus = '⚪ 未配置';
           deepseekReason = gatewayReason;
@@ -3882,6 +3887,8 @@ const App = {
       ['登录', AuthClient.isLoggedIn() ? '🟢 正常' : '🔴 异常', AuthClient.isLoggedIn() ? '已登录。' : '请先登录。', AuthClient.isLoggedIn() ? '保持当前登录状态。' : '请使用演示账号或正式账号登录。'],
       ['GitHub Pages / Server Mode', displayMode ? '🟡 展示模式' : '🟢 正常', displayMode ? '当前运行在 GitHub Pages 展示模式。' : '当前处于本地/服务器模式。', displayMode ? '展示模式下不请求后端。' : '可继续进行真实 AI 调用。'],
       ['后端状态', backendStatus, backendReason, backendSuggestion],
+      ['服务端数据库', serverSelfTest ? (serverSelfTest.databaseOk ? '🟢 正常' : '🔴 异常') : '🟡 未连接', serverSelfTest ? (serverSelfTest.databaseOk ? '服务端 SQLite 自检通过。' : '服务端数据库自检失败。') : '未获取服务端自检结果。', serverSelfTest?.databaseOk ? '持久化服务可用。' : '请检查私有网关连接与服务端状态。'],
+      ['服务端工具与 Agent', serverSelfTest ? (serverSelfTest.toolRegistryOk && serverSelfTest.agentRuntimeOk ? '🟢 正常' : '🔴 异常') : '🟡 未连接', serverSelfTest ? `Tool Registry ${serverSelfTest.toolRegistryOk ? '正常' : '异常'}；Agent Runtime ${serverSelfTest.agentRuntimeOk ? '正常' : '异常'}。` : '未获取服务端自检结果。', serverSelfTest?.toolRegistryOk && serverSelfTest?.agentRuntimeOk ? '服务端基础能力可用。' : '请检查服务端自检。'],
       ['AI Gateway', gatewayStatus, gatewayReason, gatewaySuggestion],
       ['DeepSeek', deepseekStatus, deepseekReason, deepseekSuggestion],
       ['PDF Worker', displayMode ? '🟡 仅前端能力可用' : (pdfWorkerReady ? '🟢 正常' : '🔴 异常'), displayMode ? 'GitHub Pages 仅提供前端能力。' : (pdfWorkerReady ? 'PDF Worker 已就绪。' : 'PDF Worker 未加载或路径错误。'), displayMode ? '部署后端版本后可启用更完整能力。' : '请检查 vendor/pdfjs/pdf.worker.mjs 路径。'],
@@ -7197,7 +7204,7 @@ const App = {
         body: JSON.stringify({
           module: moduleName,
           text: ws.prompt || '',
-          allowAi: Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled,
+          allowAi: Boolean(Store.state.aiServerStatus?.enabled && Store.state.aiServerStatus?.healthy && !AuthClient.isDemo()),
           source: 'frontend'
         })
       }, { timeout: 30000 });
@@ -7234,7 +7241,7 @@ const App = {
           text: ws.prompt || '',
           before: ws.before || ws.prompt || '',
           after: ws.after || ws.prompt || '',
-          allowAi: Store.state.settings.accessMode !== 'local' && Store.state.settings.apiEnabled,
+          allowAi: Boolean(Store.state.aiServerStatus?.enabled && Store.state.aiServerStatus?.healthy && !AuthClient.isDemo()),
           requireApproval: true,
           source: 'frontend'
         })
@@ -8315,12 +8322,13 @@ const App = {
 
   async settingsTestAI(btn) {
     this.settingsSaveAI();
-    if (Utils.isGitHubPagesHost()) {
-      this.toast('当前为 GitHub Pages 展示模式，真实 AI 后端未连接。', 'warning');
-      return;
-    }
     if (Store.state.settings.accessMode === 'local') throw new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
     await this.busy(btn, async () => {
+      const health = await APIClient.health();
+      if (!health?.deepseekConfigured) {
+        this.toast('AI 服务暂未配置', 'warning');
+        return;
+      }
       const res = await AIService.complete('请仅回复：连接成功', { module: 'gateway-test', mode: 'gateway-test' });
       if (res.mode === 'api') this.toast(`DeepSeek 已连接：${res.model || Store.state.settings.model || 'deepseek-v4-flash'}`);
       else if (Utils.isGitHubPagesHost()) this.toast('当前为 GitHub Pages 展示模式，真实 AI 后端未连接。', 'warning');
@@ -9357,7 +9365,7 @@ const App = {
   updateApiState() {
     const el = document.getElementById('apiState');
     if (!el) return;
-    const displayMode = Utils.isGitHubPagesHost();
+    const displayMode = Utils.isDisplayMode();
     const mode = Store.state.settings.accessMode || 'local';
     el.textContent = displayMode ? '展示模式' : mode === 'local' ? '本地模式' : mode === 'api' ? 'API模式' : '云端模式';
     el.classList.toggle('live', !displayMode && mode !== 'local');
