@@ -612,6 +612,7 @@ const Store = {
   state: null,
   syncTimer: null,
   syncing: false,
+  syncStatus: { mode: 'local', state: 'idle', message: '尚未连接后端', updatedAt: 0 },
   syncGlobalState() {
     if (typeof globalThis !== 'undefined') {
       const existing = globalThis.GlobalSystemState && typeof globalThis.GlobalSystemState === 'object' ? globalThis.GlobalSystemState : {};
@@ -827,13 +828,16 @@ const Store = {
     return clone;
   },
   stripSecrets(value) {
-    const clone = structuredClone(value || {});
-    if (clone && typeof clone === 'object') {
-      for (const key of ['apiKey', 'password', 'token', 'secret', 'clientSecret']) {
-        if (key in clone) clone[key] = '';
-      }
-    }
-    return clone;
+    const sensitiveKey = /(?:api[_-]?key|password|passwd|token|secret|authorization|cookie|credential)/i;
+    const visit = input => {
+      if (Array.isArray(input)) return input.map(visit);
+      if (!input || typeof input !== 'object') return input;
+      return Object.fromEntries(Object.entries(input).map(([key, item]) => [
+        key,
+        sensitiveKey.test(key) ? '' : visit(item)
+      ]));
+    };
+    return visit(structuredClone(value || {}));
   },
   logAiHistory(entry) {
     this.state.aiHistory = this.state.aiHistory || [];
@@ -906,12 +910,27 @@ const Store = {
     this.save();
   },
   scheduleSync() {
-    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) return;
+    if (!this.canSyncToServer()) return;
     clearTimeout(this.syncTimer);
     this.syncTimer = setTimeout(() => this.syncToServer(), 400);
   },
+  canSyncToServer() {
+    return Boolean(AuthClient.isLoggedIn() && !AuthClient.isDemo() && (this.state?.settings?.apiUrl || RuntimeConfig.API_BASE_URL));
+  },
+  async flushSync() {
+    clearTimeout(this.syncTimer);
+    this.syncTimer = null;
+    if (!this.canSyncToServer()) {
+      this.syncStatus = { mode: 'local', state: 'fallback', message: 'localStorage 演示降级', updatedAt: Date.now() };
+      return { ok: true, mode: 'local', message: this.syncStatus.message };
+    }
+    return this.syncToServer();
+  },
   async hydrateFromServer() {
-    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) return this.state;
+    if (!this.canSyncToServer()) {
+      this.syncStatus = { mode: 'local', state: 'fallback', message: 'localStorage 演示降级', updatedAt: Date.now() };
+      return this.state;
+    }
     try {
       const [stateRes, dashboardRes, enterpriseRes, logRes] = await Promise.all([
         APIClient.request('/api/state'),
@@ -937,38 +956,42 @@ const Store = {
         status: item.status
       }));
       if (logRes.data?.items) {
-        this.state.operationLogs = logRes.data.items.map(item => ({
+        const serverLogs = logRes.data.items.map(item => ({
           id: item.id,
           title: item.title,
           type: item.type,
           time: new Date(item.created_at).getTime()
         }));
+        const localLogs = Array.isArray(this.state.operationLogs) ? this.state.operationLogs : [];
+        this.state.operationLogs = [...serverLogs, ...localLogs]
+          .filter((item, index, list) => list.findIndex(entry => entry.id === item.id) === index)
+          .sort((a, b) => Number(b.time || 0) - Number(a.time || 0))
+          .slice(0, 200);
       }
       localStorage.setItem(APP_KEY, JSON.stringify(this.state));
+      this.syncStatus = { mode: 'server', state: 'synced', message: 'SQLite 已同步', updatedAt: Date.now() };
     } catch (error) {
       console.warn('Server hydration failed:', error.message);
+      this.syncStatus = { mode: 'local', state: 'offline', message: `后端不可用：${error.message}`, updatedAt: Date.now() };
     }
     return this.state;
   },
   async syncToServer() {
-    if (!AuthClient.isLoggedIn() || AuthClient.isDemo() || this.syncing) return;
+    if (!this.canSyncToServer()) return { ok: true, mode: 'local', message: 'localStorage 演示降级' };
+    if (this.syncing) return { ok: true, mode: 'server', pending: true };
     this.syncing = true;
     try {
-      const syncState = structuredClone(this.state);
-      if (syncState.settings) delete syncState.settings.apiKey;
-      if (syncState.settings?.agentMail) syncState.settings.agentMail.apiKey = '';
-      if (Array.isArray(syncState.connectors)) {
-        syncState.connectors = syncState.connectors.map(item => ({
-          ...item,
-          config: this.stripSecrets(item.config || {})
-        }));
-      }
+      const syncState = this.stripSecrets(this.state);
       await APIClient.request('/api/state', {
         method: 'PUT',
         body: JSON.stringify({ state: syncState })
       });
+      this.syncStatus = { mode: 'server', state: 'synced', message: 'SQLite 已同步', updatedAt: Date.now() };
+      return { ok: true, mode: 'server', message: this.syncStatus.message };
     } catch (error) {
       console.warn('State sync failed:', error.message);
+      this.syncStatus = { mode: 'local', state: 'offline', message: `已保存到 localStorage，后端同步失败：${error.message}`, updatedAt: Date.now() };
+      return { ok: false, mode: 'local', error: error.message, message: this.syncStatus.message };
     } finally {
       this.syncing = false;
     }
