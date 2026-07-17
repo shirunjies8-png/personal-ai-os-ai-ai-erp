@@ -13,7 +13,7 @@
     "dev": "node server.js",
     "preview": "python3 -m http.server 4173 -d dist",
     "db:init": "node scripts/init-db.mjs",
-    "test:unit": "node scripts/bug-scan.mjs --check-only && node scripts/security-self-test.mjs && node scripts/ai-gateway-test.mjs && node scripts/apqp-update-test.mjs && node scripts/apqp-records-test.mjs && node scripts/apqp-page-test.mjs && node scripts/ocr-provider-test.mjs && node scripts/ocr-page-test.mjs && node scripts/frontend-gateway-test.mjs",
+    "test:unit": "node scripts/bug-scan.mjs --check-only && node scripts/security-self-test.mjs && node scripts/ai-gateway-test.mjs && node scripts/apqp-update-test.mjs && node scripts/apqp-records-test.mjs && node scripts/apqp-page-test.mjs && node scripts/ocr-provider-test.mjs && node scripts/ocr-page-test.mjs && node scripts/frontend-gateway-test.mjs && node scripts/business-closure-test.mjs",
     "test:e2e": "node scripts/run-e2e.mjs",
     "bug:scan": "node scripts/bug-scan.mjs",
     "bug:fix": "node scripts/auto-fix-known-issues.mjs",

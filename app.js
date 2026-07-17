@@ -120,6 +120,9 @@ const App = {
     approvalSelectedId: '',
     toolSelectedName: '',
     integrationSelectedId: 'erp',
+    inquirySelectedId: '',
+    inquirySearch: '',
+    inquiryLoading: false,
     apqp: { open: false, loading: false, projects: [], selectedId: '', project: null, error: '' },
     agent: {
       goal: '',
@@ -146,6 +149,7 @@ const App = {
     if (!Store.state.chats.length) this.createChat(false);
     // 先绑定交互事件，避免状态同步较慢时聊天提交被丢失。
     this.bindGlobalEvents();
+    if (AuthClient.isDemo()) await this.tryPromoteDemoSession();
     await Store.hydrateFromServer();
     this.setupOcrProviders();
     this.restoreOcrSession();
@@ -1044,7 +1048,8 @@ const App = {
       'file-rename': () => this.fileRename(el.dataset.id),
       'task-open': () => { this.temp.taskSelectedId = el.dataset.id; this.rerender(); },
       'task-open-result': () => { this.temp.taskSelectedId = el.dataset.id; this.navigate(el.dataset.route || 'taskcenter'); },
-      'task-refresh': () => this.refreshAgentRuntime(true),
+      'task-refresh': () => this.refreshTaskCenter(),
+      'logs-refresh': () => this.refreshBusinessState(),
       'task-cancel': () => this.cancelTaskRecord(el.dataset.id),
       'task-retry': () => this.retryTaskRecord(el.dataset.id),
       'toolcenter-refresh': () => this.refreshAgentRuntime(true),
@@ -1081,6 +1086,15 @@ const App = {
       'quotation-risk-action': () => this.quotationUpdateRisk(el.dataset.status || 'save'),
       'quotation-risk-select': () => this.quotationSelectRisk(el.dataset.id),
       'quotation-risk-history': () => this.quotationOpenRiskHistory(el.dataset.id),
+      'quotation-draft-open': () => this.quotationOpenSavedDraft(el.dataset.id),
+      'quotation-draft-delete': () => this.quotationDeleteSavedDraft(el.dataset.id),
+      'quotation-refresh': () => this.refreshBusinessState(),
+      'inquiry-new': () => this.inquiryNew(),
+      'inquiry-save': () => this.inquirySave(),
+      'inquiry-edit': () => this.inquiryEdit(el.dataset.id),
+      'inquiry-delete': () => this.inquiryDelete(el.dataset.id),
+      'inquiry-search': () => this.inquirySearch(),
+      'inquiry-refresh': () => this.refreshBusinessState(),
       'validate-run': () => this.validateRun(el.dataset.mode, el),
       'quality-check': () => this.qualityCheck(el),
       'quality-fix': () => this.qualityFix(el),
@@ -1825,7 +1839,29 @@ const App = {
     this.toast(`已加载示例：${sample.label}`);
   },
 
-  quotationSaveDraft() {
+  async persistBusinessState(successMessage = '数据已保存') {
+    Store.save();
+    const result = await Store.flushSync();
+    if (result.ok && result.mode === 'server') {
+      this.toast(`${successMessage}，已同步到后端 SQLite。`);
+    } else if (result.ok) {
+      this.toast(`${successMessage}，当前为 localStorage 演示降级。`, 'warning');
+    } else {
+      this.toast(result.message || '已保存到本地，后端同步失败。', 'warning');
+    }
+    return result;
+  },
+
+  async refreshBusinessState() {
+    this.temp.inquiryLoading = true;
+    this.rerender();
+    await Store.hydrateFromServer();
+    this.temp.inquiryLoading = false;
+    this.rerender();
+    this.toast(Store.syncStatus.message, Store.syncStatus.mode === 'server' ? 'success' : 'warning');
+  },
+
+  async quotationSaveDraft() {
     const ws = this.syncWorkspaceFromDom('quotation');
     ws.rfqDraft = ws.rfqDraft || ws.result || '';
     ws.result = ws.rfqDraft || ws.result || '';
@@ -1841,12 +1877,97 @@ const App = {
     ws.updatedAt = Date.now();
     this.saveQuotationAudit('保存报价草稿', {
       status: ws.rfqApproval?.status || 'draft',
-      message: '报价草稿已保存到本地持久化数据',
+      message: '报价草稿已保存，登录后同步到企业 SQLite',
       count: ws.rfqSavedDrafts.length
     });
+    await this.persistBusinessState('报价草稿已保存');
+    this.rerender();
+  },
+
+  quotationOpenSavedDraft(id) {
+    const ws = this.getQuotationWorkspace();
+    const saved = (ws.rfqSavedDrafts || []).find(item => item.id === id);
+    if (!saved) throw new Error('报价草稿不存在或已删除');
+    ws.rfqDraft = saved.draft || '';
+    ws.result = saved.draft || '';
+    ws.rfqBlockers = structuredClone(saved.blockers || []);
+    ws.updatedAt = Date.now();
+    this.saveQuotationAudit('打开历史报价草稿', { status: saved.status || 'draft', message: `draftId: ${id}` });
     Store.save();
     this.rerender();
-    this.toast('报价草稿已保存');
+  },
+
+  async quotationDeleteSavedDraft(id) {
+    const ws = this.getQuotationWorkspace();
+    const saved = (ws.rfqSavedDrafts || []).find(item => item.id === id);
+    if (!saved) throw new Error('报价草稿不存在或已删除');
+    if (!confirm('确认删除该报价草稿？删除后将同步到企业数据库。')) return;
+    ws.rfqSavedDrafts = ws.rfqSavedDrafts.filter(item => item.id !== id);
+    this.saveQuotationAudit('删除报价草稿', { status: saved.status || 'draft', message: `draftId: ${id}` });
+    await this.persistBusinessState('报价草稿已删除');
+    this.rerender();
+  },
+
+  inquiryNew() {
+    this.temp.inquirySelectedId = '';
+    this.rerender();
+  },
+
+  inquiryEdit(id) {
+    const record = (Store.state.ocrInquiries || []).find(item => item.id === id);
+    if (!record) throw new Error('询盘记录不存在或已删除');
+    this.temp.inquirySelectedId = id;
+    this.rerender();
+  },
+
+  inquirySearch() {
+    this.temp.inquirySearch = document.getElementById('inquirySearch')?.value.trim() || '';
+    this.rerender();
+  },
+
+  async inquirySave() {
+    const selected = (Store.state.ocrInquiries || []).find(item => item.id === this.temp.inquirySelectedId);
+    const customerName = document.getElementById('inquiryCustomer')?.value.trim() || '';
+    const productName = document.getElementById('inquiryProduct')?.value.trim() || '';
+    const quantity = document.getElementById('inquiryQuantity')?.value.trim() || '';
+    const specification = document.getElementById('inquirySpecification')?.value.trim() || '';
+    const contact = document.getElementById('inquiryContact')?.value.trim() || '';
+    const notes = document.getElementById('inquiryNotes')?.value.trim() || '';
+    const status = document.getElementById('inquiryStatus')?.value || 'draft';
+    if (!customerName) throw new Error('请填写客户或来源');
+    if (!productName) throw new Error('请填写产品名称');
+    const now = Date.now();
+    const record = {
+      ...(selected || {}),
+      id: selected?.id || uid(),
+      customerName,
+      productName,
+      quantity,
+      specification,
+      contact,
+      notes,
+      status,
+      source: selected?.source || 'manual',
+      createdAt: selected?.createdAt || now,
+      updatedAt: now
+    };
+    Store.state.ocrInquiries = Array.isArray(Store.state.ocrInquiries) ? Store.state.ocrInquiries : [];
+    Store.state.ocrInquiries = [record, ...Store.state.ocrInquiries.filter(item => item.id !== record.id)].slice(0, 200);
+    Store.state.operationLogs.unshift({ id: uid(), title: selected ? '编辑询盘草稿' : '新建询盘草稿', type: 'inquiry', time: now, recordId: record.id });
+    this.temp.inquirySelectedId = record.id;
+    await this.persistBusinessState(selected ? '询盘草稿已更新' : '询盘草稿已新建');
+    this.rerender();
+  },
+
+  async inquiryDelete(id) {
+    const record = (Store.state.ocrInquiries || []).find(item => item.id === id);
+    if (!record) throw new Error('询盘记录不存在或已删除');
+    if (!confirm(`确认删除询盘草稿“${record.customerName || record.fields?.customer_name || '未命名'}”？`)) return;
+    Store.state.ocrInquiries = Store.state.ocrInquiries.filter(item => item.id !== id);
+    Store.state.operationLogs.unshift({ id: uid(), title: '删除询盘草稿', type: 'inquiry', time: Date.now(), recordId: id });
+    if (this.temp.inquirySelectedId === id) this.temp.inquirySelectedId = '';
+    await this.persistBusinessState('询盘草稿已删除');
+    this.rerender();
   },
 
   async quotationCopyDraft() {
@@ -2411,17 +2532,17 @@ const App = {
     return user.name || user.email || '当前用户';
   },
 
-  ocrSaveReviewDraft() {
+  async ocrSaveReviewDraft() {
     const review = this.syncOcrReviewFromDom();
     this.recordTask({
       type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'waiting_human',
       summary: `复核草稿已保存 · ${review.modifications.length} 处修改`, requestId: review.requestId
     });
+    await this.persistBusinessState('OCR 复核草稿已保存');
     this.rerender();
-    this.toast('复核草稿已保存，尚未批准进入正式业务。');
   },
 
-  ocrApproveReview() {
+  async ocrApproveReview() {
     const review = this.syncOcrReviewFromDom();
     const summary = OCRArchitecture.reviewSummary(review);
     if (!confirm(`确认批准本次 OCR 人工复核？\n\n低置信度字段：${summary.lowConfidenceCount}\n缺失字段：${summary.missingCount}\n人工修改：${summary.manuallyEditedCount}\n\n批准后才能转入报价或询价，仍需对原图负责核对。`)) return;
@@ -2434,11 +2555,12 @@ const App = {
     this.recordTask({ type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'success',
       summary: '人工复核已批准', requestId: approved.requestId, result: JSON.stringify(fields) });
     Store.addActivity('OCR 人工复核已批准', 'check');
+    await Store.flushSync();
     this.rerender();
     this.toast('复核已批准，现可转入正式业务。');
   },
 
-  ocrRejectReview() {
+  async ocrRejectReview() {
     if (!this.temp.ocr.review) throw new Error('暂无可驳回的 OCR 结果');
     const reason = prompt('请填写驳回原因（必填）：', this.temp.ocr.review.rejectionReason || '');
     if (reason === null) return;
@@ -2448,6 +2570,7 @@ const App = {
       error: Object.assign(new Error(reason), { code: 'user_rejected' }), file: this.temp.ocr.file, startedAt: this.temp.ocr.providerResult?.startedAt, fallbackUsed: this.temp.ocr.providerResult?.fallbackUsed });
     this.recordTask({ type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'failed',
       summary: `已驳回：${reason}`, requestId: rejected.requestId });
+    await Store.flushSync();
     this.rerender();
     this.toast('OCR 复核已驳回，未进入正式业务。', 'warning');
   },
@@ -2481,7 +2604,7 @@ const App = {
     this.toast('已复制脱敏 OCR 诊断信息');
   },
 
-  ocrTransferQuotation() {
+  async ocrTransferQuotation() {
     const payload = OCRArchitecture.confirmedPayload(this.temp.ocr.review, this.temp.ocr.providerResult);
     if (!confirm('确认将已人工批准的 OCR 字段转入报价工作台？\n空字段保持为空，不会自动编造。')) return;
     const fields = payload.fields;
@@ -2497,21 +2620,32 @@ const App = {
     if (requirements) patch.requirements = requirements;
     Object.assign(ws, patch, { ocrSource: payload, updatedAt: Date.now() });
     this.saveQuotationAudit('OCR人工确认结果转入', { status: 'draft', message: `requestId: ${payload.requestId}` });
-    Store.save();
+    await this.persistBusinessState('OCR 结果已转入报价草稿');
     this.navigate('quotation');
-    this.toast('已转入报价草稿，请继续人工核对。');
   },
 
-  ocrTransferInquiry() {
+  async ocrTransferInquiry() {
     const payload = OCRArchitecture.confirmedPayload(this.temp.ocr.review, this.temp.ocr.providerResult);
     if (!confirm('确认将已人工批准的 OCR 字段保存为询价记录？')) return;
     Store.state.ocrInquiries = Array.isArray(Store.state.ocrInquiries) ? Store.state.ocrInquiries : [];
-    Store.state.ocrInquiries.unshift({ id: uid(), createdAt: Date.now(), status: 'draft', source: 'ocr', ...payload });
+    Store.state.ocrInquiries.unshift({
+      id: uid(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      status: 'draft',
+      source: 'ocr',
+      customerName: payload.fields?.customer_name || '',
+      productName: payload.fields?.product_name || '',
+      quantity: payload.fields?.quantity || '',
+      specification: payload.fields?.specification || '',
+      contact: payload.fields?.phone || '',
+      notes: payload.fields?.notes || '',
+      ...payload
+    });
     Store.state.ocrInquiries = Store.state.ocrInquiries.slice(0, 100);
     Store.state.operationLogs.unshift({ id: uid(), title: 'OCR结果转入询价草稿', type: 'ocr', time: Date.now(), requestId: payload.requestId });
-    Store.save();
-    this.rerender();
-    this.toast('已保存询价草稿记录，未自动发送。');
+    await this.persistBusinessState('询盘草稿已保存，未自动发送');
+    this.navigate('inquiries');
   },
 
   ocrExportReview() {
@@ -6138,6 +6272,13 @@ const App = {
     if (!silent) this.rerender();
   },
 
+  async refreshTaskCenter() {
+    await Store.hydrateFromServer();
+    await this.refreshAgentRuntime(true);
+    this.rerender();
+    this.toast(Store.syncStatus.mode === 'server' ? '任务和业务日志已从后端刷新' : Store.syncStatus.message, Store.syncStatus.mode === 'server' ? 'success' : 'warning');
+  },
+
   agentPlan() {
     const goal = document.getElementById('agentGoal')?.value.trim() || this.temp.agent.goal;
     if (!goal) throw new Error('请输入任务目标');
@@ -8381,6 +8522,23 @@ const App = {
     });
   },
 
+  async tryPromoteDemoSession(email = DEMO_ACCOUNT.email, password = DEMO_ACCOUNT.password) {
+    if (!RuntimeConfig.API_BASE_URL && !Store.state.settings.apiUrl) return false;
+    try {
+      const res = await APIClient.request('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+      }, { timeout: 8000 });
+      if (!res.data?.token) return false;
+      AuthClient.save({ ...res.data, demo: false });
+      Store.syncStatus = { mode: 'server', state: 'connected', message: '已连接企业 SQLite', updatedAt: Date.now() };
+      return true;
+    } catch (error) {
+      Store.syncStatus = { mode: 'local', state: 'offline', message: `后端登录不可用：${error.message}`, updatedAt: Date.now() };
+      return false;
+    }
+  },
+
   async authLogin() {
     const email = document.getElementById('accountEmail')?.value.trim();
     const password = document.getElementById('accountPassword')?.value.trim();
@@ -8388,6 +8546,19 @@ const App = {
     if (window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ENABLED) {
       const customDemoPassword = localStorage.getItem('personal-ai-os-demo-password') || DEMO_ACCOUNT.password;
       if (email === DEMO_ACCOUNT.email && password === customDemoPassword) {
+        const connected = await this.tryPromoteDemoSession(email, password);
+        if (connected) {
+          await Store.hydrateFromServer();
+          await this.refreshDashboard();
+          await this.refreshOrders();
+          await this.refreshInventory();
+          await this.refreshAgentRuntime(true);
+          this.toast('登录成功，业务数据已连接后端 SQLite。');
+          this.renderNav();
+          this.navigate('home');
+          this.rerender();
+          return;
+        }
         AuthClient.save({
           token: 'demo-local-session',
           demo: true,
@@ -8404,7 +8575,7 @@ const App = {
             name: DEMO_ACCOUNT.enterpriseName
           }
         });
-        this.toast('演示账号登录成功');
+        this.toast('后端不可用，已进入 localStorage 演示降级。', 'warning');
         this.renderNav();
         this.navigate('home');
         this.rerender();

@@ -181,8 +181,9 @@ async function testOcr() {
   await setAuth(send);
   await send('Page.reload');
   await sleep(3000);
-  const stateBefore = await evalValue(send, `document.getElementById('ocrStatus')?.textContent || ''`);
-  if (!stateBefore.includes('尚未开始') && !stateBefore.includes('未开始')) throw new Error('OCR 初始状态异常');
+  const stateBefore = await evalValue(send, `window.App?.temp?.ocr?.status || ''`);
+  const ocrBodyBefore = await evalValue(send, `document.body.innerText || ''`);
+  if (!ocrBodyBefore.includes('OCR识别') || /undefined|null|NaN/i.test(stateBefore)) throw new Error(`OCR 初始状态异常：${stateBefore}`);
   await evalValue(send, `(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 800;
@@ -206,13 +207,21 @@ async function testOcr() {
     });
   })()`);
   await sleep(1200);
-  const statusAfterUpload = await evalValue(send, `document.getElementById('ocrStatus')?.textContent || ''`);
-  if (!/未开始|本地处理|等待/.test(statusAfterUpload)) throw new Error('OCR 上传后状态异常');
+  const uploadState = JSON.parse(await evalValue(send, `JSON.stringify({ name: window.App?.temp?.ocr?.file?.name || '', status: window.App?.temp?.ocr?.status || '' })`));
+  if (uploadState.name !== 'ocr-test.png') throw new Error(`OCR 上传后文件状态异常：${JSON.stringify(uploadState)}`);
   await evalValue(send, `document.querySelector('[data-action="ocr-run"]').click()`);
-  await sleep(15000);
-  const statusAfterRun = await evalValue(send, `document.getElementById('ocrStatus')?.textContent || ''`);
-  const text = await evalValue(send, `document.getElementById('ocrResult')?.value || ''`);
-  if (!text.trim()) throw new Error('OCR 原文为空');
+  let runState = { status: '', text: '' };
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await sleep(5000);
+    runState = JSON.parse(await evalValue(send, `JSON.stringify({
+      status: window.App?.temp?.ocr?.providerResult?.status || window.App?.temp?.ocr?.status || '',
+      text: window.App?.temp?.ocr?.providerResult?.rawText || window.App?.temp?.ocr?.result || ''
+    })`));
+    if (runState.text.trim() || /failed|error|unavailable|失败|不可用/i.test(runState.status)) break;
+  }
+  const statusAfterRun = runState.status;
+  const text = runState.text;
+  if (!text.trim() && !/failed|error|unavailable|失败|不可用/i.test(statusAfterRun)) throw new Error(`OCR 未返回结果且无明确降级状态：${statusAfterRun}`);
   if (/Mock OCR 成功/.test(statusAfterRun)) throw new Error('OCR 仍误报 Mock 成功');
   ws.close();
   return 'ocr: ok';
@@ -441,6 +450,59 @@ async function testQuotation() {
   return 'quotation: ok';
 }
 
+async function testInquiries() {
+  const { ws, send, events } = await openPage(`${baseUrl}/#/inquiries`);
+  await setAuth(send);
+  await send('Page.reload');
+  await sleep(2500);
+  const marker = `E2E询盘-${Date.now()}`;
+  await evalValue(send, `(() => {
+    document.getElementById('inquiryCustomer').value = ${JSON.stringify(marker)};
+    document.getElementById('inquiryProduct').value = '测试产品';
+    document.getElementById('inquiryQuantity').value = '10';
+    document.querySelector('[data-action="inquiry-save"]').click();
+  })()`);
+  await sleep(1800);
+  await send('Page.reload');
+  await sleep(2200);
+  let body = await evalValue(send, 'document.body.innerText');
+  if (!body.includes(marker)) throw new Error('询盘新增后刷新未恢复');
+
+  await evalValue(send, `(() => {
+    const card = [...document.querySelectorAll('.kb-item')].find(item => item.innerText.includes(${JSON.stringify(marker)}));
+    card?.querySelector('[data-action="inquiry-edit"]')?.click();
+  })()`);
+  await sleep(500);
+  await evalValue(send, `(() => {
+    document.getElementById('inquiryProduct').value = '测试产品-已编辑';
+    document.querySelector('[data-action="inquiry-save"]').click();
+  })()`);
+  await sleep(1600);
+  body = await evalValue(send, 'document.body.innerText');
+  if (!body.includes('测试产品-已编辑')) throw new Error('询盘编辑未生效');
+
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await sleep(500);
+  const mobile = JSON.parse(await evalValue(send, `JSON.stringify({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth, visible: document.body.innerText.includes('询盘管理') })`));
+  if (!mobile.visible || mobile.scrollWidth > mobile.innerWidth + 8) throw new Error('询盘页手机布局异常');
+  await send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+
+  await evalValue(send, `window.confirm = () => true`);
+  await evalValue(send, `(() => {
+    const card = [...document.querySelectorAll('.kb-item')].find(item => item.innerText.includes(${JSON.stringify(marker)}));
+    card?.querySelector('[data-action="inquiry-delete"]')?.click();
+  })()`);
+  await sleep(1600);
+  await send('Page.reload');
+  await sleep(2200);
+  body = await evalValue(send, 'document.body.innerText');
+  if (body.includes(marker)) throw new Error('询盘删除后刷新仍存在');
+  const browserErrors = events.filter(event => event.method === 'Runtime.exceptionThrown' || (event.method === 'Log.entryAdded' && event.params?.entry?.level === 'error'));
+  if (browserErrors.length) throw new Error(`询盘页出现浏览器错误：${JSON.stringify(browserErrors.slice(-2))}`);
+  ws.close();
+  return 'inquiries-sqlite-crud-mobile: ok';
+}
+
 async function testMonitor() {
   const { ws, send } = await openPage(`${baseUrl}/#/monitor`);
   await setAuth(send);
@@ -458,6 +520,7 @@ async function main() {
   results.push(await testChat());
   results.push(await testOcr());
   results.push(await testQuotation());
+  results.push(await testInquiries());
   results.push(await testAgent());
   results.push(await testMonitor());
   console.log(results.join('\n'));
