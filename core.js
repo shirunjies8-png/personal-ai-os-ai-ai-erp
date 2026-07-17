@@ -478,7 +478,7 @@ const APIClient = {
     } catch (error) {
       if (error?.name === 'AbortError') throw new Error(`后端请求超时（${timeout}ms），已保留本地演示数据。`);
       if (/Failed to fetch|Load failed|NetworkError|fetch/i.test(String(error?.message || error))) {
-        throw new Error('私有 AI 网关未连接，已保留本地演示功能。请确认设备已连接 Tailscale。');
+        throw new Error('HTTPS 后端未连接，已保留本地演示功能。请稍后重试。');
       }
       throw error;
     } finally {
