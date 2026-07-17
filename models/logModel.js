@@ -2,8 +2,15 @@ const db = require('./baseModel');
 
 function add(entry) {
   db.prepare(`
-    INSERT INTO logs (id, enterprise_id, user_id, type, title, detail, created_at)
-    VALUES (@id, @enterprise_id, @user_id, @type, @title, @detail, @created_at)
+    INSERT INTO logs (
+      id, enterprise_id, user_id, type, title, detail, created_at,
+      entity_type, entity_id, action, request_id, approval_id,
+      before_json, after_json, result, source_client
+    ) VALUES (
+      @id, @enterprise_id, @user_id, @type, @title, @detail, @created_at,
+      @entity_type, @entity_id, @action, @request_id, @approval_id,
+      @before_json, @after_json, @result, @source_client
+    )
   `).run(entry);
 }
 
@@ -11,7 +18,14 @@ function list(enterpriseId, limit = 200) {
   return db.prepare('SELECT * FROM logs WHERE enterprise_id = ? ORDER BY created_at DESC LIMIT ?').all(enterpriseId, limit);
 }
 
+function listByEntity(enterpriseId, entityType, entityId, limit = 200) {
+  return db.prepare(`SELECT * FROM logs
+    WHERE enterprise_id = ? AND entity_type = ? AND entity_id = ?
+    ORDER BY created_at DESC LIMIT ?`).all(enterpriseId, entityType, entityId, limit);
+}
+
 module.exports = {
   add,
-  list
+  list,
+  listByEntity
 };

@@ -15,6 +15,7 @@ const entries = [
   'rfq-risk.js',
   'apqp-workspace.js',
   'ocr-provider.js',
+  'manufacturing-workspace.js',
   'core.js',
   'ui.js',
   'app.js',

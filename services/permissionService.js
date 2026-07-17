@@ -19,4 +19,9 @@ function authorizeApproval(context = {}) {
   return true;
 }
 
-module.exports = { authorizeTool, authorizeAgent, authorizeApproval };
+function authorizeBusiness(context = {}, required = 'operator') {
+  policy.requireRole(context.role, required);
+  return true;
+}
+
+module.exports = { authorizeTool, authorizeAgent, authorizeApproval, authorizeBusiness };
