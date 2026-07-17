@@ -4,6 +4,10 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 const root = process.cwd();
+// Keep every verification subprocess on the same Node runtime that started this
+// script. On developer machines PATH can resolve a different global Node (for
+// example Node 25), while better-sqlite3 is intentionally built for Node 22.
+const nodeExecutable = process.execPath;
 const chromeCandidates = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -55,7 +59,7 @@ async function main() {
     return;
   }
 
-  const server = spawn('node', ['server.js'], {
+  const server = spawn(nodeExecutable, ['server.js'], {
     cwd: root,
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: true
@@ -82,7 +86,7 @@ async function main() {
     const selfTest = await fetchJson('http://127.0.0.1:3000/api/self-test');
     if (!selfTest.ok) throw new Error('/api/self-test 未返回 ok');
     await waitFor('http://127.0.0.1:9222/json/version', 30000);
-    runChecked('node', ['scripts/run-e2e.mjs']);
+    runChecked(nodeExecutable, ['scripts/run-e2e.mjs']);
     const report = await fs.readFile(path.join(root, 'TEST_REPORT.md'), 'utf8').catch(() => '');
     if (report) console.log('[verify] TEST_REPORT.md 已更新。');
     const bugReport = await fs.readFile(path.join(root, 'BUG_REPORT.md'), 'utf8').catch(() => '');

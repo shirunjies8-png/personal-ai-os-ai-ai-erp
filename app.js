@@ -123,6 +123,7 @@ const App = {
     inquirySelectedId: '',
     inquirySearch: '',
     inquiryLoading: false,
+    manufacturing: ManufacturingWorkspace.emptyState(),
     apqp: { open: false, loading: false, projects: [], selectedId: '', project: null, error: '' },
     agent: {
       goal: '',
@@ -753,6 +754,10 @@ const App = {
   },
 
   afterRender() {
+    if (['crm', 'project', 'inquiries'].includes(this.route)
+      && !this.temp.manufacturing.loaded && !this.temp.manufacturing.loading) {
+      this.loadManufacturingData({ silent: true });
+    }
     if (this.route === 'chat') {
       const active = Store.state.chats.find(chat => chat.id === Store.state.activeChatId);
       const assistantMessages = (active?.messages || []).filter(message => message.role === 'assistant');
@@ -1094,7 +1099,30 @@ const App = {
       'inquiry-edit': () => this.inquiryEdit(el.dataset.id),
       'inquiry-delete': () => this.inquiryDelete(el.dataset.id),
       'inquiry-search': () => this.inquirySearch(),
-      'inquiry-refresh': () => this.refreshBusinessState(),
+      'inquiry-refresh': () => this.loadManufacturingData(),
+      'manufacturing-refresh': () => this.loadManufacturingData(),
+      'manufacturing-customer-new': () => this.manufacturingCustomerNew(),
+      'manufacturing-customer-select': () => this.manufacturingSelectCustomer(el.dataset.id),
+      'manufacturing-customer-save': () => this.manufacturingSaveCustomer(),
+      'manufacturing-customer-delete': () => this.manufacturingDeleteCustomer(el.dataset.id),
+      'manufacturing-contact-add': () => this.manufacturingAddContact(),
+      'manufacturing-project-new': () => this.manufacturingProjectNew(),
+      'manufacturing-project-select': () => this.manufacturingSelectProject(el.dataset.id),
+      'manufacturing-project-save': () => this.manufacturingSaveProject(),
+      'manufacturing-project-delete': () => this.manufacturingDeleteProject(el.dataset.id),
+      'manufacturing-rfq-new': () => this.manufacturingRfqNew(),
+      'manufacturing-rfq-select': () => this.manufacturingSelectRfq(el.dataset.id),
+      'manufacturing-rfq-save': () => this.manufacturingSaveRfq(),
+      'manufacturing-rfq-delete': () => this.manufacturingDeleteRfq(el.dataset.id),
+      'manufacturing-rfq-search': () => this.manufacturingSearchRfqs(),
+      'manufacturing-requirement-save': () => this.manufacturingSaveRequirement(el.dataset.id),
+      'manufacturing-risk-add': () => this.manufacturingAddRisk(),
+      'manufacturing-risk-save': () => this.manufacturingSaveRisk(el.dataset.id),
+      'manufacturing-followup-add': () => this.manufacturingAddFollowup(),
+      'manufacturing-review-submit': () => this.manufacturingSubmitReview(),
+      'manufacturing-transition': () => this.manufacturingTransition(),
+      'manufacturing-convert-quotation': () => this.manufacturingConvertQuotation(),
+      'manufacturing-import-legacy': () => this.manufacturingImportLegacy(),
       'validate-run': () => this.validateRun(el.dataset.mode, el),
       'quality-check': () => this.qualityCheck(el),
       'quality-fix': () => this.qualityFix(el),
@@ -1906,6 +1934,389 @@ const App = {
     this.saveQuotationAudit('删除报价草稿', { status: saved.status || 'draft', message: `draftId: ${id}` });
     await this.persistBusinessState('报价草稿已删除');
     this.rerender();
+  },
+
+  async loadManufacturingData(options = {}) {
+    const state = this.temp.manufacturing;
+    const silent = Boolean(options.silent);
+    state.loading = true;
+    state.error = '';
+    if (!silent && ['crm', 'project', 'inquiries'].includes(this.route)) this.rerender();
+    try {
+      const query = encodeURIComponent(state.query || '');
+      const [customerResponse, projectResponse, rfqResponse] = await Promise.all([
+        APIClient.request(`${ManufacturingWorkspace.API_ROOT}/customers?pageSize=100&q=${query}`),
+        APIClient.request(`${ManufacturingWorkspace.API_ROOT}/projects?pageSize=100&q=${query}`),
+        APIClient.request(`${ManufacturingWorkspace.API_ROOT}/rfqs?pageSize=100&q=${query}`)
+      ]);
+      state.customers = ManufacturingWorkspace.normalizeCollection(customerResponse).items;
+      state.projects = ManufacturingWorkspace.normalizeCollection(projectResponse).items;
+      state.rfqs = ManufacturingWorkspace.normalizeCollection(rfqResponse).items;
+      state.mode = 'server';
+      const details = [];
+      if (state.selectedCustomerId && state.customers.some(item => item.id === state.selectedCustomerId)) {
+        details.push(APIClient.request(`${ManufacturingWorkspace.API_ROOT}/customers/${state.selectedCustomerId}`)
+          .then(response => { state.customer = response.data?.customer || null; }));
+      } else {
+        state.selectedCustomerId = '';
+        state.customer = null;
+      }
+      if (state.selectedProjectId && state.projects.some(item => item.id === state.selectedProjectId)) {
+        details.push(APIClient.request(`${ManufacturingWorkspace.API_ROOT}/projects/${state.selectedProjectId}`)
+          .then(response => { state.project = response.data?.project || null; }));
+      } else {
+        state.selectedProjectId = '';
+        state.project = null;
+      }
+      if (state.selectedRfqId && state.rfqs.some(item => item.id === state.selectedRfqId)) {
+        details.push(APIClient.request(`${ManufacturingWorkspace.API_ROOT}/rfqs/${state.selectedRfqId}`)
+          .then(response => { state.rfq = response.data?.rfq || null; }));
+      } else {
+        state.selectedRfqId = '';
+        state.rfq = null;
+      }
+      await Promise.all(details);
+      Store.syncStatus = { mode: 'server', state: 'synced', message: '客户与 RFQ 已从 SQLite 读取', updatedAt: Date.now() };
+      if (!silent) this.toast('客户、项目与 RFQ 已刷新');
+    } catch (error) {
+      state.mode = 'fallback';
+      state.error = Utils.friendlyErrorMessage(error.message || '后端不可用');
+      state.customers = [];
+      state.projects = [];
+      state.rfqs = [];
+      state.customer = null;
+      state.project = null;
+      state.rfq = null;
+      Store.syncStatus = { mode: 'local', state: 'offline', message: `后端不可用：${state.error}`, updatedAt: Date.now() };
+      if (!silent) this.toast(ManufacturingWorkspace.OFFLINE_NOTICE, 'warning');
+    } finally {
+      state.loaded = true;
+      state.loading = false;
+      if (['crm', 'project', 'inquiries'].includes(this.route)) this.rerender();
+    }
+  },
+
+  async manufacturingRequest(path, options = {}) {
+    const state = this.temp.manufacturing;
+    ManufacturingWorkspace.assertServerWritable(state.mode);
+    state.error = '';
+    try {
+      return await APIClient.request(`${ManufacturingWorkspace.API_ROOT}${path}`, options);
+    } catch (error) {
+      state.error = Utils.friendlyErrorMessage(error.message || '业务操作失败');
+      throw error;
+    }
+  },
+
+  manufacturingCustomerNew() {
+    const state = this.temp.manufacturing;
+    state.selectedCustomerId = '';
+    state.customer = null;
+    state.error = '';
+    this.rerender();
+  },
+
+  async manufacturingSelectCustomer(id) {
+    const state = this.temp.manufacturing;
+    state.selectedCustomerId = id;
+    const response = await this.manufacturingRequest(`/customers/${id}`);
+    state.customer = response.data?.customer || null;
+    this.rerender();
+  },
+
+  async manufacturingSaveCustomer() {
+    const state = this.temp.manufacturing;
+    ManufacturingWorkspace.assertServerWritable(state.mode);
+    const input = {
+      name: document.getElementById('manufacturingCustomerName')?.value.trim() || '',
+      source: document.getElementById('manufacturingCustomerSource')?.value.trim() || '',
+      level: document.getElementById('manufacturingCustomerLevel')?.value || 'normal',
+      owner: document.getElementById('manufacturingCustomerOwner')?.value.trim() || '',
+      status: document.getElementById('manufacturingCustomerStatus')?.value || 'active',
+      notes: document.getElementById('manufacturingCustomerNotes')?.value.trim() || ''
+    };
+    const errors = ManufacturingWorkspace.validateCustomer(input);
+    if (errors.length) throw new Error(errors.join('；'));
+    const selected = state.customer;
+    const response = await this.manufacturingRequest(selected ? `/customers/${selected.id}` : '/customers', {
+      method: selected ? 'PATCH' : 'POST',
+      body: JSON.stringify(selected ? { ...input, version: selected.version } : input)
+    });
+    state.selectedCustomerId = response.data?.customer?.id || state.selectedCustomerId;
+    await this.loadManufacturingData({ silent: true });
+    this.toast(selected ? '客户档案已更新' : '客户档案已创建');
+  },
+
+  async manufacturingDeleteCustomer(id) {
+    ManufacturingWorkspace.assertServerWritable(this.temp.manufacturing.mode);
+    const reason = prompt('请填写删除客户的原因（必填）：', '');
+    if (reason === null) return;
+    if (!reason.trim()) throw new Error('删除客户必须填写原因');
+    if (!confirm('确认删除该客户档案？存在关联项目或 RFQ 时后端会阻止。')) return;
+    await this.manufacturingRequest(`/customers/${id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+    this.temp.manufacturing.selectedCustomerId = '';
+    this.temp.manufacturing.customer = null;
+    await this.loadManufacturingData({ silent: true });
+    this.toast('客户档案已删除');
+  },
+
+  async manufacturingAddContact() {
+    const state = this.temp.manufacturing;
+    if (!state.customer?.id) throw new Error('请先保存并选择客户');
+    const input = {
+      name: document.getElementById('manufacturingContactName')?.value.trim() || '',
+      title: document.getElementById('manufacturingContactTitle')?.value.trim() || '',
+      phone: document.getElementById('manufacturingContactPhone')?.value.trim() || '',
+      email: document.getElementById('manufacturingContactEmail')?.value.trim() || '',
+      isPrimary: Boolean(document.getElementById('manufacturingContactPrimary')?.checked)
+    };
+    if (!input.name) throw new Error('联系人姓名不能为空');
+    await this.manufacturingRequest(`/customers/${state.customer.id}/contacts`, { method: 'POST', body: JSON.stringify(input) });
+    await this.manufacturingSelectCustomer(state.customer.id);
+    this.toast('客户联系人已新增');
+  },
+
+  manufacturingProjectNew() {
+    const state = this.temp.manufacturing;
+    state.selectedProjectId = '';
+    state.project = null;
+    state.error = '';
+    this.rerender();
+  },
+
+  async manufacturingSelectProject(id) {
+    const state = this.temp.manufacturing;
+    state.selectedProjectId = id;
+    const response = await this.manufacturingRequest(`/projects/${id}`);
+    state.project = response.data?.project || null;
+    this.rerender();
+  },
+
+  async manufacturingSaveProject() {
+    const state = this.temp.manufacturing;
+    ManufacturingWorkspace.assertServerWritable(state.mode);
+    const input = {
+      customer_id: document.getElementById('manufacturingProjectCustomer')?.value || '',
+      name: document.getElementById('manufacturingProjectName')?.value.trim() || '',
+      description: document.getElementById('manufacturingProjectDescription')?.value.trim() || '',
+      owner: document.getElementById('manufacturingProjectOwner')?.value.trim() || '',
+      planned_start_date: document.getElementById('manufacturingProjectStart')?.value || '',
+      planned_end_date: document.getElementById('manufacturingProjectEnd')?.value || '',
+      status: document.getElementById('manufacturingProjectStatus')?.value || 'draft'
+    };
+    const errors = ManufacturingWorkspace.validateProject(input);
+    if (errors.length) throw new Error(errors.join('；'));
+    const selected = state.project;
+    const response = await this.manufacturingRequest(selected ? `/projects/${selected.id}` : '/projects', {
+      method: selected ? 'PATCH' : 'POST',
+      body: JSON.stringify(selected ? { ...input, version: selected.version } : input)
+    });
+    state.selectedProjectId = response.data?.project?.id || state.selectedProjectId;
+    await this.loadManufacturingData({ silent: true });
+    this.toast(selected ? '项目档案已更新' : '项目档案已创建');
+  },
+
+  async manufacturingDeleteProject(id) {
+    const reason = prompt('请填写删除项目的原因（必填）：', '');
+    if (reason === null) return;
+    if (!reason.trim()) throw new Error('删除项目必须填写原因');
+    if (!confirm('确认删除该项目档案？关联 RFQ 存在时后端会阻止。')) return;
+    await this.manufacturingRequest(`/projects/${id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+    this.temp.manufacturing.selectedProjectId = '';
+    this.temp.manufacturing.project = null;
+    await this.loadManufacturingData({ silent: true });
+    this.toast('项目档案已删除');
+  },
+
+  manufacturingRfqNew() {
+    const state = this.temp.manufacturing;
+    state.selectedRfqId = '';
+    state.rfq = null;
+    state.error = '';
+    this.temp.inquirySelectedId = '';
+    this.rerender();
+  },
+
+  async manufacturingSelectRfq(id) {
+    const state = this.temp.manufacturing;
+    state.selectedRfqId = id;
+    const response = await this.manufacturingRequest(`/rfqs/${id}`);
+    state.rfq = response.data?.rfq || null;
+    this.rerender();
+  },
+
+  manufacturingSearchRfqs() {
+    this.temp.manufacturing.query = document.getElementById('manufacturingSearch')?.value.trim() || '';
+    this.loadManufacturingData();
+  },
+
+  manufacturingRfqInput() {
+    return {
+      customer_id: document.getElementById('manufacturingRfqCustomer')?.value || '',
+      project_id: document.getElementById('manufacturingRfqProject')?.value || '',
+      product_name: document.getElementById('manufacturingRfqProduct')?.value.trim() || '',
+      product_code: document.getElementById('manufacturingRfqProductCode')?.value.trim() || '',
+      material: document.getElementById('manufacturingRfqMaterial')?.value.trim() || '',
+      quantity: document.getElementById('manufacturingRfqQuantity')?.value || '',
+      unit: document.getElementById('manufacturingRfqUnit')?.value.trim() || '件',
+      process_requirements: document.getElementById('manufacturingRfqProcess')?.value.trim() || '',
+      tolerance_requirements: document.getElementById('manufacturingRfqTolerance')?.value.trim() || '',
+      surface_treatment: document.getElementById('manufacturingRfqSurface')?.value.trim() || '',
+      packaging_requirements: document.getElementById('manufacturingRfqPackaging')?.value.trim() || '',
+      requested_delivery_date: document.getElementById('manufacturingRfqDelivery')?.value || '',
+      owner: document.getElementById('manufacturingRfqOwner')?.value.trim() || '',
+      contact_name: document.getElementById('manufacturingRfqContact')?.value.trim() || '',
+      contact_details: document.getElementById('manufacturingRfqContactDetails')?.value.trim() || '',
+      notes: document.getElementById('manufacturingRfqNotes')?.value.trim() || ''
+    };
+  },
+
+  async manufacturingSaveRfq() {
+    const state = this.temp.manufacturing;
+    ManufacturingWorkspace.assertServerWritable(state.mode);
+    const input = this.manufacturingRfqInput();
+    const errors = ManufacturingWorkspace.validateRfq(input);
+    if (errors.length) throw new Error(errors.join('；'));
+    const selected = state.rfq;
+    const response = await this.manufacturingRequest(selected ? `/rfqs/${selected.id}` : '/rfqs', {
+      method: selected ? 'PATCH' : 'POST',
+      body: JSON.stringify(selected ? { ...input, version: selected.version } : input)
+    });
+    state.selectedRfqId = response.data?.rfq?.id || state.selectedRfqId;
+    await this.loadManufacturingData({ silent: true });
+    this.toast(selected ? 'RFQ 已更新' : 'RFQ 已创建');
+  },
+
+  async manufacturingDeleteRfq(id) {
+    const reason = prompt('请填写删除 RFQ 的原因（必填）：', '');
+    if (reason === null) return;
+    if (!reason.trim()) throw new Error('删除 RFQ 必须填写原因');
+    if (!confirm('确认删除该 RFQ？已进入报价或成交状态时后端会阻止。')) return;
+    await this.manufacturingRequest(`/rfqs/${id}`, { method: 'DELETE', body: JSON.stringify({ reason }) });
+    this.temp.manufacturing.selectedRfqId = '';
+    this.temp.manufacturing.rfq = null;
+    await this.loadManufacturingData({ silent: true });
+    this.toast('RFQ 已删除');
+  },
+
+  async manufacturingSaveRequirement(id) {
+    const rfq = this.temp.manufacturing.rfq;
+    if (!rfq?.id) throw new Error('请先选择 RFQ');
+    const value = document.getElementById(`manufacturingRequirement-${id}`)?.value.trim() || '';
+    const confirmed = Boolean(document.getElementById(`manufacturingRequirementConfirmed-${id}`)?.checked);
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/requirements/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ value, confirmed })
+    });
+    this.temp.manufacturing.rfq = response.data?.rfq || rfq;
+    await this.loadManufacturingData({ silent: true });
+    this.toast('RFQ 需求项已更新');
+  },
+
+  async manufacturingAddRisk() {
+    const rfq = this.temp.manufacturing.rfq;
+    if (!rfq?.id) throw new Error('请先选择 RFQ');
+    const input = {
+      title: document.getElementById('manufacturingRiskTitle')?.value.trim() || '',
+      category: document.getElementById('manufacturingRiskCategory')?.value || 'delivery',
+      severity: document.getElementById('manufacturingRiskSeverity')?.value || 'medium',
+      probability: document.getElementById('manufacturingRiskProbability')?.value || 1,
+      impact: document.getElementById('manufacturingRiskImpact')?.value || 1,
+      owner: document.getElementById('manufacturingRiskOwner')?.value.trim() || '',
+      mitigation: document.getElementById('manufacturingRiskMitigation')?.value.trim() || ''
+    };
+    if (!input.title) throw new Error('风险标题不能为空');
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/risks`, { method: 'POST', body: JSON.stringify(input) });
+    this.temp.manufacturing.rfq = response.data?.rfq || rfq;
+    await this.loadManufacturingData({ silent: true });
+    this.toast('RFQ 风险已新增');
+  },
+
+  async manufacturingSaveRisk(id) {
+    const rfq = this.temp.manufacturing.rfq;
+    const risk = rfq?.risks?.find(item => item.id === id);
+    if (!risk) throw new Error('风险不存在或已删除');
+    const status = document.getElementById(`manufacturingRiskStatus-${id}`)?.value || risk.status;
+    let acceptanceReason = risk.acceptance_reason || '';
+    let closureEvidence = risk.closure_evidence || '';
+    if (status === 'accepted') {
+      if (!confirm('接受风险是高风险操作，确认继续？')) return;
+      acceptanceReason = prompt('请填写风险接受理由：', acceptanceReason) || '';
+    }
+    if (status === 'closed') {
+      if (!confirm('关闭风险需要人工确认，确认继续？')) return;
+      closureEvidence = prompt('请填写关闭说明或证据引用：', closureEvidence) || '';
+    }
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/risks/${id}`, {
+      method: 'PATCH', body: JSON.stringify({ status, acceptance_reason: acceptanceReason, closure_evidence: closureEvidence, version: risk.version })
+    });
+    this.temp.manufacturing.rfq = response.data?.rfq || rfq;
+    await this.loadManufacturingData({ silent: true });
+    this.toast('RFQ 风险已更新');
+  },
+
+  async manufacturingAddFollowup() {
+    const rfq = this.temp.manufacturing.rfq;
+    if (!rfq?.id) throw new Error('请先选择 RFQ');
+    const input = {
+      method: document.getElementById('manufacturingFollowupMethod')?.value || 'note',
+      content: document.getElementById('manufacturingFollowupContent')?.value.trim() || '',
+      next_followup_at: document.getElementById('manufacturingFollowupNext')?.value || '',
+      owner: document.getElementById('manufacturingFollowupOwner')?.value.trim() || ''
+    };
+    if (!input.content) throw new Error('跟进内容不能为空');
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/followups`, { method: 'POST', body: JSON.stringify(input) });
+    this.temp.manufacturing.rfq = response.data?.rfq || rfq;
+    this.rerender();
+    this.toast('RFQ 跟进记录已保存');
+  },
+
+  async manufacturingSubmitReview() {
+    const rfq = this.temp.manufacturing.rfq;
+    if (!rfq?.id) throw new Error('请先选择 RFQ');
+    if (!confirm('确认提交 RFQ 评审？缺失项会被后端确定性阻断。')) return;
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/submit-review`, { method: 'POST', body: JSON.stringify({}) });
+    this.temp.manufacturing.rfq = response.data?.rfq || rfq;
+    await this.loadManufacturingData({ silent: true });
+    this.toast(this.temp.manufacturing.rfq?.status === 'information_required' ? '缺失项已标记，请补充资料' : 'RFQ 已提交人工评审', this.temp.manufacturing.rfq?.status === 'information_required' ? 'warning' : 'success');
+  },
+
+  async manufacturingTransition() {
+    const rfq = this.temp.manufacturing.rfq;
+    if (!rfq?.id) throw new Error('请先选择 RFQ');
+    const target = document.getElementById('manufacturingTransitionTarget')?.value || '';
+    if (!target) throw new Error('请选择目标状态');
+    if (!confirm(`确认将 RFQ 流转到“${ManufacturingWorkspace.RFQ_STATUS_LABELS[target] || target}”？`)) return;
+    const reason = prompt('请填写流转说明（补充资料、成交、失效时必填）：', '') ?? '';
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/transition`, {
+      method: 'POST', body: JSON.stringify({ target_status: target, reason })
+    });
+    this.temp.manufacturing.rfq = response.data?.rfq || rfq;
+    await this.loadManufacturingData({ silent: true });
+    this.toast(`RFQ 已进入${ManufacturingWorkspace.RFQ_STATUS_LABELS[target] || target}`);
+  },
+
+  async manufacturingConvertQuotation() {
+    const state = this.temp.manufacturing;
+    const rfq = state.rfq;
+    if (!rfq?.id) throw new Error('请先选择 RFQ');
+    if (!confirm('确认将已评审的 RFQ 转入现有报价模块？')) return;
+    const response = await this.manufacturingRequest(`/rfqs/${rfq.id}/convert-to-quotation`, { method: 'POST', body: JSON.stringify({}) });
+    const draft = response.data?.quotationDraft || {};
+    const ws = this.getQuotationWorkspace();
+    for (const [key, value] of Object.entries(draft)) if (value !== '' && value != null) ws[key] = value;
+    ws.rfqSource = { rfqId: draft.sourceRfqId, rfqNo: draft.sourceRfqNo, approvedByHuman: true };
+    ws.updatedAt = Date.now();
+    Store.save();
+    state.rfq = response.data?.rfq || rfq;
+    this.toast('RFQ 已转入现有报价模块');
+    this.navigate('quotation');
+  },
+
+  async manufacturingImportLegacy() {
+    if (!confirm('将旧询盘显式导入为新 RFQ 草稿？原数据不会被删除，也不会自动批准。')) return;
+    const response = await this.manufacturingRequest('/rfqs/import-legacy', { method: 'POST', body: JSON.stringify({}) });
+    await this.loadManufacturingData({ silent: true });
+    this.toast(`旧询盘导入完成：新增 ${response.data?.imported || 0}，跳过 ${response.data?.skipped || 0}`);
   },
 
   inquiryNew() {
