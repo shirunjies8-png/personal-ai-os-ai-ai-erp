@@ -1,3 +1,41 @@
+## 2026-07-17 — 阶段 0 验收结论与 OCR E2E 已知环境问题
+
+### 阶段 0 结论
+
+- 阶段 0 状态：`业务链路通过，OCR E2E 环境问题待处理`。
+- 已验证通过：公网 HTTPS API、`/api/health`、SQLite CRUD、企业隔离、刷新恢复、CORS、390×844 手机尺寸和前端控制台检查。
+- 公网 `3100` 端口继续关闭；Nginx 反向代理到只监听 `127.0.0.1:3100` 的后端。
+- OCR 业务代码未发现明确的确定性功能错误；下述失败只发生在自动化浏览器环境的 Tesseract 初始化阶段。
+
+### ENV-OCR-E2E-001：Tesseract 初始化超时
+
+- 状态：`open / environment`。
+- 复现环境：Node.js 22.22.2，项目完整验证中的 Chrome E2E，OCR 页面加载自动生成的 `ocr-test.png`。
+- 复现步骤：运行 `npm run verify`；E2E 打开 `#/ocr`，写入测试登录态，上传生成图片，点击“开始识别”，每 5 秒读取一次 Provider 状态，共 12 次。
+- 实际结果：60 秒后状态仍为 `initializing tesseract`，没有 OCR 文字，也没有进入 `failed`、`error` 或 `unavailable` 明确降级状态。
+- 原始失败：`OCR 未返回结果且无明确降级状态：处理中：initializing tesseract`，来源 `scripts/run-e2e.mjs:224`。
+- 预期结果：在约定初始化时限内返回真实 OCR 结果，或进入明确的失败/不可用/诚实降级状态；不得把 mock 结果标成真实成功。
+- 影响范围：OCR 浏览器 E2E 未通过。该结果不能写成通过，也不能用已有单元测试或公网 API 结果替代。
+- 非影响范围：已通过的公网 API、SQLite、询盘持久化、企业隔离、CORS、普通页面和手机端验证仍然有效。
+
+### 保留门禁和后续计划
+
+- `scripts/run-e2e.mjs` 中的 OCR 测试保持启用；不删除、不跳过、不放宽成无条件通过。
+- `scripts/ocr-provider-test.mjs` 和 `scripts/ocr-page-test.mjs` 继续覆盖 Provider、超时、空结果、乱码、人工复核、迁移、门禁和静态模式，但不冒充真实 Chrome E2E。
+- 后续独立排查 Tesseract worker、core、语言包静态资源路径、冷缓存下载耗时、CSP/Worker 加载以及初始化状态回传。
+- 后续验收必须覆盖冷缓存和热缓存，确认在限定时间内得到真实结果或明确不可用状态；不得通过关闭系统安全保护强行运行。
+- 在问题关闭前，每次完整验证必须记录 OCR E2E 的真实结果，并注明该问题仍为 open；偶发通过不能覆盖此前失败证据，其他测试门禁保持不变。
+
+### 阶段 1 完整验证
+
+- `git diff --check`：通过。
+- `npm run check`：通过。
+- `npm run test:unit`：通过；包括安全自检、AI Gateway、APQP、OCR Provider/复核、前端网关和非 AI 业务 SQLite 闭环测试。
+- `npm run build`：通过；`public/` 和 `dist/` 按现有流程生成且保持 Git 忽略。
+- `npm run verify`：本次运行退出码为 0，语法、构建、Bug 扫描和浏览器 E2E 均完成。
+- 本次 `verify` 未复现 `initializing tesseract` 超时，但没有修改 OCR 代码或测试，也尚未完成冷缓存根因定位，因此 `ENV-OCR-E2E-001` 不关闭。
+- 阶段 1 只新增制造业务规划和测试记录，没有创建阶段 2 的客户、项目或 RFQ 表/API/页面。
+
 ## 2026-07-07 — 成本核算助手收口
 
 ### 浏览器验证
