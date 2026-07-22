@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const read = file => fs.readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+const ui = read('ui.js');
+const app = read('app.js');
+const core = read('core.js');
+const index = read('index.html');
+const styles = read('styles.css');
+
+assert.match(ui, /const CORE_MODULE_IDS/);
+assert.match(ui, /const CORE_NAVIGATION/);
+assert.match(ui, /coreEmptyState\(/);
+assert.match(ui, /labNotice\(/);
+assert.match(ui, /核心业务工作台/);
+assert.match(ui, /客户 → 项目 → RFQ → 人工评审 → 报价/);
+assert.match(ui, /legacyHome\(\)/);
+assert.match(ui, /Mock、规则输出和草稿均不替代正式审批、报价或业务记录/);
+
+assert.match(app, /getWorkspaceMode\(\)/);
+assert.match(app, /toggleWorkspaceMode\(\)/);
+assert.match(app, /workspaceMode === 'user'/);
+assert.match(app, /实验室 ·/);
+assert.match(app, /\['home', 'crm', 'project', 'inquiries'\]/);
+assert.match(core, /workspaceMode: 'user'/);
+assert.match(core, /\['user', 'lab'\]/);
+assert.match(index, /id="workspaceModeToggle"/);
+assert.match(index, /data-route="crm"/);
+assert.match(index, /data-route="inquiries"/);
+assert.match(index, /data-route="quotation"/);
+assert.match(styles, /\.workspace-mode-toggle/);
+assert.match(styles, /\.core-empty-state/);
+assert.match(styles, /\.lab-notice/);
+assert.match(styles, /@media\(max-width:650px\).*core-boundary-grid/s);
+
+console.log('focused workspace navigation, laboratory boundary, home workbench, and empty-state tests passed');

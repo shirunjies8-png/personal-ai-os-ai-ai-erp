@@ -29,6 +29,7 @@ const DefaultState = {
     githubPagesUrl: '',
     provider: RuntimeConfig.API_BASE_URL ? 'DeepSeek OpenAI-compatible API' : '本地模式',
     syncMode: 'local',
+    workspaceMode: 'user',
     dark: false,
     agentMail: {
       enabled: false,
@@ -735,6 +736,7 @@ const Store = {
       if (!Array.isArray(this.state.connectors) || !this.state.connectors.length) this.state.connectors = structuredClone(DefaultState.connectors);
       if (!this.state.settings.accessMode) this.state.settings.accessMode = this.state.settings.apiEnabled ? 'api' : 'local';
     if (!this.state.settings.syncMode) this.state.settings.syncMode = 'local';
+    if (!['user', 'lab'].includes(this.state.settings.workspaceMode)) this.state.settings.workspaceMode = 'user';
     if (!this.state.settings.provider) this.state.settings.provider = this.state.settings.accessMode === 'local' ? '本地模式' : '自定义';
       if (typeof this.state.settings.developerMode !== 'boolean') this.state.settings.developerMode = false;
       this.state.settings.agentMail = {
