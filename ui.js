@@ -165,6 +165,16 @@ const MODULES = [
 
 const moduleById = id => MODULES.find(item => item.id === id) || MODULES[0];
 
+// 用户模式只展示客户到报价的日常路径；所有既有功能仍保留在实验室模式，
+// 不改变其权限、审批、审计或数据处理规则。
+const CORE_MODULE_IDS = Object.freeze(['home', 'crm', 'project', 'inquiries', 'quotation', 'ocr', 'worklog', 'operationlog', 'monitoring']);
+const CORE_NAVIGATION = Object.freeze([
+  ['核心工作台', ['home']],
+  ['客户与报价', ['crm', 'project', 'inquiries', 'quotation']],
+  ['协同与保障', ['ocr', 'worklog', 'operationlog', 'monitoring']]
+]);
+const isCoreModule = id => CORE_MODULE_IDS.includes(id);
+
 const GENERIC_MODULES = {
   assistant: { desc: '企业 AI 智能入口：自然语言调用订单、库存、计划、邮件、日报、知识库与 Agent。', actions: ['执行任务', '生成建议', '导出结果'], accept: '.xlsx,.docx,.pdf,.txt' },
   mail: { desc: '生成商务邮件、发货通知、报价邮件、投标提交邮件', actions: ['生成邮件', '复制结果', '保存草稿'], accept: '.doc,.docx,.pdf,.txt' },
@@ -257,6 +267,18 @@ const UI = {
   result(text, empty = '处理结果将在这里显示', large = false) {
     return text ? `<div class="result-box ${large ? 'large' : ''}">${Utils.textToHtml(text)}</div>` : `<div class="empty-result"><span>${icon('sparkles')}</span><b>${empty}</b><small>填写输入内容并点击操作按钮</small></div>`;
   },
+  coreEmptyState({ iconName = 'folder', title, description, actionLabel, actionRoute, actionName, actionText } = {}) {
+    const action = actionRoute
+      ? `<button class="primary-btn" data-route="${actionRoute}">${icon('plus')}${Utils.escape(actionLabel || '开始处理')}</button>`
+      : actionName
+        ? `<button class="primary-btn" data-action="${actionName}">${icon('plus')}${Utils.escape(actionLabel || '开始处理')}</button>`
+        : '';
+    return `<div class="core-empty-state"><span class="core-empty-icon">${icon(iconName)}</span><div><b>${Utils.escape(title || '暂时没有业务数据')}</b><p>${Utils.escape(description || '从第一条业务记录开始，系统会持续保留进度与审计轨迹。')}</p>${action}${actionText ? `<small>${Utils.escape(actionText)}</small>` : ''}</div></div>`;
+  },
+  labNotice(route) {
+    const module = moduleById(route);
+    return `<div class="lab-notice">${icon('beaker')}<span><b>实验室功能：${Utils.escape(module.name)}</b><small>该功能保留用于试验、演示或配置验证。Mock、规则输出和草稿均不替代正式审批、报价或业务记录。</small></span></div>`;
+  },
   businessSyncNote(modeOverride = '') {
     const serverMode = modeOverride === 'fallback' ? false : Store.canSyncToServer();
     const status = Store.syncStatus || {};
@@ -265,12 +287,39 @@ const UI = {
   },
   render(route) {
     const view = this[route] || this.genericWorkspace;
-    return `<div class="page-enter">${view.call(this, route)}</div>`;
+    const labNotice = route !== 'login' && !isCoreModule(route) ? this.labNotice(route) : '';
+    return `<div class="page-enter">${labNotice}${view.call(this, route)}</div>`;
   },
   login() {
     return `<div class="workbench equal" style="min-height:calc(100vh - 140px);align-items:center"><section class="panel"><div class="panel-head"><div><h3>登录 Personal AI OS</h3></div><span class="status-pill">企业 AI 工作系统</span></div><div class="panel-body"><div class="field"><label>企业名称（注册时填写）</label><input class="input" id="accountEnterpriseName" placeholder="Personal AI OS Demo Enterprise"></div><div class="field"><label>姓名</label><input class="input" id="accountName" placeholder="企业管理员"></div><div class="field"><label>邮箱</label><input class="input" id="accountEmail" placeholder="admin@personal-ai-os.local"></div><div class="field"><label>角色</label><select class="select" id="accountRole"><option>企业管理员</option><option>计划员</option><option>仓库</option><option>采购</option><option>销售</option><option>普通员工</option></select></div><div class="field-row"><div class="field"><label>密码</label><input class="input" id="accountPassword" type="password" placeholder="输入密码"></div><div class="field"><label>确认密码（注册时可填）</label><input class="input" id="accountNextPassword" type="password" placeholder="可选"></div></div><div class="button-row"><button class="primary-btn" data-action="auth-login">${icon('check')}登录</button><button class="secondary-btn" data-action="auth-register">${icon('plus')}注册企业</button></div><div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>默认演示账号：admin@personal-ai-os.local / 123456。GitHub Pages 打开时会使用本地演示登录；本地开发或服务端环境可继续使用后端登录。</span></div></div></section><section class="panel"><div class="panel-head"><div><h3>系统入口说明</h3></div></div><div class="panel-body">${this.result('登录后可进入：首页仪表盘、Excel 上传中心、订单中心、库存中心、生产计划中心、异常预警中心、Agentic RL 学习中心、AI 邮件中心、系统设置页。', '请输入账号后进入系统', true)}</div></section></div>`;
   },
   home() {
+    const state = App.temp.manufacturing || ManufacturingWorkspace.emptyState();
+    const rfqs = Array.isArray(state.rfqs) ? state.rfqs : [];
+    const customers = Array.isArray(state.customers) ? state.customers : [];
+    const projects = Array.isArray(state.projects) ? state.projects : [];
+    const activeRfqs = rfqs.filter(item => !['lost', 'expired', 'won'].includes(item.status));
+    const quoteReady = rfqs.filter(item => item.assessment?.can_convert_to_quotation).length;
+    const blocked = rfqs.filter(item => (item.assessment?.blockers || []).length > 0);
+    const loading = state.loading && !state.loaded;
+    const attention = blocked.slice(0, 4);
+    const emptyStart = !loading && !customers.length
+      ? this.coreEmptyState({ iconName: 'book', title: '从第一个客户开始', description: '先建立客户档案，再创建项目和 RFQ；后续状态、风险和报价都会保留在企业 SQLite 中。', actionLabel: '新建客户档案', actionRoute: 'crm' })
+      : '';
+    const attentionPanel = loading
+      ? this.coreEmptyState({ iconName: 'refresh', title: '正在读取客户与 RFQ 数据', description: '正在从企业 SQLite 同步核心业务数据。' })
+      : attention.length
+        ? `<div class="kb-list">${attention.map(item => `<article class="kb-item"><span>${icon('shield')}</span><div><b>${Utils.escape(item.rfq_no || 'RFQ')} · ${Utils.escape(item.product_name || '待补充产品')}</b><p>${Utils.escape((item.assessment?.blockers || []).map(blocker => blocker.message).join('；') || '请查看评审详情')}</p><small>${Utils.escape(item.customer_name || '未关联客户')}</small></div><button class="secondary-btn compact" data-route="inquiries">处理</button></article>`).join('')}</div>`
+        : this.coreEmptyState({ iconName: 'check', title: '暂无待处理阻断项', description: '创建或提交 RFQ 后，缺失项、风险和审批阻断会在这里集中提示。', actionLabel: '查看 RFQ', actionRoute: 'inquiries' });
+    return `${this.pageHead('核心业务工作台', '围绕客户、项目、RFQ 评审和报价的日常闭环。进度、风险和审批结果均以后端确定性规则为准。', `<button class="secondary-btn" data-action="manufacturing-refresh">${icon('refresh')}${loading ? '同步中…' : '刷新业务数据'}</button><button class="primary-btn" data-route="inquiries">${icon('plus')}新建 RFQ</button>`)}
+      ${this.businessSyncNote(state.mode === 'fallback' ? 'fallback' : '')}
+      <section class="core-journey"><div class="core-journey-copy"><p class="eyebrow">核心路径</p><h2>客户 → 项目 → RFQ → 人工评审 → 报价</h2><p>默认只显示可形成真实业务闭环的页面。其余原有功能仍在实验室模式保留，并会清晰标注演示或试验边界。</p></div><div class="core-journey-actions"><button class="secondary-btn" data-route="crm">${icon('book')}客户</button><button class="secondary-btn" data-route="project">${icon('folder')}项目</button><button class="secondary-btn" data-route="inquiries">${icon('message')}RFQ</button><button class="primary-btn" data-route="quotation">${icon('chart')}报价</button></div></section>
+      <section class="stat-grid core-stat-grid"><article class="panel stat-card"><span class="stat-icon">${icon('book')}</span><span class="stat-copy"><span>客户档案</span><strong>${customers.length}</strong><small>企业持久化客户</small></span></article><article class="panel stat-card"><span class="stat-icon blue">${icon('folder')}</span><span class="stat-copy"><span>项目档案</span><strong>${projects.length}</strong><small>关联客户与 RFQ</small></span></article><article class="panel stat-card"><span class="stat-icon amber">${icon('message')}</span><span class="stat-copy"><span>进行中 RFQ</span><strong>${activeRfqs.length}</strong><small>待评审、可报价或报价中</small></span></article><article class="panel stat-card"><span class="stat-icon green">${icon('check')}</span><span class="stat-copy"><span>可转报价</span><strong>${quoteReady}</strong><small>已满足当前评审条件</small></span></article></section>
+      ${emptyStart}
+      <div class="home-grid core-home-grid"><section class="panel"><div class="panel-head"><div><h3>下一步工作</h3><small>按顺序完成，避免跳过必需的客户、项目和评审信息。</small></div></div><div class="panel-body"><div class="core-step-list"><button class="core-step" data-route="crm"><span>1</span><div><b>建立客户档案</b><small>${customers.length ? `已保存 ${customers.length} 个客户，可继续维护联系人。` : '录入客户主档、负责人和联系人。'}</small></div>${icon('arrowRight')}</button><button class="core-step" data-route="project"><span>2</span><div><b>建立项目档案</b><small>${projects.length ? `已保存 ${projects.length} 个项目，可关联 RFQ。` : '为客户建立项目，明确责任人与计划日期。'}</small></div>${icon('arrowRight')}</button><button class="core-step" data-route="inquiries"><span>3</span><div><b>评审 RFQ</b><small>检查缺失项、风险和审批状态，达到条件后才可报价。</small></div>${icon('arrowRight')}</button><button class="core-step" data-route="quotation"><span>4</span><div><b>生成受控报价</b><small>从已满足条件的 RFQ 转入现有报价模块。</small></div>${icon('arrowRight')}</button></div></div></section><section class="panel"><div class="panel-head"><div><h3>需要关注的 RFQ</h3><small>阻断项来自后端 assessment，不由前端或 AI 推断。</small></div><span class="badge">${blocked.length}</span></div><div class="panel-body">${attentionPanel}</div></section></div>
+      <section class="panel"><div class="panel-head"><div><h3>使用边界</h3></div><span class="status-pill">用户模式</span></div><div class="panel-body"><div class="core-boundary-grid"><div><b>真实业务</b><small>客户、项目和 RFQ 使用现有权限、审计、企业隔离与 SQLite 持久化。</small></div><div><b>报价门禁</b><small>报价资格只能使用 RFQ 后端 assessment 与人工审批结果。</small></div><div><b>实验室模式</b><small>原有扩展能力未删除；Mock 或实验结果始终明确标识，不能冒充正式能力。</small></div></div></div></section>`;
+  },
+  legacyHome() {
     const s = Store.state;
     const connectors = s.connectors || [];
     const connectorSummary = {
@@ -536,7 +585,7 @@ const UI = {
       <div class="field"><label>备注</label><textarea class="textarea" id="manufacturingCustomerNotes">${Utils.escape(item.notes || '')}</textarea></div>
       <div class="button-row"><button class="primary-btn" data-action="manufacturing-customer-save">${icon('check')}${item.id ? '保存修改' : '创建客户'}</button>${item.id ? `<button class="danger-btn" data-action="manufacturing-customer-delete" data-id="${item.id}">${icon('trash')}删除客户</button>` : ''}</div>
     </div></section>`;
-    const list = `<section class="panel"><div class="panel-head"><div><h3>客户列表</h3></div><span class="badge">${state.customers.length}</span></div><div class="panel-body">${state.customers.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>客户编号</th><th>名称</th><th>等级</th><th>负责人</th><th>项目</th><th>RFQ</th><th>状态</th><th>操作</th></tr></thead><tbody>${state.customers.map(customer => `<tr><td>${Utils.escape(customer.customer_no)}</td><td>${Utils.escape(customer.name)}</td><td>${Utils.escape(customer.level)}</td><td>${Utils.escape(customer.owner || '待分配')}</td><td>${Number(customer.project_count || 0)}</td><td>${Number(customer.rfq_count || 0)}</td><td>${Utils.escape(customer.status)}</td><td><button class="secondary-btn compact" data-action="manufacturing-customer-select" data-id="${customer.id}">详情</button></td></tr>`).join('')}</tbody></table></div>` : this.result('', '暂无客户档案')}</div></section>`;
+    const list = `<section class="panel"><div class="panel-head"><div><h3>客户列表</h3></div><span class="badge">${state.customers.length}</span></div><div class="panel-body">${state.customers.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>客户编号</th><th>名称</th><th>等级</th><th>负责人</th><th>项目</th><th>RFQ</th><th>状态</th><th>操作</th></tr></thead><tbody>${state.customers.map(customer => `<tr><td>${Utils.escape(customer.customer_no)}</td><td>${Utils.escape(customer.name)}</td><td>${Utils.escape(customer.level)}</td><td>${Utils.escape(customer.owner || '待分配')}</td><td>${Number(customer.project_count || 0)}</td><td>${Number(customer.rfq_count || 0)}</td><td>${Utils.escape(customer.status)}</td><td><button class="secondary-btn compact" data-action="manufacturing-customer-select" data-id="${customer.id}">详情</button></td></tr>`).join('')}</tbody></table></div>` : this.coreEmptyState({ iconName: 'book', title: '暂无客户档案', description: '先创建客户主档，再为客户建立项目和 RFQ。', actionLabel: '新建客户', actionName: 'manufacturing-customer-new' })}</div></section>`;
     const contactPanel = item.id ? `<section class="panel"><div class="panel-head"><div><h3>联系人与关联业务</h3></div><span class="badge">${contacts.length}</span></div><div class="panel-body">
       <div class="field-row"><div class="field"><label>联系人 *</label><input class="input" id="manufacturingContactName"></div><div class="field"><label>职务</label><input class="input" id="manufacturingContactTitle"></div></div><div class="field-row"><div class="field"><label>电话</label><input class="input" id="manufacturingContactPhone"></div><div class="field"><label>邮箱</label><input class="input" id="manufacturingContactEmail" type="email"></div></div><label class="switch-row"><span><b>主联系人</b><small>同一客户仅保留一个主联系人</small></span><input id="manufacturingContactPrimary" type="checkbox"></label><button class="secondary-btn" data-action="manufacturing-contact-add">${icon('plus')}新增联系人</button>
       ${contacts.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>姓名</th><th>职务</th><th>电话</th><th>邮箱</th><th>主联系人</th></tr></thead><tbody>${contacts.map(contact => `<tr><td>${Utils.escape(contact.name)}</td><td>${Utils.escape(contact.title)}</td><td>${Utils.escape(contact.phone)}</td><td>${Utils.escape(contact.email)}</td><td>${contact.is_primary ? '是' : '否'}</td></tr>`).join('')}</tbody></table></div>` : this.result('', '暂无联系人')}
@@ -556,7 +605,7 @@ const UI = {
       <div class="button-row"><button class="primary-btn" data-action="manufacturing-project-save">${icon('check')}${item.id ? '保存修改' : '创建项目'}</button>${item.id ? `<button class="danger-btn" data-action="manufacturing-project-delete" data-id="${item.id}">${icon('trash')}删除项目</button>` : ''}</div>
     </div></section>`;
     const rows = state.projects.map(project => `<tr><td>${Utils.escape(project.project_no)}</td><td>${Utils.escape(project.name)}</td><td>${Utils.escape(project.customer_name)}</td><td>${Utils.escape(project.owner || '待分配')}</td><td>${Utils.escape(project.planned_start_date || '-')}</td><td>${Utils.escape(project.planned_end_date || '-')}</td><td>${Utils.escape(project.status)}</td><td><button class="secondary-btn compact" data-action="manufacturing-project-select" data-id="${project.id}">详情</button></td></tr>`).join('');
-    const list = `<section class="panel"><div class="panel-head"><div><h3>项目列表</h3></div><span class="badge">${state.projects.length}</span></div><div class="panel-body"><div class="table-wrap"><table class="data-table"><thead><tr><th>项目编号</th><th>名称</th><th>客户</th><th>负责人</th><th>开始</th><th>完成</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="8">暂无项目档案</td></tr>'}</tbody></table></div>${item.id ? `<div class="privacy-note">${icon('database')}<span>所属客户：${Utils.escape(item.customer?.name || '')}；关联 RFQ：${Number(item.rfqs?.length || 0)} 个。</span></div>` : ''}</div></section>`;
+    const list = `<section class="panel"><div class="panel-head"><div><h3>项目列表</h3></div><span class="badge">${state.projects.length}</span></div><div class="panel-body">${rows ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>项目编号</th><th>名称</th><th>客户</th><th>负责人</th><th>开始</th><th>完成</th><th>状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : this.coreEmptyState({ iconName: 'folder', title: '暂无项目档案', description: '选择客户后创建项目，计划日期和责任人会进入后续 RFQ 闭环。', actionLabel: '新建项目', actionName: 'manufacturing-project-new' })}${item.id ? `<div class="privacy-note">${icon('database')}<span>所属客户：${Utils.escape(item.customer?.name || '')}；关联 RFQ：${Number(item.rfqs?.length || 0)} 个。</span></div>` : ''}</div></section>`;
     return `<div class="workbench"><div class="stack">${form}</div><div class="stack">${list}</div></div>`;
   },
   manufacturingRfqs(state) {
@@ -576,7 +625,7 @@ const UI = {
       <div class="button-row"><button class="primary-btn" data-action="manufacturing-rfq-save">${icon('check')}${item.id ? '保存修改' : '创建 RFQ'}</button>${item.id ? `<button class="danger-btn" data-action="manufacturing-rfq-delete" data-id="${item.id}">${icon('trash')}删除 RFQ</button>` : ''}</div>
     </div></section>`;
     const rfqRows = state.rfqs.map(rfq => `<tr><td>${Utils.escape(rfq.rfq_no)}</td><td>${Utils.escape(rfq.customer_name)}</td><td>${Utils.escape(rfq.product_name)}</td><td>${Utils.escape(rfq.owner || '待分配')}</td><td>${Utils.escape(ManufacturingWorkspace.RFQ_STATUS_LABELS[rfq.status] || rfq.status)}</td><td>${Number(rfq.assessment?.missing_fields?.length || 0)}</td><td>${Number(rfq.assessment?.open_blocking_risks?.length || 0)}</td><td><button class="secondary-btn compact" data-action="manufacturing-rfq-select" data-id="${rfq.id}">详情</button></td></tr>`).join('');
-    const list = `<section class="panel"><div class="panel-head"><div><h3>RFQ 列表</h3></div><span class="badge">${state.rfqs.length}</span></div><div class="panel-body"><div class="field-row"><div class="field"><label>搜索</label><input class="input" id="manufacturingSearch" value="${Utils.escape(state.query || '')}" placeholder="RFQ编号、客户、产品、负责人"></div><div class="field" style="justify-content:flex-end"><button class="secondary-btn" data-action="manufacturing-rfq-search">${icon('search')}查询</button></div></div><div class="table-wrap"><table class="data-table"><thead><tr><th>RFQ编号</th><th>客户</th><th>产品</th><th>负责人</th><th>状态</th><th>缺失</th><th>阻断风险</th><th>操作</th></tr></thead><tbody>${rfqRows || '<tr><td colspan="8">暂无 RFQ</td></tr>'}</tbody></table></div></div></section>`;
+    const list = `<section class="panel"><div class="panel-head"><div><h3>RFQ 列表</h3></div><span class="badge">${state.rfqs.length}</span></div><div class="panel-body"><div class="field-row"><div class="field"><label>搜索</label><input class="input" id="manufacturingSearch" value="${Utils.escape(state.query || '')}" placeholder="RFQ编号、客户、产品、负责人"></div><div class="field" style="justify-content:flex-end"><button class="secondary-btn" data-action="manufacturing-rfq-search">${icon('search')}查询</button></div></div>${rfqRows ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>RFQ编号</th><th>客户</th><th>产品</th><th>负责人</th><th>状态</th><th>缺失</th><th>阻断风险</th><th>操作</th></tr></thead><tbody>${rfqRows}</tbody></table></div>` : this.coreEmptyState({ iconName: 'message', title: '暂无 RFQ', description: '创建 RFQ 后，系统会检查缺失项、风险和评审条件，再决定是否可报价。', actionLabel: '新建 RFQ', actionName: 'manufacturing-rfq-new' })}</div></section>`;
     return `<div class="workbench"><div class="stack">${form}</div><div class="stack">${list}</div></div>${item.id ? this.manufacturingRfqDetail(item) : ''}`;
   },
   manufacturingRfqDetail(item) {

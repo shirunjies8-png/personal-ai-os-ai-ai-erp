@@ -191,13 +191,40 @@ const App = {
 
   renderNav() {
     const nav = document.getElementById('mainNav');
+    const modeToggle = document.getElementById('workspaceModeToggle');
     if (!AuthClient.isLoggedIn()) {
       nav.innerHTML = `<span class="nav-group-label">账户</span><button class="nav-link active" data-route="login">${icon('lock')}<span>登录</span></button>`;
+      if (modeToggle) modeToggle.hidden = true;
       return;
     }
-    const visibleModules = MODULES.filter(item => !item.hidden);
-    const groups = [...new Set(visibleModules.map(item => item.group))];
-    nav.innerHTML = groups.map(group => `<span class="nav-group-label">${group}</span>${visibleModules.filter(m => m.group === group).map(m => `<button class="nav-link" data-route="${m.id}">${icon(m.icon)}<span>${m.name}</span>${m.id === 'chat' ? `<span class="nav-count">${Store.state.chats.length}</span>` : ''}</button>`).join('')}`).join('');
+    const workspaceMode = this.getWorkspaceMode();
+    const renderModule = module => `<button class="nav-link" data-route="${module.id}">${icon(module.icon)}<span>${module.name}</span>${module.id === 'chat' ? `<span class="nav-count">${Store.state.chats.length}</span>` : ''}${workspaceMode === 'lab' && !isCoreModule(module.id) ? '<span class="nav-count lab">实验</span>' : ''}</button>`;
+    if (workspaceMode === 'user') {
+      nav.innerHTML = CORE_NAVIGATION.map(([group, ids]) => `<span class="nav-group-label">${group}</span>${ids.map(id => moduleById(id)).map(renderModule).join('')}`).join('');
+    } else {
+      const visibleModules = MODULES.filter(item => !item.hidden);
+      const coreModules = visibleModules.filter(item => isCoreModule(item.id));
+      const labModules = visibleModules.filter(item => !isCoreModule(item.id));
+      const groups = [...new Set(labModules.map(item => item.group))];
+      nav.innerHTML = `<span class="nav-group-label">核心业务</span>${coreModules.map(renderModule).join('')}${groups.map(group => `<span class="nav-group-label">实验室 · ${group}</span>${labModules.filter(module => module.group === group).map(renderModule).join('')}`).join('')}`;
+    }
+    if (modeToggle) {
+      modeToggle.hidden = false;
+      modeToggle.classList.toggle('lab-active', workspaceMode === 'lab');
+      modeToggle.innerHTML = `${icon(workspaceMode === 'lab' ? 'apps' : 'flask')}<span><b>${workspaceMode === 'lab' ? '实验室模式' : '用户模式'}</b><small>${workspaceMode === 'lab' ? '显示全部原有功能' : '仅显示核心业务'}</small></span><em>${workspaceMode === 'lab' ? '返回' : '进入'}</em>`;
+    }
+  },
+
+  getWorkspaceMode() {
+    return Store.state?.settings?.workspaceMode === 'lab' ? 'lab' : 'user';
+  },
+
+  toggleWorkspaceMode() {
+    const nextMode = this.getWorkspaceMode() === 'lab' ? 'user' : 'lab';
+    Store.state.settings.workspaceMode = nextMode;
+    Store.save();
+    this.renderNav();
+    this.toast(nextMode === 'lab' ? '已进入实验室模式：原有扩展功能均明确标注为实验或演示。' : '已切回用户模式：仅显示核心 RFQ 业务路径。');
   },
 
   navigate(route, updateHash = true) {
@@ -754,7 +781,7 @@ const App = {
   },
 
   afterRender() {
-    if (['crm', 'project', 'inquiries'].includes(this.route)
+    if (['home', 'crm', 'project', 'inquiries'].includes(this.route)
       && !this.temp.manufacturing.loaded && !this.temp.manufacturing.loading) {
       this.loadManufacturingData({ silent: true });
     }
@@ -957,6 +984,7 @@ const App = {
       'open-sidebar': () => document.body.classList.add('sidebar-open'),
       'close-sidebar': () => document.body.classList.remove('sidebar-open'),
       'toggle-theme': () => this.toggleTheme(),
+      'toggle-workspace-mode': () => this.toggleWorkspaceMode(),
       'open-settings': () => this.navigate('settings'),
       'open-command': () => this.openCommand(),
       'quick-new': () => this.openQuickNew(),
@@ -1941,7 +1969,7 @@ const App = {
     const silent = Boolean(options.silent);
     state.loading = true;
     state.error = '';
-    if (!silent && ['crm', 'project', 'inquiries'].includes(this.route)) this.rerender();
+    if (!silent && ['home', 'crm', 'project', 'inquiries'].includes(this.route)) this.rerender();
     try {
       const query = encodeURIComponent(state.query || '');
       const [customerResponse, projectResponse, rfqResponse] = await Promise.all([
@@ -1992,7 +2020,7 @@ const App = {
     } finally {
       state.loaded = true;
       state.loading = false;
-      if (['crm', 'project', 'inquiries'].includes(this.route)) this.rerender();
+      if (['home', 'crm', 'project', 'inquiries'].includes(this.route)) this.rerender();
     }
   },
 

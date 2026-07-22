@@ -18,6 +18,7 @@
       <div class="workspace-switch"><span class="avatar">林</span><span><b>我的工作空间</b><small><i></i> 本地数据已连接</small></span><button class="icon-btn" data-action="open-settings" aria-label="工作空间设置"><span data-icon="settings"></span></button></div>
       <nav id="mainNav" class="main-nav" aria-label="主菜单"></nav>
       <div class="sidebar-bottom">
+        <button class="workspace-mode-toggle" id="workspaceModeToggle" data-action="toggle-workspace-mode" type="button"></button>
         <div class="local-meter"><div><span><i data-icon="database"></i> 本地存储</span><b id="storageText">计算中</b></div><div class="meter"><i id="storageBar"></i></div></div>
         <button class="sidebar-settings" data-route="settings"><span data-icon="settings"></span>设置<span class="api-state" id="apiState">模拟模式</span></button>
       </div>
@@ -35,9 +36,9 @@
 
     <nav class="mobile-nav" aria-label="手机导航">
       <button data-route="home"><span data-icon="home"></span><small>首页</small></button>
-      <button data-route="chat"><span data-icon="message"></span><small>AI聊天</small></button>
-      <button class="mobile-create" data-action="quick-new"><span data-icon="plus"></span></button>
-      <button data-route="files"><span data-icon="folder"></span><small>文件</small></button>
+      <button data-route="crm"><span data-icon="book"></span><small>客户</small></button>
+      <button class="mobile-create" data-route="inquiries"><span data-icon="plus"></span></button>
+      <button data-route="quotation"><span data-icon="chart"></span><small>报价</small></button>
       <button data-action="open-sidebar"><span data-icon="apps"></span><small>全部</small></button>
     </nav>
   </div>
