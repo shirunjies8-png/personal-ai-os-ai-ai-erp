@@ -291,6 +291,29 @@ const migrations = [
           ON rfq_followups(enterprise_id, rfq_id, created_at);
       `);
     }
+  },
+  {
+    version: '20260722_020',
+    name: 'manufacturing_journey_integrity',
+    signature: 'idempotency customer project rfq relationship and requirement columns v1',
+    up(db) {
+      ensureColumn(db, 'rfqs', 'quality_requirements', "TEXT DEFAULT ''");
+      ensureColumn(db, 'rfqs', 'customer_special_requirements', "TEXT DEFAULT ''");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS manufacturing_idempotency_keys (
+          enterprise_id TEXT NOT NULL,
+          operation TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (enterprise_id, operation, idempotency_key),
+          FOREIGN KEY (enterprise_id) REFERENCES enterprises(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_manufacturing_idempotency_entity
+          ON manufacturing_idempotency_keys(enterprise_id, entity_type, entity_id);
+      `);
+    }
   }
 ];
 

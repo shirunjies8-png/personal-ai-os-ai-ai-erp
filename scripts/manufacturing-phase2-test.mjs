@@ -37,11 +37,11 @@ function invoke(handler, { params = {}, body = {}, query = {}, user = operator }
 
 for (const table of [
   'schema_migrations', 'document_sequences', 'legacy_migration_records', 'entity_attachments',
-  'customers', 'customer_contacts', 'projects', 'rfqs', 'rfq_requirements', 'rfq_risks', 'rfq_followups'
+  'customers', 'customer_contacts', 'projects', 'rfqs', 'rfq_requirements', 'rfq_risks', 'rfq_followups', 'manufacturing_idempotency_keys'
 ]) {
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(table), `缺少表 ${table}`);
 }
-assert.equal(db.prepare("SELECT COUNT(*) count FROM schema_migrations WHERE status='applied'").get().count, 3);
+assert.equal(db.prepare("SELECT COUNT(*) count FROM schema_migrations WHERE status='applied'").get().count, 4);
 
 const customer = service.createCustomer({
   name: '测试制造客户', source: '现场询盘', level: 'important', owner: '业务员',
@@ -57,11 +57,18 @@ assert.equal(service.listCustomers({}, otherAdmin).items[0].id, otherCustomer.id
 assert.throws(() => service.getCustomer(customer.id, otherAdmin), /不存在或无权访问/);
 assert.throws(() => service.updateCustomer(customer.id, { name: '访客越权' }, viewer), /权限不足/);
 
+const idempotentCustomerInput = { name: '幂等客户', idempotency_key: 'customer-create-retry-0001' };
+const idempotentCustomer = service.createCustomer(idempotentCustomerInput, operator);
+assert.equal(service.createCustomer(idempotentCustomerInput, operator).id, idempotentCustomer.id, '重复请求必须返回同一客户');
+assert.equal(service.listCustomers({ q: '幂等客户' }, operator).items.length, 1);
+
 const contact = service.addCustomerContact(customer.id, {
   name: '李经理', phone: '13900139000', email: 'li@example.test'
 }, operator);
 const updatedContact = service.updateCustomerContact(customer.id, contact.id, { title: '采购经理' }, operator);
 assert.equal(updatedContact.title, '采购经理');
+assert.throws(() => service.addCustomerContact(customer.id, { name: '格式错误', phone: '电话未知' }, operator), /联系电话格式无效/);
+assert.throws(() => service.updateCustomerContact(customer.id, contact.id, { email: 'invalid-email' }, operator), /邮箱格式无效/);
 
 const project = service.createProject({
   customer_id: customer.id,
@@ -72,6 +79,9 @@ const project = service.createProject({
   status: 'active'
 }, operator);
 assert.match(project.project_no, /^PRJ-\d{4}-\d{6}$/);
+const idempotentProjectInput = { customer_id: customer.id, name: '幂等项目', idempotency_key: 'project-create-retry-0001' };
+const idempotentProject = service.createProject(idempotentProjectInput, operator);
+assert.equal(service.createProject(idempotentProjectInput, operator).id, idempotentProject.id, '重复请求必须返回同一项目');
 assert.throws(() => service.createProject({
   customer_id: customer.id, name: '错误日期', planned_start_date: '2026-12-31', planned_end_date: '2026-01-01'
 }, operator), /不能早于/);
@@ -89,6 +99,15 @@ let rfq = service.createRfq({
 assert.match(rfq.rfq_no, /^RFQ-\d{6}-\d{6}$/);
 assert.ok(rfq.assessment.missing_fields.some(item => item.key === 'material'));
 assert.ok(rfq.assessment.missing_fields.some(item => item.key === 'process_requirements'));
+const idempotentRfqInput = { customer_id: customer.id, project_id: project.id, product_name: '幂等 RFQ', idempotency_key: 'rfq-create-retry-0001' };
+const idempotentRfq = service.createRfq(idempotentRfqInput, operator);
+assert.equal(service.createRfq(idempotentRfqInput, operator).id, idempotentRfq.id, '重复请求必须返回同一 RFQ');
+assert.ok(db.prepare('PRAGMA table_info(rfqs)').all().some(column => column.name === 'quality_requirements'));
+assert.ok(db.prepare('PRAGMA table_info(rfqs)').all().some(column => column.name === 'customer_special_requirements'));
+
+const customerTwo = service.createCustomer({ name: '同租户客户 B' }, operator);
+assert.throws(() => service.createRfq({ customer_id: customerTwo.id, project_id: project.id, product_name: '关系串联测试' }, operator), /项目与客户不一致/);
+assert.throws(() => service.updateRfq(rfq.id, { version: rfq.version, customer_id: customerTwo.id }, operator), /项目与客户不一致/);
 
 rfq = service.submitReview(rfq.id, {}, operator);
 assert.equal(rfq.status, 'information_required');
@@ -137,6 +156,7 @@ assert.equal(conversion.rfq.status, 'quotation_in_progress');
 assert.equal(conversion.quotationDraft.source, 'manufacturing_rfq');
 assert.equal(conversion.quotationDraft.approvedByHuman, true);
 assert.equal(conversion.quotationDraft.customerName, customer.name);
+assert.throws(() => service.updateProject(project.id, { version: project.version, customer_id: customerTwo.id }, operator), /项目已有 RFQ/);
 
 rfq = service.transitionRfq(rfq.id, { target_status: 'quoted' }, operator);
 rfq = service.transitionRfq(rfq.id, { target_status: 'negotiating' }, operator);

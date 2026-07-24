@@ -51,7 +51,7 @@ const PROJECT_FIELDS = Object.freeze(['customer_id', 'name', 'description', 'own
 const RFQ_FIELDS = Object.freeze([
   'customer_id', 'project_id', 'product_name', 'product_code', 'material', 'quantity', 'unit',
   'process_requirements', 'tolerance_requirements', 'surface_treatment', 'packaging_requirements',
-  'budget_minor', 'currency', 'requested_delivery_date', 'owner', 'contact_name', 'contact_details', 'notes'
+  'quality_requirements', 'customer_special_requirements', 'budget_minor', 'currency', 'requested_delivery_date', 'owner', 'contact_name', 'contact_details', 'notes'
 ]);
 const RISK_FIELDS = Object.freeze([
   'title', 'category', 'severity', 'probability', 'impact', 'owner', 'due_date', 'mitigation',
@@ -179,8 +179,38 @@ function validateProjectDates(startDate, endDate) {
   }
 }
 
+function validateContactDetails(input = {}) {
+  const phone = text(input.phone);
+  const email = text(input.email);
+  if (phone && !/^(?:\+?\d[\d\s()-]{5,24})$/.test(phone)) throw domainError('联系电话格式无效');
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw domainError('邮箱格式无效');
+}
+
+function idempotencyKey(input = {}) {
+  const key = text(input.idempotency_key || input.idempotencyKey);
+  if (key && !/^[A-Za-z0-9._:-]{8,160}$/.test(key)) throw domainError('幂等请求标识格式无效');
+  return key;
+}
+
+function idempotentEntity(operation, input, user, getter) {
+  const key = idempotencyKey(input);
+  if (!key) return { key: '', entity: null };
+  const existing = db.prepare(`SELECT entity_id FROM manufacturing_idempotency_keys
+    WHERE enterprise_id=? AND operation=? AND idempotency_key=?`).get(user.enterprise_id, operation, key);
+  return { key, entity: existing ? getter(existing.entity_id, user) : null };
+}
+
+function rememberIdempotent(operation, key, entityType, entityId, user, timestamp) {
+  if (!key) return;
+  db.prepare(`INSERT INTO manufacturing_idempotency_keys(
+    enterprise_id,operation,idempotency_key,entity_type,entity_id,created_at
+  ) VALUES(?,?,?,?,?,?)`).run(user.enterprise_id, operation, key, entityType, entityId, timestamp);
+}
+
 function createCustomer(input, user) {
   requireOperator(user);
+  const replay = idempotentEntity('create_customer', input, user, getCustomer);
+  if (replay.entity) return replay.entity;
   const name = text(input.name);
   if (!name) throw domainError('客户名称不能为空');
   const level = text(input.level) || 'normal';
@@ -202,6 +232,7 @@ function createCustomer(input, user) {
       createContactRecord(id, input.primaryContact, user, true, timestamp);
     }
     const created = mustCustomer(id, user);
+    rememberIdempotent('create_customer', replay.key, 'customer', id, user, timestamp);
     audit(user, 'customer', id, 'create', '创建客户档案', { after: created });
     return created;
   })();
@@ -209,6 +240,7 @@ function createCustomer(input, user) {
 }
 
 function createContactRecord(customerId, input, user, primary = false, timestamp = now()) {
+  validateContactDetails(input);
   const id = uuidv4();
   db.prepare(`INSERT INTO customer_contacts(
     id,enterprise_id,customer_id,name,title,phone,email,is_primary,notes,
@@ -226,6 +258,7 @@ function addCustomerContact(customerId, input, user) {
   requireOperator(user);
   mustCustomer(customerId, user);
   if (!text(input.name)) throw domainError('联系人姓名不能为空');
+  validateContactDetails(input);
   const contact = db.transaction(() => {
     if (input.isPrimary) db.prepare(`UPDATE customer_contacts SET is_primary=0,updated_at=?,updated_by=?
       WHERE customer_id=? AND enterprise_id=? AND deleted_at IS NULL`)
@@ -253,6 +286,7 @@ function updateCustomerContact(customerId, contactId, input, user) {
     notes: input.notes === undefined ? current.notes : text(input.notes)
   };
   if (!next.name) throw domainError('联系人姓名不能为空');
+  validateContactDetails(next);
   const timestamp = now();
   db.transaction(() => {
     if (next.is_primary) db.prepare(`UPDATE customer_contacts SET is_primary=0,updated_at=?,updated_by=?
@@ -369,6 +403,8 @@ function deleteCustomer(id, input, user) {
 
 function createProject(input, user) {
   requireOperator(user);
+  const replay = idempotentEntity('create_project', input, user, getProject);
+  if (replay.entity) return replay.entity;
   const customer = mustCustomer(text(input.customer_id), user);
   const name = text(input.name);
   if (!name) throw domainError('项目名称不能为空');
@@ -388,6 +424,7 @@ function createProject(input, user) {
       user.id, user.id, timestamp, timestamp
     );
     const created = mustProject(id, user);
+    rememberIdempotent('create_project', replay.key, 'project', id, user, timestamp);
     audit(user, 'project', id, 'create', '创建项目档案', { after: created });
     return created;
   })();
@@ -426,7 +463,23 @@ function getProject(id, user) {
   const rfqs = db.prepare(`SELECT id,rfq_no,product_name,status,updated_at FROM rfqs
     WHERE project_id=? AND enterprise_id=? AND deleted_at IS NULL ORDER BY updated_at DESC`)
     .all(id, user.enterprise_id);
-  return { ...item, customer, rfqs };
+  const riskSummary = db.prepare(`SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN r.is_blocking=1 AND r.status NOT IN ('accepted','closed') THEN 1 ELSE 0 END) AS open_blocking
+    FROM rfq_risks r
+    JOIN rfqs q ON q.id=r.rfq_id AND q.enterprise_id=r.enterprise_id
+    WHERE q.project_id=? AND q.enterprise_id=? AND q.deleted_at IS NULL`)
+    .get(id, user.enterprise_id);
+  return {
+    ...item,
+    customer,
+    rfqs,
+    risk_summary: {
+      total: Number(riskSummary?.total || 0),
+      open_blocking: Number(riskSummary?.open_blocking || 0)
+    },
+    history: logModel.listByEntity(user.enterprise_id, 'project', id, 20)
+  };
 }
 
 function updateProject(id, input, user) {
@@ -438,6 +491,11 @@ function updateProject(id, input, user) {
   const values = { id, enterprise_id: user.enterprise_id, updated_by: user.id, updated_at: now() };
   for (const field of fields) values[field] = text(input[field]);
   if (fields.includes('customer_id')) mustCustomer(values.customer_id, user);
+  if (fields.includes('customer_id') && values.customer_id !== current.customer_id) {
+    const linked = db.prepare(`SELECT COUNT(*) count FROM rfqs
+      WHERE project_id=? AND enterprise_id=? AND deleted_at IS NULL`).get(id, user.enterprise_id).count;
+    if (linked) throw domainError('项目已有 RFQ，不能变更所属客户', 'PROJECT_CUSTOMER_IN_USE', 409);
+  }
   if (fields.includes('name') && !values.name) throw domainError('项目名称不能为空');
   const start = fields.includes('planned_start_date') ? values.planned_start_date : current.planned_start_date;
   const end = fields.includes('planned_end_date') ? values.planned_end_date : current.planned_end_date;
@@ -548,6 +606,8 @@ function rfqAssessment(id, user) {
 
 function createRfq(input, user) {
   requireOperator(user);
+  const replay = idempotentEntity('create_rfq', input, user, getRfq);
+  if (replay.entity) return replay.entity;
   const customer = mustCustomer(text(input.customer_id), user);
   const projectId = text(input.project_id);
   if (projectId) {
@@ -570,21 +630,22 @@ function createRfq(input, user) {
     const rfqNo = nextDocumentNumber(user.enterprise_id, 'rfq', 'RFQ', period, timestamp);
     db.prepare(`INSERT INTO rfqs(
       id,enterprise_id,rfq_no,customer_id,project_id,source,source_reference,product_name,product_code,
-      material,quantity,unit,process_requirements,tolerance_requirements,surface_treatment,packaging_requirements,
+      material,quantity,unit,process_requirements,tolerance_requirements,surface_treatment,packaging_requirements,quality_requirements,customer_special_requirements,
       budget_minor,currency,requested_delivery_date,owner,contact_name,contact_details,notes,missing_summary,
       risk_summary,status,review_task_id,review_approval_id,quote_workspace_ref,version,
       created_by,updated_by,created_at,updated_at,deleted_at,deleted_by
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft','','','',1,?,?,?,?,NULL,NULL)`).run(
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'draft','','','',1,?,?,?,?,NULL,NULL)`).run(
       id, user.enterprise_id, rfqNo, customer.id, projectId || null, source, sourceReference,
       productName, text(input.product_code), text(input.material), Math.max(0, finiteNumber(input.quantity)),
       text(input.unit) || '件', text(input.process_requirements), text(input.tolerance_requirements),
-      text(input.surface_treatment), text(input.packaging_requirements),
+      text(input.surface_treatment), text(input.packaging_requirements), text(input.quality_requirements), text(input.customer_special_requirements),
       input.budget_minor == null || input.budget_minor === '' ? null : Math.max(0, Math.round(finiteNumber(input.budget_minor))),
       text(input.currency) || 'CNY', text(input.requested_delivery_date), text(input.owner),
       text(input.contact_name), text(input.contact_details), text(input.notes), '', '',
       user.id, user.id, timestamp, timestamp
     );
     const created = mustRfq(id, user);
+    rememberIdempotent('create_rfq', replay.key, 'rfq', id, user, timestamp);
     syncRequirements(created, user, source === 'manual' ? 'manual' : source);
     const assessment = rfqAssessment(id, user);
     db.prepare(`UPDATE rfqs SET missing_summary=?,risk_summary=? WHERE id=? AND enterprise_id=?`)
