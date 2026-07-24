@@ -16,12 +16,18 @@ assert.match(ui, /核心业务工作台/);
 assert.match(ui, /客户 → 项目 → RFQ → 人工评审 → 报价/);
 assert.match(ui, /legacyHome\(\)/);
 assert.match(ui, /Mock、规则输出和草稿均不替代正式审批、报价或业务记录/);
+assert.match(ui, /const DEMO_ONLY_MODULE_IDS/);
+assert.match(ui, /DEMO_ONLY.*不连接真实 ERP \/ MES \/ BOM \/ 工艺数据/s);
+assert.match(ui, /生成演示草稿/);
+assert.match(ui, /本模块使用本地计算，不接真实 AI/);
 
 assert.match(app, /getWorkspaceMode\(\)/);
 assert.match(app, /toggleWorkspaceMode\(\)/);
 assert.match(app, /workspaceMode === 'user'/);
 assert.match(app, /实验室 ·/);
 assert.match(app, /\['home', 'crm', 'project', 'inquiries'\]/);
+assert.match(app, /preserveScroll/);
+assert.match(app, /navigate\(this\.route, false, \{ preserveScroll: true \}\)/);
 assert.match(core, /workspaceMode: 'user'/);
 assert.match(core, /\['user', 'lab'\]/);
 assert.match(index, /id="workspaceModeToggle"/);
