@@ -27,6 +27,14 @@
     return errors;
   }
 
+  function validateContact(input = {}) {
+    const errors = [];
+    if (!text(input.name)) errors.push('联系人姓名不能为空');
+    if (text(input.phone) && !/^(?:\+?\d[\d\s()-]{5,24})$/.test(text(input.phone))) errors.push('联系电话格式无效');
+    if (text(input.email) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text(input.email))) errors.push('邮箱格式无效');
+    return errors;
+  }
+
   function validateProject(input = {}) {
     const errors = [];
     if (!text(input.customer_id)) errors.push('请选择所属客户');
@@ -73,6 +81,9 @@
       selectedCustomerId: '',
       selectedProjectId: '',
       selectedRfqId: '',
+      createKeys: {},
+      contactDraft: null,
+      workflow: null,
       customer: null,
       project: null,
       rfq: null
@@ -84,6 +95,7 @@
     OFFLINE_NOTICE,
     RFQ_STATUS_LABELS,
     validateCustomer,
+    validateContact,
     validateProject,
     validateRfq,
     assertServerWritable,

@@ -1134,11 +1134,16 @@ const App = {
       'manufacturing-customer-save': () => this.manufacturingSaveCustomer(),
       'manufacturing-customer-delete': () => this.manufacturingDeleteCustomer(el.dataset.id),
       'manufacturing-contact-add': () => this.manufacturingAddContact(),
+      'manufacturing-contact-select': () => this.manufacturingSelectContact(el.dataset.id),
+      'manufacturing-contact-save': () => this.manufacturingAddContact(),
+      'manufacturing-project-from-customer': () => this.manufacturingProjectFromCustomer(),
       'manufacturing-project-new': () => this.manufacturingProjectNew(),
       'manufacturing-project-select': () => this.manufacturingSelectProject(el.dataset.id),
       'manufacturing-project-save': () => this.manufacturingSaveProject(),
       'manufacturing-project-delete': () => this.manufacturingDeleteProject(el.dataset.id),
       'manufacturing-rfq-new': () => this.manufacturingRfqNew(),
+      'manufacturing-rfq-from-project': () => this.manufacturingRfqFromProject(),
+      'manufacturing-rfq-import-ocr': () => this.manufacturingImportApprovedOcr(),
       'manufacturing-rfq-select': () => this.manufacturingSelectRfq(el.dataset.id),
       'manufacturing-rfq-save': () => this.manufacturingSaveRfq(),
       'manufacturing-rfq-delete': () => this.manufacturingDeleteRfq(el.dataset.id),
@@ -1294,6 +1299,11 @@ const App = {
       if (handlers[action]) await handlers[action]();
     } catch (error) {
       if (!String(action || '').startsWith('ocr-')) console.error(error);
+      if (String(action || '').startsWith('manufacturing-')) {
+        this.temp.manufacturing.error = `保存失败，可重试：${Utils.friendlyErrorMessage(error.message || '请求未完成')}`;
+        this.toast(this.temp.manufacturing.error, 'error');
+        return;
+      }
       const message = this.recordAiError(error, action);
       this.toast(message || '操作失败', 'error');
     }
@@ -2041,6 +2051,8 @@ const App = {
     state.selectedCustomerId = '';
     state.customer = null;
     state.error = '';
+    state.workflow = null;
+    state.createKeys = { ...(state.createKeys || {}), customer: '' };
     this.rerender();
   },
 
@@ -2065,14 +2077,16 @@ const App = {
     };
     const errors = ManufacturingWorkspace.validateCustomer(input);
     if (errors.length) throw new Error(errors.join('；'));
-    const selected = state.customer;
+    const selected = state.customer?.id ? state.customer : null;
+    if (!selected) input.idempotency_key = this.manufacturingCreateKey('customer');
     const response = await this.manufacturingRequest(selected ? `/customers/${selected.id}` : '/customers', {
       method: selected ? 'PATCH' : 'POST',
       body: JSON.stringify(selected ? { ...input, version: selected.version } : input)
     });
     state.selectedCustomerId = response.data?.customer?.id || state.selectedCustomerId;
     await this.loadManufacturingData({ silent: true });
-    this.toast(selected ? '客户档案已更新' : '客户档案已创建');
+    if (!selected) state.workflow = { done: '客户已创建', next: '为该客户创建项目', action: 'manufacturing-project-from-customer' };
+    this.toast(selected ? '客户档案已更新' : '客户已创建');
   },
 
   async manufacturingDeleteCustomer(id) {
@@ -2096,19 +2110,41 @@ const App = {
       title: document.getElementById('manufacturingContactTitle')?.value.trim() || '',
       phone: document.getElementById('manufacturingContactPhone')?.value.trim() || '',
       email: document.getElementById('manufacturingContactEmail')?.value.trim() || '',
+      notes: document.getElementById('manufacturingContactNotes')?.value.trim() || '',
       isPrimary: Boolean(document.getElementById('manufacturingContactPrimary')?.checked)
     };
-    if (!input.name) throw new Error('联系人姓名不能为空');
-    await this.manufacturingRequest(`/customers/${state.customer.id}/contacts`, { method: 'POST', body: JSON.stringify(input) });
+    const errors = ManufacturingWorkspace.validateContact(input);
+    if (errors.length) throw new Error(errors.join('；'));
+    const selected = state.contactDraft;
+    await this.manufacturingRequest(selected ? `/customers/${state.customer.id}/contacts/${selected.id}` : `/customers/${state.customer.id}/contacts`, { method: selected ? 'PATCH' : 'POST', body: JSON.stringify(input) });
+    state.contactDraft = null;
     await this.manufacturingSelectCustomer(state.customer.id);
-    this.toast('客户联系人已新增');
+    this.toast(selected ? '客户联系人已更新' : '客户联系人已新增');
+  },
+
+  manufacturingSelectContact(id) {
+    const contact = this.temp.manufacturing.customer?.contacts?.find(item => item.id === id);
+    if (!contact) throw new Error('联系人不存在或已删除');
+    this.temp.manufacturing.contactDraft = { ...contact };
+    this.rerender();
+  },
+
+  manufacturingProjectFromCustomer() {
+    const state = this.temp.manufacturing;
+    if (!state.customer?.id) throw new Error('请先选择客户');
+    state.project = { customer_id: state.customer.id, customer_name: state.customer.name, owner: state.customer.owner || '', status: 'draft' };
+    state.selectedProjectId = '';
+    state.createKeys = { ...(state.createKeys || {}), project: '' };
+    state.workflow = null;
+    this.navigate('project');
   },
 
   manufacturingProjectNew() {
     const state = this.temp.manufacturing;
     state.selectedProjectId = '';
-    state.project = null;
+    state.project = state.customer?.id ? { customer_id: state.customer.id, customer_name: state.customer.name, owner: state.customer.owner || '', status: 'draft' } : null;
     state.error = '';
+    state.createKeys = { ...(state.createKeys || {}), project: '' };
     this.rerender();
   },
 
@@ -2134,14 +2170,16 @@ const App = {
     };
     const errors = ManufacturingWorkspace.validateProject(input);
     if (errors.length) throw new Error(errors.join('；'));
-    const selected = state.project;
+    const selected = state.project?.id ? state.project : null;
+    if (!selected) input.idempotency_key = this.manufacturingCreateKey('project');
     const response = await this.manufacturingRequest(selected ? `/projects/${selected.id}` : '/projects', {
       method: selected ? 'PATCH' : 'POST',
       body: JSON.stringify(selected ? { ...input, version: selected.version } : input)
     });
     state.selectedProjectId = response.data?.project?.id || state.selectedProjectId;
     await this.loadManufacturingData({ silent: true });
-    this.toast(selected ? '项目档案已更新' : '项目档案已创建');
+    if (!selected) state.workflow = { done: '项目已创建', next: '创建第一个 RFQ', action: 'manufacturing-rfq-from-project' };
+    this.toast(selected ? '项目档案已更新' : '项目已创建');
   },
 
   async manufacturingDeleteProject(id) {
@@ -2159,8 +2197,9 @@ const App = {
   manufacturingRfqNew() {
     const state = this.temp.manufacturing;
     state.selectedRfqId = '';
-    state.rfq = null;
+    state.rfq = state.project?.id ? { customer_id: state.project.customer_id, project_id: state.project.id, owner: state.project.owner || '' } : null;
     state.error = '';
+    state.createKeys = { ...(state.createKeys || {}), rfq: '' };
     this.temp.inquirySelectedId = '';
     this.rerender();
   },
@@ -2191,6 +2230,8 @@ const App = {
       tolerance_requirements: document.getElementById('manufacturingRfqTolerance')?.value.trim() || '',
       surface_treatment: document.getElementById('manufacturingRfqSurface')?.value.trim() || '',
       packaging_requirements: document.getElementById('manufacturingRfqPackaging')?.value.trim() || '',
+      quality_requirements: document.getElementById('manufacturingRfqQuality')?.value.trim() || '',
+      customer_special_requirements: document.getElementById('manufacturingRfqSpecial')?.value.trim() || '',
       requested_delivery_date: document.getElementById('manufacturingRfqDelivery')?.value || '',
       owner: document.getElementById('manufacturingRfqOwner')?.value.trim() || '',
       contact_name: document.getElementById('manufacturingRfqContact')?.value.trim() || '',
@@ -2205,14 +2246,57 @@ const App = {
     const input = this.manufacturingRfqInput();
     const errors = ManufacturingWorkspace.validateRfq(input);
     if (errors.length) throw new Error(errors.join('；'));
-    const selected = state.rfq;
+    const selected = state.rfq?.id ? state.rfq : null;
+    if (!selected) input.idempotency_key = this.manufacturingCreateKey('rfq');
+    if (!selected && state.rfq?.ocrImport) Object.assign(input, state.rfq.ocrImport);
     const response = await this.manufacturingRequest(selected ? `/rfqs/${selected.id}` : '/rfqs', {
       method: selected ? 'PATCH' : 'POST',
       body: JSON.stringify(selected ? { ...input, version: selected.version } : input)
     });
     state.selectedRfqId = response.data?.rfq?.id || state.selectedRfqId;
     await this.loadManufacturingData({ silent: true });
+    if (!selected) state.workflow = { done: 'RFQ 已创建', next: '查看缺失项与风险', action: 'manufacturing-rfq-select', id: state.selectedRfqId };
     this.toast(selected ? 'RFQ 已更新' : 'RFQ 已创建');
+  },
+
+  manufacturingRfqFromProject() {
+    const project = this.temp.manufacturing.project;
+    if (!project?.id) throw new Error('请先选择项目');
+    this.temp.manufacturing.rfq = { customer_id: project.customer_id, project_id: project.id, owner: project.owner || '' };
+    this.temp.manufacturing.selectedRfqId = '';
+    this.temp.manufacturing.createKeys = { ...(this.temp.manufacturing.createKeys || {}), rfq: '' };
+    this.temp.manufacturing.workflow = null;
+    this.navigate('inquiries');
+  },
+
+  manufacturingCreateKey(type) {
+    const state = this.temp.manufacturing;
+    state.createKeys = state.createKeys || {};
+    if (!state.createKeys[type]) state.createKeys[type] = typeof globalThis.crypto?.randomUUID === 'function' ? globalThis.crypto.randomUUID() : `${type}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return state.createKeys[type];
+  },
+
+  manufacturingImportApprovedOcr() {
+    const payload = OCRArchitecture.confirmedPayload(this.temp.ocr?.review, this.temp.ocr?.providerResult);
+    if (payload.reviewStatus !== 'approved') throw new Error('OCR 结果尚未人工批准，不能正式导入 RFQ');
+    const state = this.temp.manufacturing;
+    const current = state.rfq || {};
+    const fields = payload.fields || {};
+    const mapping = { product_name: 'product_name', material: 'material', quantity: 'quantity', delivery_date: 'requested_delivery_date', specification: 'process_requirements', notes: 'notes' };
+    const next = { ...current };
+    for (const [ocrKey, target] of Object.entries(mapping)) {
+      const incoming = String(fields[ocrKey] || '').trim();
+      const existing = String(current[target] || '').trim();
+      if (!incoming) continue;
+      if (existing && existing !== incoming && !confirm(`OCR 导入字段冲突：${target}\n当前值：${existing}\nOCR 值：${incoming}\n\n确定采用 OCR 值？取消则保留当前值。`)) continue;
+      next[target] = incoming;
+    }
+    next.ocrImport = { source: 'ocr', source_reference: payload.requestId, ocr_source: payload };
+    state.rfq = next;
+    state.selectedRfqId = '';
+    state.createKeys = { ...(state.createKeys || {}), rfq: `ocr-${payload.requestId}` };
+    this.toast('已导入人工批准且有值的 OCR 字段；冲突字段均已等待你的明确选择。');
+    this.rerender();
   },
 
   async manufacturingDeleteRfq(id) {

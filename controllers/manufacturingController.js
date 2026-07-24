@@ -12,9 +12,14 @@ function wrap(handler, message = '操作完成') {
   };
 }
 
+function createInput(req) {
+  const headerKey = typeof req.get === 'function' ? req.get('Idempotency-Key') : req.headers?.['idempotency-key'];
+  return { ...(req.body || {}), idempotency_key: req.body?.idempotency_key || headerKey || '' };
+}
+
 module.exports = {
   listCustomers: wrap(req => service.listCustomers(req.query || {}, req.user)),
-  createCustomer: wrap(req => ({ customer: service.createCustomer(req.body || {}, req.user) }), '客户已创建'),
+  createCustomer: wrap(req => ({ customer: service.createCustomer(createInput(req), req.user) }), '客户已创建'),
   getCustomer: wrap(req => ({ customer: service.getCustomer(req.params.id, req.user) })),
   updateCustomer: wrap(req => ({ customer: service.updateCustomer(req.params.id, req.body || {}, req.user) }), '客户已更新'),
   deleteCustomer: wrap(req => ({ deleted: service.deleteCustomer(req.params.id, req.body || {}, req.user) }), '客户已删除'),
@@ -23,13 +28,13 @@ module.exports = {
   deleteCustomerContact: wrap(req => ({ deleted: service.deleteCustomerContact(req.params.id, req.params.contactId, req.body || {}, req.user) }), '联系人已删除'),
 
   listProjects: wrap(req => service.listProjects(req.query || {}, req.user)),
-  createProject: wrap(req => ({ project: service.createProject(req.body || {}, req.user) }), '项目已创建'),
+  createProject: wrap(req => ({ project: service.createProject(createInput(req), req.user) }), '项目已创建'),
   getProject: wrap(req => ({ project: service.getProject(req.params.id, req.user) })),
   updateProject: wrap(req => ({ project: service.updateProject(req.params.id, req.body || {}, req.user) }), '项目已更新'),
   deleteProject: wrap(req => ({ deleted: service.deleteProject(req.params.id, req.body || {}, req.user) }), '项目已删除'),
 
   listRfqs: wrap(req => service.listRfqs(req.query || {}, req.user)),
-  createRfq: wrap(req => ({ rfq: service.createRfq(req.body || {}, req.user) }), 'RFQ 已创建'),
+  createRfq: wrap(req => ({ rfq: service.createRfq(createInput(req), req.user) }), 'RFQ 已创建'),
   getRfq: wrap(req => ({ rfq: service.getRfq(req.params.id, req.user) })),
   updateRfq: wrap(req => ({ rfq: service.updateRfq(req.params.id, req.body || {}, req.user) }), 'RFQ 已更新'),
   deleteRfq: wrap(req => ({ deleted: service.deleteRfq(req.params.id, req.body || {}, req.user) }), 'RFQ 已删除'),

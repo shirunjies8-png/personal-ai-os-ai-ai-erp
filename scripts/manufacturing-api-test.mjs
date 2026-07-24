@@ -27,10 +27,10 @@ const operatorA = { id: 'http-operator-a', enterprise_id: 'http-tenant-a', role:
 const viewerA = { id: 'http-viewer-a', enterprise_id: 'http-tenant-a', role: 'viewer', name: '访客 A' };
 const adminB = { id: 'http-admin-b', enterprise_id: 'http-tenant-b', role: '企业管理员', name: '管理员 B' };
 
-function invoke(handler, { user = operatorA, params = {}, body = {}, query = {} } = {}) {
+function invoke(handler, { user = operatorA, params = {}, body = {}, query = {}, headers = {} } = {}) {
   let status = 200;
   let payload;
-  handler({ user, params, body, query }, {
+  handler({ user, params, body, query, headers, get(name) { return headers[String(name).toLowerCase()]; } }, {
     status(code) { status = code; return this; },
     json(value) { payload = value; }
   });
@@ -50,6 +50,10 @@ try {
   let result = invoke(controller.createCustomer, { body: { name: '接口测试客户', owner: '业务员' } });
   assert.equal(result.status, 200);
   const customer = result.payload.data.customer;
+  const retryHeaders = { 'idempotency-key': 'http-customer-create-retry-0001' };
+  const retryInput = { body: { name: 'HTTP 幂等客户' }, headers: retryHeaders };
+  const retryCustomer = invoke(controller.createCustomer, retryInput).payload.data.customer;
+  assert.equal(invoke(controller.createCustomer, retryInput).payload.data.customer.id, retryCustomer.id, '控制器必须将 Idempotency-Key 交给服务端幂等处理');
   assert.equal(invoke(controller.listCustomers, { user: adminB }).payload.data.items.length, 0);
   assert.equal(invoke(controller.getCustomer, { user: adminB, params: { id: customer.id } }).status, 404);
 
