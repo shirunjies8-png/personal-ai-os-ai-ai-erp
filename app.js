@@ -227,7 +227,9 @@ const App = {
     this.toast(nextMode === 'lab' ? '已进入实验室模式：原有扩展功能均明确标注为实验或演示。' : '已切回用户模式：仅显示核心 RFQ 业务路径。');
   },
 
-  navigate(route, updateHash = true) {
+  navigate(route, updateHash = true, options = {}) {
+    const preserveScroll = options.preserveScroll === true;
+    const previousScrollY = preserveScroll ? window.scrollY : 0;
     if (!AuthClient.isLoggedIn() && route !== 'login') route = 'login';
     this.route = moduleById(route).id;
     if (this.route === 'ocr' && !this.temp.ocr.providerResult) this.restoreOcrSession();
@@ -239,11 +241,15 @@ const App = {
     this.renderStaticIcons();
     this.afterRender();
     this.renderBugMonitor();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (preserveScroll) {
+      requestAnimationFrame(() => window.scrollTo({ top: previousScrollY, behavior: 'auto' }));
+    } else {
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
   },
 
   rerender() {
-    this.navigate(this.route, false);
+    this.navigate(this.route, false, { preserveScroll: true });
   },
 
   renderStaticIcons(root = document) {
@@ -5616,7 +5622,8 @@ const App = {
       o.quality = quality;
       const structured = OCRService.structure(o.result);
       o.template = structured.template;
-      o.fieldDrafts = this.buildOcrFieldDrafts(o.result, quality, o.demoFields?.fields || o.confirmedFields?.fields || {});
+      const demoFieldValues = result.providerId === 'mock' ? (o.demoFields?.fields || o.confirmedFields?.fields || {}) : {};
+      o.fieldDrafts = this.buildOcrFieldDrafts(o.result, quality, demoFieldValues);
       o.structured = this.renderOcrFieldTable('current');
       o.aiFix = '';
       o.aiMode = 'mock';

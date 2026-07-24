@@ -194,17 +194,18 @@
             error: error.message, errorSummary: String(error.message || '').slice(0, 160) });
         }
       }
-      const fallback = this.get('mock');
-      if (allowFallback && providerId === 'auto' && fallback?.available && fallback.enabled) {
-        try {
-          const raw = await fallback.recognize(file, onProgress, { ...context, requestId, startedAt });
-          const result = normalizeResult({ ...raw, status: 'fallback', fallbackUsed: true, fallbackProviderId: fallback.providerId }, { ...context, requestId, startedAt }, fallback);
-          result.warnings.unshift(`真实识别不可用，已使用演示降级：${lastError?.message || '未知原因'}`);
-          this.onLog({ requestId, action: 'fallback', providerId: fallback.providerId, providerName: fallback.providerName,
-            fileName: file?.name || context.sourceFile?.name || '', status: 'fallback', fallbackUsed: true,
-            durationMs: result.durationMs, error: lastError?.message || '', errorSummary: String(lastError?.message || '').slice(0, 160),
-            resultSummary: result.rawText.slice(0, 120) }); return result;
-        } catch (error) { this.onError({ requestId, provider: fallback, error, file, startedAt, fallbackUsed: true }); throw ocrError('OCR 降级失败', 'fallback_failed'); }
+      if (allowFallback && providerId === 'auto') {
+        const reason = lastError?.message || '未知原因';
+        const result = normalizeResult({ rawText: '', fields: [], status: 'partial_success', confidence: 0,
+          warnings: [`真实 OCR 未返回可用文字：${reason}`, '未生成演示字段，请根据原图人工确认。'],
+          errors: [{ type: lastError?.code || 'provider_unavailable', message: reason }] },
+        { ...context, requestId, startedAt }, { providerId: 'current', providerName: '当前 OCR（需人工确认）', providerType: 'current', version: '1.0' });
+        result.fallbackUsed = false;
+        result.manualConfirmationRequired = true;
+        this.onLog({ requestId, action: 'manual_confirmation_required', providerId: 'current', providerName: '当前 OCR（需人工确认）',
+          fileName: file?.name || context.sourceFile?.name || '', status: 'partial_success', fallbackUsed: false,
+          durationMs: result.durationMs, error: reason, errorSummary: String(reason).slice(0, 160), resultSummary: '' });
+        return result;
       }
       throw lastError || ocrError('OCR Provider 暂不可用', 'provider_unavailable', { providerId });
     }
