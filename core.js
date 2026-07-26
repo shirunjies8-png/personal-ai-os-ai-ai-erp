@@ -51,6 +51,8 @@ const DefaultState = {
   activities: [],
   recentOpenIds: [],
   workspaces: {},
+  reusableSessions: { excel: [], word: [], pdf: [], cost: [] },
+  activeReusableSessionIds: { excel: '', word: '', pdf: '', cost: '' },
   fileVersions: [],
   users: [
     { id: 'admin', name: '管理员', role: '管理员', status: '启用' },
@@ -83,10 +85,13 @@ const DefaultState = {
     status: 'idle'
   },
   ocrData: {
-    schemaVersion: 2,
+    schemaVersion: 3,
     tasks: [],
     results: [],
     reviews: [],
+    documentSessions: [],
+    documentTemplates: [],
+    activeDocumentSessionId: '',
     providerConfig: { selectedProviderId: 'auto', lowConfidenceThreshold: 0.85, highRiskThreshold: 0.65 },
     providerHealth: {},
     errors: [],
@@ -651,6 +656,17 @@ const Store = {
       if (!Array.isArray(this.state.activities)) this.state.activities = [];
       if (!Array.isArray(this.state.chats)) this.state.chats = [];
       if (!this.state.workspaces || typeof this.state.workspaces !== 'object') this.state.workspaces = {};
+      const savedSessions = this.state.reusableSessions && typeof this.state.reusableSessions === 'object' ? this.state.reusableSessions : {};
+      this.state.reusableSessions = Object.fromEntries(['excel', 'word', 'pdf', 'cost'].map(module => [
+        module,
+        Array.isArray(savedSessions[module]) ? savedSessions[module].slice(0, 20) : []
+      ]));
+      this.state.activeReusableSessionIds = {
+        ...DefaultState.activeReusableSessionIds,
+        ...(this.state.activeReusableSessionIds && typeof this.state.activeReusableSessionIds === 'object'
+          ? this.state.activeReusableSessionIds
+          : {})
+      };
       if (!Array.isArray(this.state.fileVersions)) this.state.fileVersions = [];
       if (!Array.isArray(this.state.users)) this.state.users = structuredClone(DefaultState.users);
       if (!Array.isArray(this.state.roles)) this.state.roles = structuredClone(DefaultState.roles);
@@ -677,12 +693,15 @@ const Store = {
       this.state.ocrData = {
         ...structuredClone(DefaultState.ocrData),
         ...savedOcrData,
-        schemaVersion: 2,
+        schemaVersion: 3,
         providerConfig: { ...DefaultState.ocrData.providerConfig, ...(savedOcrData.providerConfig || {}) },
         stats: { ...DefaultState.ocrData.stats, ...(savedOcrData.stats || {}) },
         tasks: Array.isArray(savedOcrData.tasks) ? savedOcrData.tasks : [],
         results: Array.isArray(savedOcrData.results) ? savedOcrData.results : [],
         reviews: Array.isArray(savedOcrData.reviews) ? savedOcrData.reviews : [],
+        documentSessions: Array.isArray(savedOcrData.documentSessions) ? savedOcrData.documentSessions : [],
+        documentTemplates: Array.isArray(savedOcrData.documentTemplates) ? savedOcrData.documentTemplates : [],
+        activeDocumentSessionId: typeof savedOcrData.activeDocumentSessionId === 'string' ? savedOcrData.activeDocumentSessionId : '',
         errors: Array.isArray(savedOcrData.errors) ? savedOcrData.errors : [],
         providerHealth: savedOcrData.providerHealth && typeof savedOcrData.providerHealth === 'object' ? savedOcrData.providerHealth : {}
       };
@@ -723,6 +742,37 @@ const Store = {
             return item;
           }
         });
+      }
+      // Schema v3: preserve legacy result/review records as independent reusable
+      // document sessions. Files themselves are not copied into localStorage;
+      // only safe metadata is retained and the UI must request a reselect when
+      // an original browser File is no longer available after reload.
+      const sessionByRequestId = new Map(this.state.ocrData.documentSessions
+        .filter(item => item && typeof item === 'object' && item.requestId)
+        .map(item => [item.requestId, item]));
+      for (const result of this.state.ocrData.results) {
+        if (!result?.requestId || sessionByRequestId.has(result.requestId)) continue;
+        const review = this.state.ocrData.reviews.find(item => item.requestId === result.requestId) || null;
+        const createdAt = result.startedAt || result.createdAt || new Date().toISOString();
+        const session = {
+          document_session_id: `doc-${result.requestId}`,
+          requestId: result.requestId,
+          sourceFile: { ...(result.sourceFile || {}) },
+          storage_status: 'metadata_only',
+          rawText: String(result.rawText || ''),
+          result,
+          review,
+          template_id: '',
+          history: [{ action: 'legacy_migrated', at: Date.now() }],
+          created_at: createdAt,
+          updated_at: createdAt
+        };
+        this.state.ocrData.documentSessions.push(session);
+        sessionByRequestId.set(result.requestId, session);
+      }
+      this.state.ocrData.documentSessions = this.state.ocrData.documentSessions.slice(0, 50);
+      if (!this.state.ocrData.activeDocumentSessionId && this.state.ocrData.documentSessions[0]) {
+        this.state.ocrData.activeDocumentSessionId = this.state.ocrData.documentSessions[0].document_session_id;
       }
       if (!Array.isArray(this.state.ocrInquiries)) this.state.ocrInquiries = [];
       if (!this.state.runtimeMonitor || typeof this.state.runtimeMonitor !== 'object') this.state.runtimeMonitor = structuredClone(DefaultState.runtimeMonitor);

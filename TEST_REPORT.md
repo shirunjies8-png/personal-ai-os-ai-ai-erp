@@ -1854,3 +1854,24 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 
 - 只做发布元数据和版本口径收尾。
 - 未修改 RFQ 风险、审批、报价、审计核心业务逻辑。
+## 2026-07-26 — 真实工作流与可复用会话整改
+
+### 自动化验证
+
+- `git diff --check`：通过。
+- `npm run check`：通过。
+- `npm run test:unit`：通过；新增 `scripts/reusable-session-test.mjs`，覆盖 Excel、Word、PDF、成本核算 Session、文件元数据边界和 RFQ 来源追踪。
+- `npm run build`：通过。
+- `npm run verify`：通过现有四段式门禁；该命令没有完成真实中文 Tesseract 基准识别，不能据此关闭 `ENV-OCR-E2E-001`。
+
+### 真实浏览器证据
+
+- Excel：加载“发货单示例.xlsx”后生成独立会话；刷新页面后会话、表格与结果仍存在。
+- 成本核算：390×844 下使用确定性示例计算得到总成本 `10037.00`、建议报价 `12546.25`；刷新后输入和同一结果仍存在。
+- 响应式：`home`、`ocr`、`excel`、`word`、`pdf`、`cost` 六个页面在 390×844 下均为 `scrollWidth=390`、`viewport=390`，未出现横向溢出。
+- 浏览器控制台：上述验收过程最终为 0 errors / 0 warnings。
+
+### 仍未通过的真实性门禁
+
+- 真实中文基准图已触发 Tesseract worker/core 加载，但未取得可采集的最终 OCR 原文与字段结果；`ENV-OCR-E2E-001` 保持 `open / environment`。
+- Word/PDF 已具备会话保存、重开和复制代码与单元门禁；真实文件上传后跨刷新重开尚未取得浏览器证据，状态为 `FIXED_NOT_VERIFIED`。
