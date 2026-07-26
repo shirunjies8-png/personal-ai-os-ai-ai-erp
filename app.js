@@ -154,6 +154,7 @@ const App = {
     await Store.hydrateFromServer();
     this.setupOcrProviders();
     this.restoreOcrSession();
+    this.restoreReusableSessions();
     if (!AuthClient.isLoggedIn() && window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ONLY) {
       AuthClient.save({
         token: 'demo-local-session',
@@ -879,6 +880,8 @@ const App = {
       this.temp.word.title = document.getElementById('wordTitle')?.value || '';
       this.temp.word.content = document.getElementById('wordContent')?.value || '';
       localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(this.temp.word));
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => this.saveReusableSession('word', 'autosaved'), 400);
     }
     if (target.id === 'writingPrompt') {
       this.temp.writing.prompt = target.value;
@@ -1037,6 +1040,10 @@ const App = {
       'pdf-qa': () => this.pdfAsk(el),
       'pdf-table': () => this.pdfTableExtract(el),
       'ocr-sample': () => this.ocrSample(el),
+      'ocr-session-select': () => this.ocrSelectDocumentSession(el.dataset.sessionId),
+      'ocr-session-new': () => this.ocrNewDocumentSession(),
+      'ocr-conflict-keep': () => this.ocrResolveRecognitionConflict('keep_human'),
+      'ocr-conflict-adopt': () => this.ocrResolveRecognitionConflict('adopt_new_ocr'),
       'ocr-run': () => this.ocrRun(el),
       'ocr-summary': () => this.ocrSummary(el),
       'ocr-translate': () => this.ocrTranslate(el),
@@ -1113,6 +1120,10 @@ const App = {
       'workspace-copy': () => this.workspaceCopy(el.dataset.module),
       'workspace-clear': () => this.workspaceClear(el.dataset.module),
       'workspace-export': () => this.workspaceExport(el.dataset.module),
+      'reusable-session-select': () => this.selectReusableSession(el.dataset.module, el.dataset.id),
+      'reusable-session-new': () => this.newReusableSession(el.dataset.module),
+      'reusable-session-copy': () => this.copyReusableSession(el.dataset.module, el.dataset.id),
+      'cost-import-rfq': () => this.costImportCurrentRfq(),
       'quotation-sample': () => this.quotationLoadSample(el.dataset.sample || 'complete'),
       'quotation-generate': () => this.quotationGenerateDraft(),
       'quotation-save': () => this.quotationSaveDraft(),
@@ -1796,8 +1807,99 @@ const App = {
     return ws;
   },
 
+  reusableSessionSnapshot(module) {
+    if (module === 'excel') {
+      const x = this.temp.excel;
+      return { rows: x.rows || [], sheetName: x.sheetName || '', result: x.result || '', records: x.records || [], summary: x.summary || null, meta: x.meta || {}, schema: x.schema || {}, sourceFile: x.file ? { name: x.file.name, size: x.file.size || 0, type: x.file.type || '' } : null };
+    }
+    if (module === 'word') return { ...this.getWord(), sourceFile: this.temp.word.sourceFile || null };
+    if (module === 'pdf') {
+      const p = this.temp.pdf;
+      return { result: p.result || '', extracted: p.extracted || '', qaQuestion: p.qaQuestion || '', qaAnswer: p.qaAnswer || '', analysis: p.analysis || '', tableText: p.tableText || '', scanMode: p.scanMode || '', fileInfos: p.fileInfos || [] };
+    }
+    if (module === 'cost') return structuredClone(this.getWorkspace('cost'));
+    throw new Error('不支持的复用会话类型');
+  },
+
+  restoreReusableSessions() {
+    for (const module of ['excel', 'word', 'pdf', 'cost']) {
+      const id = Store.state.activeReusableSessionIds?.[module];
+      const session = (Store.state.reusableSessions?.[module] || []).find(item => item.id === id);
+      if (!session?.snapshot) continue;
+      const snapshot = structuredClone(session.snapshot);
+      if (module === 'excel') this.temp.excel = { ...this.temp.excel, ...snapshot, file: snapshot.sourceFile, workbook: null };
+      if (module === 'word') this.temp.word = snapshot;
+      if (module === 'pdf') this.temp.pdf = { ...this.temp.pdf, ...snapshot, files: [] };
+      if (module === 'cost') Store.state.workspaces.cost = snapshot;
+    }
+  },
+
+  saveReusableSession(module, action = 'saved') {
+    const sessions = Store.state.reusableSessions[module] || (Store.state.reusableSessions[module] = []);
+    const activeId = Store.state.activeReusableSessionIds[module];
+    const snapshot = this.reusableSessionSnapshot(module);
+    const now = Date.now();
+    let session = sessions.find(item => item.id === activeId);
+    if (!session) {
+      session = { id: uid(), module, createdAt: now, history: [] };
+      sessions.unshift(session);
+      Store.state.activeReusableSessionIds[module] = session.id;
+    }
+    session.title = module === 'word' ? (snapshot.title || '未命名文档')
+      : module === 'cost' ? (snapshot.productName || snapshot.productCode || '未命名核算')
+        : snapshot.sourceFile?.name || snapshot.fileInfos?.[0]?.name || `${module.toUpperCase()} 会话`;
+    session.snapshot = snapshot;
+    session.updatedAt = now;
+    session.history = [...(session.history || []), { action, at: now }].slice(-50);
+    Store.state.reusableSessions[module] = sessions.slice(0, 20);
+    Store.save();
+    return session;
+  },
+
+  selectReusableSession(module, id) {
+    const session = (Store.state.reusableSessions[module] || []).find(item => item.id === id);
+    if (!session) throw new Error('会话不存在或已被清理');
+    const snapshot = structuredClone(session.snapshot || {});
+    if (module === 'excel') this.temp.excel = { ...this.temp.excel, ...snapshot, file: snapshot.sourceFile, workbook: null };
+    if (module === 'word') {
+      this.temp.word = snapshot;
+      localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(snapshot));
+    }
+    if (module === 'pdf') this.temp.pdf = { ...this.temp.pdf, ...snapshot, files: [] };
+    if (module === 'cost') Store.state.workspaces.cost = snapshot;
+    Store.state.activeReusableSessionIds[module] = id;
+    session.history = [...(session.history || []), { action: 'reopened', at: Date.now() }].slice(-50);
+    Store.save();
+    this.rerender();
+  },
+
+  newReusableSession(module) {
+    Store.state.activeReusableSessionIds[module] = '';
+    if (module === 'excel') this.temp.excel = { file: null, workbook: null, rows: [], sheetName: '', result: '', records: [], summary: null, meta: {}, schema: {}, loadedFromFileId: null };
+    if (module === 'word') this.temp.word = { title: '', content: '', sourceFile: null };
+    if (module === 'pdf') this.temp.pdf = { files: [], result: '', extracted: '', qaQuestion: '', qaAnswer: '', analysis: '', tableText: '', scanMode: '', fileInfos: [], loadedFromFileId: null };
+    if (module === 'cost') Store.state.workspaces.cost = {};
+    Store.save();
+    this.rerender();
+  },
+
+  copyReusableSession(module, id) {
+    const source = (Store.state.reusableSessions[module] || []).find(item => item.id === id);
+    if (!source) throw new Error('找不到要复制的会话');
+    const copy = structuredClone(source);
+    copy.id = uid();
+    copy.title = `${source.title || module}（副本）`;
+    copy.createdAt = copy.updatedAt = Date.now();
+    copy.history = [{ action: 'copied', sourceSessionId: id, at: Date.now() }];
+    Store.state.reusableSessions[module].unshift(copy);
+    Store.state.activeReusableSessionIds[module] = copy.id;
+    Store.save();
+    this.selectReusableSession(module, copy.id);
+  },
+
   workspaceSave(route = this.route) {
     this.syncWorkspaceFromDom(route);
+    if (route === 'cost') this.saveReusableSession('cost', 'manual_saved');
     Store.save();
     Store.addActivity(`保存工作区：${moduleById(route).name}`, 'file');
     this.toast('工作区草稿已保存');
@@ -2946,9 +3048,11 @@ const App = {
   restoreOcrSession() {
     if (typeof OCRArchitecture === 'undefined') return null;
     const data = Store.state.ocrData || {};
-    const result = Array.isArray(data.results) ? data.results[0] : null;
+    const sessions = Array.isArray(data.documentSessions) ? data.documentSessions : [];
+    const selected = sessions.find(item => item.document_session_id === data.activeDocumentSessionId) || sessions[0] || null;
+    const result = selected?.result || (Array.isArray(data.results) ? data.results[0] : null);
     if (!result?.requestId) return null;
-    let review = (data.reviews || []).find(item => item.requestId === result.requestId);
+    let review = selected?.review || (data.reviews || []).find(item => item.requestId === result.requestId);
     if (!review) {
       review = OCRArchitecture.createReview(result);
       data.reviews = [review, ...(data.reviews || [])].slice(0, 50);
@@ -2956,11 +3060,12 @@ const App = {
     }
     const o = this.temp.ocr;
     o.providerResult = result;
+    o.documentSessionId = selected?.document_session_id || '';
     o.review = review;
     o.result = result.rawText || '';
     o.original = result.rawText || '';
     o.providerId = data.providerConfig?.selectedProviderId || result.providerId || 'auto';
-    o.sourceFile = { ...(result.sourceFile || review.source?.sourceFile || {}) };
+    o.sourceFile = { ...(selected?.sourceFile || result.sourceFile || review.source?.sourceFile || {}) };
     o.mock = result.providerId === 'mock' || Boolean(result.fallbackUsed);
     o.mockReason = result.fallbackUsed ? result.warnings?.[0] || '真实识别不可用，已使用演示降级' : '';
     o.status = o.mock ? (result.fallbackUsed ? '已使用降级模式（演示数据，非真实识别）' : '演示数据（非真实识别）')
@@ -2968,7 +3073,75 @@ const App = {
         : result.success ? '真实 OCR 成功' : 'OCR 失败';
     o.progress = result.success ? 1 : 0;
     o.diagnostics = data.errors?.[0] || null;
-    return { result, review };
+    return { result, review, session: selected };
+  },
+
+  ocrSelectDocumentSession(sessionId) {
+    const data = Store.state.ocrData || {};
+    const session = (data.documentSessions || []).find(item => item.document_session_id === sessionId);
+    if (!session) throw new Error('OCR 文档会话不存在或已被清理');
+    data.activeDocumentSessionId = sessionId;
+    Store.save();
+    this.temp.ocr = { ...this.temp.ocr, file: null, url: '', documentSessionId: sessionId, providerResult: session.result || null,
+      review: session.review || null, result: session.rawText || '', original: session.rawText || '',
+      confirmedFields: session.confirmedFields || null, sourceFile: { ...(session.sourceFile || {}) }, status: '已打开已保存文档会话' };
+    this.restoreOcrSession();
+    this.rerender();
+    this.toast('已打开已保存 OCR 文档；原图未保存到浏览器存储，请重新选择原图后再核对。');
+  },
+
+  ocrNewDocumentSession() {
+    this.temp.ocr = { ...this.temp.ocr, file: null, url: '', documentSessionId: '', providerResult: null, review: null,
+      result: '', original: '', confirmedFields: null, fieldDrafts: [], status: '等待上传新图片', progress: 0 };
+    Store.state.ocrData.activeDocumentSessionId = '';
+    Store.save();
+    this.rerender();
+    this.toast('已新建 OCR 任务；选择图片后会创建独立文档会话。');
+  },
+
+  ocrResolveRecognitionConflict(decision) {
+    const sessionId = this.temp.ocr.documentSessionId;
+    const session = (Store.state.ocrData?.documentSessions || []).find(item => item.document_session_id === sessionId);
+    if (!session?.recognitionConflict) throw new Error('当前文档没有待处理的重新识别冲突');
+    if (decision === 'adopt_new_ocr') {
+      const review = session.recognitionConflict.candidateReview || OCRArchitecture.createReview(session.result || {});
+      session.review = review;
+      this.temp.ocr.review = review;
+      this.temp.ocr.confirmedFields = null;
+    }
+    this.touchOcrDocumentSession(sessionId, {
+      review: session.review,
+      recognitionConflict: { ...session.recognitionConflict, status: decision, resolved_at: new Date().toISOString() }
+    }, decision);
+    Store.save();
+    this.rerender();
+    this.toast(decision === 'adopt_new_ocr' ? '已采用新 OCR 字段，需重新人工复核后才能进入正式业务。' : '已保留人工确认字段；新 OCR 结果仍保存在本 Session 历史中。');
+  },
+
+  upsertOcrDocumentTemplate(result) {
+    const type = String(result?.documentType || this.temp.ocr?.template || '通用').trim() || '通用';
+    const templateId = `template-${type}`;
+    const templates = Store.state.ocrData.documentTemplates || (Store.state.ocrData.documentTemplates = []);
+    const fields = (result?.fields || []).map(field => ({ key: field.key, label: field.label, required: Boolean(field.required) }));
+    const index = templates.findIndex(item => item.template_id === templateId);
+    const current = index >= 0 ? templates[index] : { template_id: templateId, template_name: type, template_type: type, created_at: new Date().toISOString() };
+    const next = { ...current, field_definitions: fields, last_used_at: new Date().toISOString() };
+    if (index >= 0) templates[index] = next; else templates.unshift(next);
+    Store.state.ocrData.documentTemplates = templates.slice(0, 30);
+    return templateId;
+  },
+
+  touchOcrDocumentSession(sessionId, patch = {}, action = '') {
+    const data = Store.state.ocrData;
+    const sessions = Array.isArray(data.documentSessions) ? data.documentSessions : (data.documentSessions = []);
+    const index = sessions.findIndex(item => item.document_session_id === sessionId);
+    const current = index >= 0 ? sessions[index] : { document_session_id: sessionId, history: [], created_at: new Date().toISOString() };
+    const next = { ...current, ...patch, updated_at: new Date().toISOString() };
+    if (action) next.history = [{ action, at: Date.now() }, ...(current.history || [])].slice(0, 100);
+    if (index >= 0) sessions[index] = next; else sessions.unshift(next);
+    data.documentSessions = sessions.slice(0, 50);
+    data.activeDocumentSessionId = sessionId;
+    return next;
   },
 
   ocrEnvironment() {
@@ -3022,13 +3195,34 @@ const App = {
     data.results = data.results.filter(item => item.requestId !== result.requestId);
     data.results.unshift(result);
     data.results = data.results.slice(0, 50);
+    const sessionId = this.temp.ocr.documentSessionId || `doc-${result.requestId}`;
+    const existingSession = (data.documentSessions || []).find(item => item.document_session_id === sessionId);
+    const protectedReview = existingSession?.review?.status === 'approved' ? existingSession.review : null;
     const existingReview = data.reviews.find(item => item.requestId === result.requestId);
-    const review = OCRArchitecture.createReview(result, existingReview || {});
+    const candidateReview = OCRArchitecture.createReview(result, existingReview || {});
+    const review = protectedReview || candidateReview;
     data.reviews = data.reviews.filter(item => item.requestId !== result.requestId);
-    data.reviews.unshift(review);
+    data.reviews.unshift(candidateReview);
     data.reviews = data.reviews.slice(0, 50);
     this.temp.ocr.providerResult = result;
     this.temp.ocr.review = review;
+    this.temp.ocr.documentSessionId = sessionId;
+    const recognitionConflict = protectedReview ? {
+      status: 'requires_user_choice', previousRequestId: protectedReview.requestId, newRequestId: result.requestId,
+      candidateReview,
+      message: '新 OCR 结果不会自动覆盖已人工批准字段；请人工比较后选择保留或采用新值。', created_at: new Date().toISOString()
+    } : null;
+    const templateId = this.upsertOcrDocumentTemplate(result);
+    const recognitionHistory = [
+      { requestId: result.requestId, result, created_at: new Date().toISOString() },
+      ...(existingSession?.recognitionHistory || [])
+    ].slice(0, 20);
+    this.touchOcrDocumentSession(sessionId, {
+      requestId: result.requestId,
+      sourceFile: { ...(result.sourceFile || this.temp.ocr.sourceFile || {}) },
+      storage_status: 'metadata_only', rawText: result.rawText || '', result, review,
+      template_id: templateId, recognitionConflict, recognitionHistory
+    }, protectedReview ? 'recognition_conflict_created' : 'ocr_result_saved');
     this.updateOcrDailyStats(result);
     Store.save();
     return review;
@@ -3040,6 +3234,9 @@ const App = {
     data.reviews.unshift(review);
     data.reviews = data.reviews.slice(0, 50);
     this.temp.ocr.review = review;
+    const sessionId = this.temp.ocr.documentSessionId || `doc-${review.requestId}`;
+    this.temp.ocr.documentSessionId = sessionId;
+    this.touchOcrDocumentSession(sessionId, { requestId: review.requestId, review }, 'review_saved');
     Store.save();
   },
 
@@ -3080,6 +3277,7 @@ const App = {
     const fields = Object.fromEntries(approved.fields.map(field => [field.label, field.value || '待补充']));
     const confirmed = { confirmed: true, confirmedAt: Date.now(), reviewedAt: approved.reviewedAt, reviewer: approved.reviewer, fields, source: 'ocr-review-v2' };
     this.temp.ocr.confirmedFields = confirmed;
+    this.touchOcrDocumentSession(this.temp.ocr.documentSessionId || `doc-${approved.requestId}`, { confirmedFields: confirmed }, 'review_approved');
     localStorage.setItem('personal-ai-os-ocr-confirmed-fields', JSON.stringify(confirmed));
     this.recordTask({ type: 'OCR人工复核', fileName: this.temp.ocr.file?.name || '图片', module: 'ocr', status: 'success',
       summary: '人工复核已批准', requestId: approved.requestId, result: JSON.stringify(fields) });
@@ -4834,6 +5032,7 @@ const App = {
       summary: `已读取 ${sheetName}，共 ${rows.length} 行`,
       result: `已读取 ${sheetName}：${rows.length} 行。`
     });
+    this.saveReusableSession('excel', 'file_loaded');
     Store.addActivity(`读取表格：${file.name}`, 'file');
     this.rerender();
   },
@@ -4870,6 +5069,7 @@ const App = {
       status: '完成',
       summary: '已加载企业发货单示例'
     });
+    this.saveReusableSession('excel', 'sample_loaded');
     Store.addActivity('加载 Excel 示例');
     this.rerender();
   },
@@ -4910,6 +5110,7 @@ const App = {
       result: this.temp.excel.result
     });
     Store.addActivity('Excel 自动分类');
+    this.saveReusableSession('excel', 'classified');
     this.rerender();
   },
 
@@ -4932,6 +5133,7 @@ const App = {
       result: this.temp.excel.result
     });
     Store.addActivity('Excel 自动查重');
+    this.saveReusableSession('excel', 'deduplicated');
     this.rerender();
   },
 
@@ -4959,6 +5161,7 @@ const App = {
       result: this.temp.excel.result
     });
     Store.addActivity('Excel 自动统计');
+    this.saveReusableSession('excel', 'statistics_calculated');
     this.rerender();
   },
 
@@ -4984,6 +5187,7 @@ const App = {
         result: this.temp.excel.result
       });
       Store.addActivity('AI 分析 Excel', 'ai');
+      this.saveReusableSession('excel', 'analysis_generated');
       this.rerender();
     });
   },
@@ -5008,6 +5212,7 @@ const App = {
       summary: `来自 ${this.temp.excel.sheetName || '处理结果'} 的导出文件`
     });
     Store.addActivity('导出 Excel', 'file');
+    this.saveReusableSession('excel', 'exported');
     this.toast('Excel 已导出');
   },
 
@@ -5021,6 +5226,7 @@ const App = {
         sourceFile: file.name
       };
       localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(this.temp.word));
+      this.saveReusableSession('word', 'file_loaded');
       Store.addActivity(`读取文本文档：${file.name}`, 'file');
       this.navigate('word');
       return;
@@ -5033,6 +5239,7 @@ const App = {
       sourceFile: file.name
     };
     localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(this.temp.word));
+    this.saveReusableSession('word', 'file_loaded');
     Store.addActivity(`读取 Word：${file.name}`, 'file');
     this.navigate('word');
   },
@@ -5040,6 +5247,7 @@ const App = {
   wordNew() {
     if (!confirm('新建文档会清空当前草稿，是否继续？')) return;
     this.temp.word = { title: '', content: '', sourceFile: null };
+    Store.state.activeReusableSessionIds.word = '';
     localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(this.temp.word));
     this.rerender();
   },
@@ -5081,6 +5289,7 @@ const App = {
       if (mode === 'summary') w.content += `\n\n【AI总结】\n${output}`;
       else w.content = output;
       localStorage.setItem('personal-ai-os-word-draft', JSON.stringify(w));
+      this.saveReusableSession('word', `ai_${mode}`);
       Store.addActivity(`Word AI ${mode}`, 'ai');
       this.rerender();
     });
@@ -5090,6 +5299,7 @@ const App = {
     const w = this.getWord();
     if (!w.content) throw new Error('正文为空');
     await Utils.exportDocx(w.title, w.content, w.title || 'Word文档');
+    this.saveReusableSession('word', 'exported_docx');
     Store.addActivity(`导出 Word：${w.title}`, 'file');
   },
 
@@ -5103,6 +5313,7 @@ const App = {
       return res;
     });
     Store.addActivity(`导出 PDF：${w.title}`, 'file');
+    this.saveReusableSession('word', 'exported_pdf');
   },
 
   async loadPdfs(files) {
@@ -5156,18 +5367,20 @@ const App = {
       });
     });
     Store.addActivity(`读取 ${files.length} 个 PDF`, 'file');
+    this.saveReusableSession('pdf', 'file_loaded');
     this.rerender();
     this.toast(extractedTexts.length ? (detectedMode === 'ocr' ? 'PDF 已上传并自动 OCR' : 'PDF 上传并读取成功') : 'PDF 已上传，但未读取到可分析内容', extractedTexts.length ? 'success' : 'error');
   },
 
   requirePdf() {
-    if (!this.temp.pdf.files.length) throw new Error('请先上传 PDF 文件');
+    if (!this.temp.pdf.files.length && !this.temp.pdf.extracted) throw new Error('请先上传 PDF 文件，或打开包含已提取文字的历史会话');
   },
 
   async ensurePdfExtracted() {
     this.requirePdf();
     if (this.temp.pdf.extracted) return this.temp.pdf.extracted;
     const file = this.temp.pdf.files[0];
+    if (!file) throw new Error('原 PDF 二进制未保存在浏览器中；当前可查看历史结果，如需重新解析请再次选择原文件');
     const parsed = await Utils.extractPdfTextSmart(file);
     const text = parsed.text || '';
     if (!text.trim()) throw new Error(parsed.reason || 'PDF 无法提取文字，请尝试 OCR');
@@ -5215,6 +5428,7 @@ const App = {
         result: this.temp.pdf.result
       });
       Store.addActivity('提取 PDF 文字');
+      this.saveReusableSession('pdf', 'text_extracted');
       this.rerender();
     });
   },
@@ -5467,6 +5681,7 @@ const App = {
     const demoFields = /OCR示例发货单/i.test(file.name) || /示例/i.test(file.name) ? this.buildOcrDemoFields() : null;
     const providerId = Store.state.ocrData?.providerConfig?.selectedProviderId || this.temp.ocr.providerId || 'auto';
     const uploadedAt = new Date().toISOString();
+    const documentSessionId = uid();
     this.temp.ocr = {
       file,
       url: URL.createObjectURL(file),
@@ -5483,6 +5698,7 @@ const App = {
       mockReason: '',
       providerId,
       providerResult: null,
+      documentSessionId,
       review: null,
       diagnostics: null,
       reviewZoom: 1,
@@ -5491,6 +5707,12 @@ const App = {
       confirmedFields: JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null'),
       demoFields
     };
+    this.touchOcrDocumentSession(documentSessionId, {
+      requestId: '', sourceFile: { name: file.name, size: file.size, type: file.type, uploadedAt },
+      storage_status: 'metadata_only', rawText: '', result: null, review: null, template_id: '',
+      file_reselect_required_after_reload: true
+    }, 'document_loaded');
+    Store.save();
     const image = new Image();
     image.onload = () => {
       if (this.temp.ocr.file === file) {
@@ -6001,6 +6223,7 @@ const App = {
         source: 'ocr'
       };
       o.confirmedFields = confirmed;
+      this.touchOcrDocumentSession(o.documentSessionId || `doc-${o.providerResult?.requestId || uid()}`, { confirmedFields: confirmed }, 'fields_confirmed');
       localStorage.setItem('personal-ai-os-ocr-confirmed-fields', JSON.stringify(confirmed));
       o.result = sourceText || text;
       Store.state.ocrResult = {
@@ -6195,7 +6418,8 @@ const App = {
   },
 
   getOcrConfirmedFieldMap() {
-    const saved = this.temp.ocr?.confirmedFields || JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null');
+    const session = (Store.state.ocrData?.documentSessions || []).find(item => item.document_session_id === this.temp.ocr?.documentSessionId);
+    const saved = this.temp.ocr?.confirmedFields || session?.confirmedFields || JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null');
     return saved && typeof saved === 'object' ? saved : null;
   },
 
@@ -8535,6 +8759,7 @@ const App = {
     ws.costStatus = '✅ Production Ready';
     ws.updatedAt = Date.now();
     Store.save();
+    this.saveReusableSession('cost', 'calculated');
     this.detectCostCalculationBug({ ...ws, costPlan: plan, result: ws.result, computedAt: started });
     ws.costStatus = '✅ Production Ready';
     this.rerender();
@@ -8544,6 +8769,40 @@ const App = {
       btn.lastChild.textContent = '开始计算';
     }
     return ws.result;
+  },
+
+  costImportCurrentRfq() {
+    const rfq = this.temp.manufacturing?.rfq;
+    if (!rfq?.id) throw new Error('请先在 RFQ 页面打开一条真实 RFQ，再返回成本核算导入');
+    const ws = this.getWorkspace('cost');
+    Object.assign(ws, {
+      productName: rfq.product_name || '',
+      productCode: rfq.product_code || '',
+      customerName: rfq.customer_name || rfq.customer?.name || '',
+      quantity: rfq.quantity ?? '',
+      unit: rfq.unit || '件',
+      materialName: rfq.material || rfq.material_name || '',
+      sourceMode: 'rfq',
+      sourceRfqId: rfq.id,
+      sourceRfqNo: rfq.rfq_no || '',
+      sourceTrace: {
+        type: 'rfq',
+        rfqId: rfq.id,
+        rfqNo: rfq.rfq_no || '',
+        importedAt: new Date().toISOString(),
+        importedFields: ['productName', 'productCode', 'customerName', 'quantity', 'unit', 'materialName'].filter(key => String({
+          productName: rfq.product_name, productCode: rfq.product_code, customerName: rfq.customer_name || rfq.customer?.name,
+          quantity: rfq.quantity, unit: rfq.unit, materialName: rfq.material || rfq.material_name
+        }[key] ?? '').trim())
+      }
+    });
+    ws.costPlan = null;
+    ws.result = '';
+    ws.costStatus = '已从真实 RFQ 带入已存在字段；价格、工时和费率仍需人工录入';
+    Store.save();
+    this.saveReusableSession('cost', 'rfq_imported');
+    this.rerender();
+    this.toast('已从 RFQ 带入真实字段；未提供的数据保持为空，不会自动编造。');
   },
 
   costFillSample() {
@@ -8579,6 +8838,7 @@ const App = {
     ws.costStatus = '✅ Production Ready';
     ws.updatedAt = Date.now();
     Store.save();
+    this.saveReusableSession('cost', 'sample_calculated');
     this.rerender();
     this.toast('已填充成本核算示例');
   },
