@@ -378,7 +378,7 @@ const App = {
       return;
     }
     dock.hidden = false;
-    dock.innerHTML = `<section class="bug-monitor-card"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${alerts.length} 个待处理问题</small></div><span class="status-pill warning">智能诊断</span></div>${alerts.map(item => this.renderBugAlertCard(item, true)).join('')}</section>`;
+    dock.innerHTML = `<section class="bug-monitor-card bug-monitor-card-compact"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${alerts.length} 个待处理问题 · 详情已移至错误中心</small></div><button class="secondary-btn compact" data-action="bug-monitor-open">查看</button></div></section>`;
   },
 
   bugAlertSignature(payload = {}) {
@@ -1204,6 +1204,7 @@ const App = {
       'bug-ignore': () => this.ignoreBugAlert(el.dataset.id),
       'bug-restore': () => this.restoreBugAlert(el.dataset.id),
       'bug-detail': () => this.openBugDetail(el.dataset.id),
+      'bug-monitor-open': () => this.navigate('monitoring'),
       'error-center-self-test': () => this.runErrorCenterSelfTest(),
       'mail-generate': () => this.mailGenerate(el),
       'mail-polish': () => this.mailPolish(el),

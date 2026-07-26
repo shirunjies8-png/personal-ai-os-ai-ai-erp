@@ -33,9 +33,10 @@
 | ISSUE-15 | AI 按钮不能区分真实模型、确定性、Mock、未配置。 | 多处 `mockFallback` 和网关调用并存。 | — | 全量扫描按钮并在 UI 显式展示四类状态。 | 待补充 | OPEN |
 | ISSUE-16 | Provider 不可用时可能白屏、乱码或假结果。 | `APIClient` 有网络错误提示；OCR 有错误对象。 | — | 断网/未配置模型的浏览器回归，确认本地确定性能力仍可用。 | 待补充 | OPEN |
 | ISSUE-17 | 全系统中文编码与渲染未完成真实回归。 | UTF-8 资源和中文文案存在；未覆盖导出、OCR、数据库回显。 | — | UI、Toast、日志、TXT/Word/Excel/PDF、OCR、SQLite 回显测试。 | 待补充 | OPEN |
-| ISSUE-18 | 客户→联系人→项目→RFQ 浏览器主链路无证据。 | SQLite/API/tenant/幂等已通过真实 HTTP 验收。 | — | 真实浏览器创建、刷新、打开、修改、再刷新。 | HTTP 链路通过；浏览器待补 | OPEN |
+| ISSUE-18 | 客户→联系人→项目→RFQ 浏览器主链路无证据。 | SQLite/API/tenant/幂等已通过真实 HTTP 验收。 | `app.js`（稳定性修复） | 真实浏览器创建、刷新、打开、修改、再刷新。 | Playwright 创建 CUS-2026-000002 → 联系人 → PRJ-2026-000002 → RFQ-202607-000002；关联校验为 true；数量 88→99，刷新后仍为 99，历史 2 条 | VERIFIED |
 | ISSUE-19 | 成本浏览器保存与重新打开未验收。 | 已增加统一可复用 Session、重开、复制和来源追踪。 | `app.js`、`ui.js`、`core.js` | 输入→计算→保存→离开→重开→历史验证。 | Playwright 390×844：示例计算得总成本 10037.00、建议报价 12546.25；刷新后输入和同一结果仍存在，会话列表可重开 | VERIFIED |
-| ISSUE-20 | 390×844 仅有布局或历史证据，缺完整真实操作。 | 响应式样式与旧报告存在。 | — | 首页、客户、项目、RFQ、OCR、Excel、成本、错误恢复、刷新逐项记录。 | Playwright：home/OCR/Excel/Word/PDF/cost 六页 scrollWidth=390、viewport=390、无横向溢出；完整客户链路仍待补 | OPEN |
+| ISSUE-20 | 390×844 仅有布局或历史证据，缺完整真实操作。 | 响应式样式与旧报告存在。 | — | 首页、客户、项目、RFQ、OCR、Excel、成本、错误恢复、刷新逐项记录。 | Playwright：home/OCR/Excel/Word/PDF/cost/客户/项目/RFQ 均为 scrollWidth=390、viewport=390；成本保存恢复、客户主链路与错误恢复已实际操作 | VERIFIED |
+| ISSUE-21 | Bug Monitor 浮层遮挡并拦截核心业务按钮。 | Playwright 点击“为该客户创建项目”超时，明确显示 `.bug-detail` 拦截 pointer events。 | `app.js`、`scripts/workspace-focus-test.mjs` | 浮层只保留紧凑计数和错误中心入口；业务详情统一到错误中心。 | 构建同步后同一按钮真实点击成功并进入项目页；390×844 三个核心页面无横向溢出 | VERIFIED |
 
 ## 不可降低的门禁
 
@@ -65,3 +66,11 @@
 - Word：输入中文标题和两段正文后自动生成 Session；刷新后正文保留；点击复制后 Session 数量由 1 增至 2，副本内容一致。
 - PDF：加载应用内真实生成的 PDF 文件后提取 251 字文字层；刷新后 Session、文件元数据和提取文字保留，`binaryFiles=0`，没有伪装二进制已经持久化。
 - 成本 RFQ：从已打开的真实 RFQ 导入客户、产品、数量、单位、材料和来源追踪；材料单价、工时与费率保持空白。负数输入显示明确错误且保留输入，修正后重试成功，未重复创建 Session。
+
+## 客户主链路浏览器证据（2026-07-26）
+
+- 创建客户 `CUS-2026-000002`，新增主联系人，并从客户详情创建项目 `PRJ-2026-000002`。
+- 从项目详情创建 RFQ `RFQ-202607-000002`；客户、项目和 RFQ 的 id 关系由浏览器读取后验证一致。
+- 首次保存数量 88，随后修改为 99 并更新备注；刷新后数量仍为 99、备注保持、历史记录为 2 条。
+- 首次点击“为该客户创建项目”发现 Bug Monitor 详情浮层拦截 pointer events。最小修复后浮层仅显示计数和“查看”入口，详细错误统一进入 Stability Center；同一按钮重新点击成功。
+- 390×844 下客户、项目、RFQ 页面均为 `scrollWidth=390`、`viewport=390`，无横向溢出；控制台为 0 errors / 0 warnings。
