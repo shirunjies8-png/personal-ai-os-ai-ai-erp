@@ -1874,4 +1874,6 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 ### 仍未通过的真实性门禁
 
 - 真实中文基准图已触发 Tesseract worker/core 加载，但未取得可采集的最终 OCR 原文与字段结果；`ENV-OCR-E2E-001` 保持 `open / environment`。
-- Word/PDF 已具备会话保存、重开和复制代码与单元门禁；真实文件上传后跨刷新重开尚未取得浏览器证据，状态为 `FIXED_NOT_VERIFIED`。
+- Word：中文草稿输入后自动生成会话，刷新恢复成功；复制后形成独立副本且内容一致。
+- PDF：应用内生成的真实 PDF 成功读取 251 字文字层；刷新后提取结果和文件元数据保留，文件二进制未写入 localStorage。
+- 成本 RFQ：从真实 RFQ `RFQ-202607-000001` 仅带入已有字段并保留 sourceTrace；未提供的材料单价为空。负数输入失败后内容保留，修正重试成功且没有重复创建 Session。
