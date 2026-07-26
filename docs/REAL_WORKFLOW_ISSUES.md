@@ -21,10 +21,10 @@
 | ISSUE-03 | OCR AI 纠错显示 `deepseek-not-configured`。 | 有服务端 AI Gateway 与前端降级路径；真实安全模型可用性未验收。 | — | 仅在服务端密钥已安全配置时进行一次无敏感调用，否则建立 `must_split_subtask=ocr_ai_gateway`。 | 待补充 | OPEN |
 | ISSUE-04 | 同一图短时间出现多个 OCR 任务。 | `ocrRun()` 与 retry 共用入口；尚未验证 loading/disabled 和事件绑定。 | — | 浏览器双击、回车、重渲染、重试分别记录 requestId 数量。 | 待补充 | OPEN |
 | ISSUE-05 | 普通按钮点击后页面跳到顶部。 | `rerender()` 已采用 `preserveScroll`；跨模块浏览器操作未验。 | `app.js`（既有修复） | OCR/Excel/Word/PDF/成本的保存、导出、AI 按钮逐项验证。 | 待补充 | FIXED_NOT_VERIFIED |
-| ISSUE-06 | 失败或重复点击后错误累计、重复创建。 | 制造 API 已有 Idempotency-Key；真实 HTTP 重试返回同一记录。 | — | 页面失败→重试→成功与表单内容保留验证。 | HTTP 幂等验收通过 | OPEN |
+| ISSUE-06 | 失败或重复点击后错误累计、重复创建。 | 制造 API 已有 Idempotency-Key；真实 HTTP 重试返回同一记录。 | — | 页面失败→重试→成功与表单内容保留验证。 | HTTP 幂等验收通过；成本负数失败后输入保留，修正重试成功且 Session 数量未增加 | VERIFIED |
 | ISSUE-07 | Bug Monitor 可错误关闭尚未验证的问题。 | 状态/监控代码存在，尚未验证 UI 状态转换约束。 | — | 检查 Open→Investigating→Fixed→Verified 的真实状态机。 | 待补充 | OPEN |
 | ISSUE-08 | OCR 失败自动显示看似正确的结果。 | 自动失败已返回 `partial_success`、空字段、人工确认提示；显式 Mock 保留标签。 | `ocr-provider.js`（既有修复） | 真实 Provider 失败时浏览器确认无假字段、无假成功。 | Provider 单测通过 | FIXED_NOT_VERIFIED |
-| ISSUE-09 | 成本数据需要大量人工输入。 | 成本模块是本地确定性计算；现已增加从当前真实 RFQ 仅带入已有字段。 | `app.js`、`ui.js`、`core.js` | 分别验收独立成本 Session 和 RFQ 真实字段带入；无数据不生成。 | 静态与单元门禁通过；浏览器待补 | FIXED_NOT_VERIFIED |
+| ISSUE-09 | 成本数据需要大量人工输入。 | 成本模块是本地确定性计算；现已增加从当前真实 RFQ 仅带入已有字段。 | `app.js`、`ui.js`、`core.js` | 分别验收独立成本 Session 和 RFQ 真实字段带入；无数据不生成。 | 浏览器从 RFQ-202607-000001 带入客户、产品、数量、单位、材料；材料单价保持空白，sourceTrace 保留 RFQ id/no | VERIFIED |
 | ISSUE-10 | ERP 没有真实业务闭环。 | Connector 默认未配置，无订单/采购/库存/生产/财务关系。 | — | 保持 DEMO_ONLY。 | 未配置 Connector | DEFERRED |
 | ISSUE-11 | MES 没有生产任务、工序和报工链路。 | 仅演示入口/设备数据。 | — | 保持 DEMO_ONLY；`must_split_subtask=mes_real_execution`。 | 未发现执行模型 | DEFERRED |
 | ISSUE-12 | BOM 没有产品、物料、版本和成本/库存关系。 | 仅演示入口。 | — | 保持 DEMO_ONLY。 | 未发现 BOM 数据模型 | DEFERRED |
@@ -60,5 +60,8 @@
 - Excel 保存结构化行、统计和处理结果；Word 保存标题、正文和来源；PDF 保存提取文本、结果和文件元数据；成本保存人工输入、确定性计算结果与来源追踪。
 - 浏览器 `File`、Workbook 和 PDF 二进制不写入 localStorage。刷新后仍可查看历史结构化结果；重新解析必须由用户重新选择原文件，页面不得伪装二进制已恢复。
 - 成本核算保持 `REAL（人工录入确定性计算工具）`。从 RFQ 导入只复制真实存在的产品、客户、数量、单位和材料字段；价格、工时、费率不生成、不猜测。
-- `scripts/reusable-session-test.mjs` 已覆盖会话边界、元数据保存、RFQ 来源追踪和真实性文案；真实浏览器重开证据仍待本轮浏览器验收。
-- Playwright 实际证据：Excel 加载“发货单示例.xlsx”后生成会话，刷新后会话、表格和结果仍存在；成本核算在 390×844 计算后刷新，输入与确定性结果保持一致。Excel/成本会话重开已验证，Word/PDF 的真实文件上传与重开仍是 `FIXED_NOT_VERIFIED`。
+- `scripts/reusable-session-test.mjs` 已覆盖会话边界、元数据保存、RFQ 来源追踪和真实性文案。
+- Playwright 实际证据：Excel 加载“发货单示例.xlsx”后生成会话，刷新后会话、表格和结果仍存在；成本核算在 390×844 计算后刷新，输入与确定性结果保持一致。
+- Word：输入中文标题和两段正文后自动生成 Session；刷新后正文保留；点击复制后 Session 数量由 1 增至 2，副本内容一致。
+- PDF：加载应用内真实生成的 PDF 文件后提取 251 字文字层；刷新后 Session、文件元数据和提取文字保留，`binaryFiles=0`，没有伪装二进制已经持久化。
+- 成本 RFQ：从已打开的真实 RFQ 导入客户、产品、数量、单位、材料和来源追踪；材料单价、工时与费率保持空白。负数输入显示明确错误且保留输入，修正后重试成功，未重复创建 Session。
