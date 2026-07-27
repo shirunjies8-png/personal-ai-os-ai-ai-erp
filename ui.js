@@ -257,8 +257,32 @@ const GENERIC_MODULES = {
 const TEMPLATE_OPTIONS = ['招标文件模板', '投标文件模板', '商务标模板', '技术标模板', '合同模板', '报价单模板', '发货单模板', '验收单模板', '会议纪要模板', '日报模板', '周报模板', '月报模板', '请假单', '报销单', '采购申请单', '供应商评估表'];
 
 const UI = {
+  aiCapabilityNotice() {
+    const runtimeState = typeof Store !== 'undefined' ? Store.state : null;
+    const settings = runtimeState?.settings || {};
+    const gateway = runtimeState?.aiGatewayStatus || {};
+    const staticMode = typeof Utils !== 'undefined' && typeof Utils.isGitHubPagesHost === 'function' && Utils.isGitHubPagesHost();
+    let label = '等待连接服务';
+    let message = 'AI 按钮不会自行生成正式业务结论；只有服务端成功返回后才会标注“真实 AI 调用成功”。';
+    let tone = 'warning';
+    if (staticMode) {
+      label = '静态演示 / 未连接服务';
+      message = 'GitHub Pages 不直接调用模型。AI 操作会明确提示私有或生产网关未连接，不会伪造结果。';
+    } else if (settings.accessMode === 'local') {
+      label = 'Mock 演示模式';
+      message = 'AI 按钮只会生成明确标识的 Mock 或规则草稿，非真实模型结果，不能替代审批或正式业务记录。';
+    } else if (gateway.state === 'online') {
+      label = '网关最近一次调用成功';
+      message = '该状态仅代表最近一次服务端调用；每个结果仍以其自身 Provider、模型、Token 与“真实/Mock”标识为准。';
+      tone = 'success';
+    } else if (gateway.state === 'disabled' || settings.apiEnabled === false) {
+      label = '模型未配置';
+      message = '远程模型未启用。AI 按钮会说明未配置或进入明确 Mock 结果，不会显示“AI 完成”。';
+    }
+    return `<div class="privacy-note ${tone}" data-ai-capability="${Utils.escape(label)}">${icon('shield')}<span><b>AI 状态：${Utils.escape(label)}</b><small>${Utils.escape(message)} 本地确定性工具（如成本计算、Excel 分类/查重/统计、导出和校验）不调用模型。</small></span></div>`;
+  },
   pageHead(title, subtitle, actions = '') {
-    return `<div class="page-head"><div><h2>${title}</h2><p>${subtitle}</p></div><div class="page-actions">${actions}</div></div>`;
+    return `<div class="page-head"><div><h2>${title}</h2><p>${subtitle}</p></div><div class="page-actions">${actions}</div></div>${this.aiCapabilityNotice()}`;
   },
   upload(input, title, hint, accept = '', multiple = false, camera = false) {
     return `<label class="upload-zone"><input type="file" data-input="${input}" accept="${accept}" ${multiple ? 'multiple' : ''} ${camera ? 'capture="environment"' : ''}><span>${icon(camera ? 'camera' : 'upload')}</span><b>${title}</b><small>${hint}</small></label>`;

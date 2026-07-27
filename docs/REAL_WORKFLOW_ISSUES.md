@@ -30,7 +30,7 @@
 | ISSUE-12 | BOM 没有产品、物料、版本和成本/库存关系。 | 仅演示入口。 | — | 保持 DEMO_ONLY。 | 未发现 BOM 数据模型 | DEFERRED |
 | ISSUE-13 | 工艺助手没有正式工艺数据与人工确认入库。 | 仅建议/模板入口。 | — | 保持 DEMO_ONLY。 | 未发现正式模型 | DEFERRED |
 | ISSUE-14 | SQL 辅助工具可能被误解为可执行数据库操作。 | 无安全 SQL 执行层；现有功能为文本辅助。 | — | 页面与测试保持“生成/解释/格式化，不执行任意 SQL”。 | 无执行连接层 | VERIFIED |
-| ISSUE-15 | AI 按钮不能区分真实模型、确定性、Mock、未配置。 | 多处 `mockFallback` 和网关调用并存。 | — | 全量扫描按钮并在 UI 显式展示四类状态。 | 待补充 | OPEN |
+| ISSUE-15 | AI 按钮不能区分真实模型、确定性、Mock、未配置。 | 多处 `mockFallback` 和网关调用并存。 | `ui.js`、`scripts/workspace-focus-test.mjs` | 统一展示静态未连接、Mock、等待服务、最近真实调用状态；确定性工具明确不调用模型。 | 真实浏览器 OCR 页显示“等待连接服务”及确定性工具边界；Mock OCR 仍明确非真实识别，未批准转业务按钮禁用 | VERIFIED |
 | ISSUE-16 | Provider 不可用时可能白屏、乱码或假结果。 | `APIClient` 有网络错误提示；OCR 有错误对象。 | `app.js`、`ui.js` | 断网/未配置模型的浏览器回归，确认本地确定性能力仍可用。 | Tesseract 初始化阻塞时页面持续可用、按钮受控、原文为空；切换显式 Mock 后醒目标记演示且人工门禁保持 | VERIFIED |
 | ISSUE-17 | 全系统中文编码与渲染未完成真实回归。 | UTF-8 资源和中文文案存在。 | — | UI、Toast、日志、TXT/Word/Excel/PDF、OCR、SQLite 回显测试。 | 客户/项目/RFQ 中文 SQLite 回显、OCR 中文演示字段、Word/PDF/Excel/成本浏览器回归均无乱码；真实 Tesseract 中文输出仍由 ISSUE-01 单独阻塞 | VERIFIED |
 | ISSUE-18 | 客户→联系人→项目→RFQ 浏览器主链路无证据。 | SQLite/API/tenant/幂等已通过真实 HTTP 验收。 | `app.js`（稳定性修复） | 真实浏览器创建、刷新、打开、修改、再刷新。 | Playwright 创建 CUS-2026-000002 → 联系人 → PRJ-2026-000002 → RFQ-202607-000002；关联校验为 true；数量 88→99，刷新后仍为 99，历史 2 条 | VERIFIED |

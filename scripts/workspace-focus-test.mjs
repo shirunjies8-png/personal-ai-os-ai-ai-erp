@@ -20,6 +20,13 @@ assert.match(ui, /const DEMO_ONLY_MODULE_IDS/);
 assert.match(ui, /DEMO_ONLY.*不连接真实 ERP \/ MES \/ BOM \/ 工艺数据/s);
 assert.match(ui, /生成演示草稿/);
 assert.match(ui, /本模块使用本地计算，不接真实 AI/);
+assert.match(ui, /aiCapabilityNotice\(\)/);
+assert.match(ui, /AI 状态：/);
+assert.match(ui, /静态演示 \/ 未连接服务/);
+assert.match(ui, /Mock 演示模式/);
+assert.match(ui, /网关最近一次调用成功/);
+assert.match(ui, /模型未配置/);
+assert.match(ui, /本地确定性工具/);
 
 assert.match(app, /getWorkspaceMode\(\)/);
 assert.match(app, /toggleWorkspaceMode\(\)/);
