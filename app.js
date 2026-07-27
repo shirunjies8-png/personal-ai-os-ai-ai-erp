@@ -1339,7 +1339,10 @@ const App = {
     try {
       if (handlers[action]) await handlers[action]();
     } catch (error) {
-      if (!String(action || '').startsWith('ocr-')) console.error(error);
+      // Expected validation errors are already presented to the user as a
+      // toast below. Keeping them out of the console makes real runtime
+      // failures distinguishable during production diagnostics.
+      if (!error?.userFacing && !String(action || '').startsWith('ocr-')) console.error(error);
       if (String(action || '').startsWith('manufacturing-')) {
         this.temp.manufacturing.error = `保存失败，可重试：${Utils.friendlyErrorMessage(error.message || '请求未完成')}`;
         this.toast(this.temp.manufacturing.error, 'error');
@@ -2634,6 +2637,11 @@ const App = {
       status: ws.rfqApproval?.status || 'draft',
       message: '报价草稿已复制到剪贴板'
     });
+    // Keep the user-visible audit trail in sync with the successful copy,
+    // including a server-backed workspace when one is available.
+    await this.persistBusinessState('报价草稿已复制');
+    this.rerender();
+    this.toast('报价草稿已复制到剪贴板');
   },
 
   quotationPrintDraft() {
@@ -9352,7 +9360,11 @@ const App = {
   async authLogin() {
     const email = document.getElementById('accountEmail')?.value.trim();
     const password = document.getElementById('accountPassword')?.value.trim();
-    if (!email || !password) throw new Error('请输入邮箱和密码');
+    if (!email || !password) {
+      const error = new Error('请输入邮箱和密码');
+      error.userFacing = true;
+      throw error;
+    }
     if (window.PERSONAL_AI_OS_CONFIG?.DEMO_LOGIN_ENABLED) {
       const customDemoPassword = localStorage.getItem('personal-ai-os-demo-password') || DEMO_ACCOUNT.password;
       if (email === DEMO_ACCOUNT.email && password === customDemoPassword) {
