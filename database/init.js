@@ -144,6 +144,52 @@ CREATE TABLE IF NOT EXISTS agent_task_logs (
   FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS runtime_components (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL,
+  version TEXT DEFAULT '',
+  execution_mode TEXT NOT NULL,
+  provider TEXT DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  health_status TEXT DEFAULT 'UNKNOWN',
+  last_run_at TEXT DEFAULT '',
+  last_success_at TEXT DEFAULT '',
+  last_failure_at TEXT DEFAULT '',
+  success_count INTEGER NOT NULL DEFAULT 0,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  timeout_count INTEGER NOT NULL DEFAULT 0,
+  average_duration_ms REAL NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runtime_runs (
+  run_id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  user_id TEXT DEFAULT '',
+  component_id TEXT NOT NULL,
+  component_type TEXT NOT NULL,
+  task_type TEXT NOT NULL,
+  trigger_source TEXT DEFAULT '',
+  request_id TEXT DEFAULT '',
+  parent_run_id TEXT DEFAULT '',
+  started_at TEXT NOT NULL,
+  finished_at TEXT DEFAULT '',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  execution_status TEXT NOT NULL,
+  verification_status TEXT NOT NULL,
+  provider TEXT DEFAULT '',
+  runtime_or_model TEXT DEFAULT '',
+  execution_mode TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT DEFAULT '',
+  error_message TEXT DEFAULT '',
+  input_summary TEXT DEFAULT '',
+  observability_status TEXT NOT NULL DEFAULT 'RECORDED',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_runs_enterprise ON runtime_runs(enterprise_id, created_at);
+
 CREATE TABLE IF NOT EXISTS agent_approvals (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,

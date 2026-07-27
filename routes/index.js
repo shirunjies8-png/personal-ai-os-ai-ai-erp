@@ -15,6 +15,7 @@ const chatRoutes = require('./chatRoutes');
 const apqpRoutes = require('./apqpRoutes');
 const aiRoutes = require('./aiRoutes');
 const manufacturingRoutes = require('./manufacturingRoutes');
+const runtimeObservabilityRoutes = require('./runtimeObservabilityRoutes');
 const { authRequired } = require('../middleware/auth');
 const qualityService = require('../services/aiQualityCheckService');
 const env = require('../config/env');
@@ -22,8 +23,10 @@ const toolRegistry = require('../services/toolRegistry');
 const agentRuntimeService = require('../services/agentRuntimeService');
 const aiGateway = require('../services/aiGateway');
 const db = require('../database/client');
+const runtimeObservabilityService = require('../services/runtimeObservabilityService');
 
 const router = express.Router();
+runtimeObservabilityService.registerDefaults({ deepseekConfigured: Boolean(env.deepseekApiKey) });
 
 router.use('/auth', authRoutes);
 router.use('/state', stateRoutes);
@@ -40,6 +43,7 @@ router.use('/chat', chatRoutes);
 router.use('/ai', aiRoutes);
 router.use('/apqp', apqpRoutes);
 router.use('/manufacturing/v1', manufacturingRoutes);
+router.use('/runtime-observability', runtimeObservabilityRoutes);
 
 function identityForAi(req) {
   return req.user ? { userId: req.user.id, enterpriseId: req.user.enterprise_id, role: req.user.role } : {};

@@ -1079,6 +1079,7 @@ const App = {
       'ocr-review-reject': () => this.ocrRejectReview(),
       'ocr-review-retry': () => this.ocrRun(el, true),
       'ocr-provider-refresh': () => this.ocrRefreshProviders(),
+      'runtime-observability-refresh': () => this.refreshRuntimeObservability(),
       'ocr-diagnostics-copy': () => this.ocrCopyDiagnostics(),
       'ocr-transfer-quotation': () => this.ocrTransferQuotation(),
       'ocr-transfer-inquiry': () => this.ocrTransferInquiry(),
@@ -5810,6 +5811,39 @@ const App = {
     await this.busy(btn, async () => this.copy(this.temp.ocr.result));
   },
 
+  async recordRuntimeStart(input) {
+    try {
+      const response = await APIClient.request('/api/runtime-observability/runs', { method: 'POST', body: JSON.stringify(input) }, { timeout: 5000 });
+      return response?.data?.item || null;
+    } catch (error) {
+      // Observability must never turn an OCR result into a fabricated failure.
+      console.warn('运行监控记录不可用', Utils.friendlyErrorMessage(error?.message || error));
+      return null;
+    }
+  },
+
+  async recordRuntimeFinish(runId, patch) {
+    if (!runId) return null;
+    try {
+      const response = await APIClient.request(`/api/runtime-observability/runs/${encodeURIComponent(runId)}`, { method: 'PATCH', body: JSON.stringify(patch) }, { timeout: 5000 });
+      return response?.data?.item || null;
+    } catch (error) {
+      console.warn('运行监控更新不可用', Utils.friendlyErrorMessage(error?.message || error));
+      return null;
+    }
+  },
+
+  async refreshRuntimeObservability() {
+    try {
+      const response = await APIClient.request('/api/runtime-observability/runs?limit=50', {}, { timeout: 7000 });
+      this.temp.runtimeObservability = response?.data || { items: [], components: [] };
+      this.rerender();
+    } catch (error) {
+      this.temp.runtimeObservability = { items: [], components: [], error: Utils.friendlyErrorMessage(error?.message || error) };
+      this.rerender();
+    }
+  },
+
   async ocrRun(btn, forceRetry = false) {
     const o = this.temp.ocr;
     if (!o.file) throw new Error('请先上传或拍摄图片');
@@ -5837,6 +5871,15 @@ const App = {
         source: 'ocr'
       });
       const chosen = providerId === 'auto' ? registry.get('current') : registry.get(providerId);
+      const trace = await this.recordRuntimeStart({
+        component_id: chosen?.providerId === 'mock' ? 'ocr-mock' : 'ocr-current',
+        component_type: chosen?.providerId === 'mock' ? 'PROVIDER' : 'LOCAL_RUNTIME',
+        task_type: 'ocr_recognition', trigger_source: forceRetry ? 'ocr_retry' : 'ocr_upload', request_id: stabilityTaskId,
+        parent_run_id: forceRetry ? String(o.lastRuntimeRunId || '') : '', provider: chosen?.providerName || '',
+        runtime_or_model: chosen?.providerName || 'Tesseract.js', execution_mode: chosen?.providerId === 'mock' ? 'MOCK' : 'LOCAL_RUNTIME',
+        retry_count: retryCount, input_summary: `图片：${String(o.file.name || '未命名').replace(/[\\/]/g, '_')}`
+      });
+      o.lastRuntimeRunId = trace?.run_id || '';
       o.status = `处理中（${chosen?.providerName || '自动选择'}）`;
       o.progress = 0.06;
       o.mock = false;
@@ -5894,6 +5937,11 @@ const App = {
       result.fields = OCRArchitecture.normalizeFields(result.fields, structured.fields || {}, result.confidence);
       result.documentType = structured.template || result.documentType;
       result.sourceFile = { ...o.sourceFile };
+      const executionStatus = result.providerId === 'mock' ? 'SUCCESS' : result.status === 'partial_success' ? 'PARTIAL' : result.success ? 'SUCCESS' : 'BLOCKED';
+      const verificationStatus = result.providerId === 'mock' || result.status === 'partial_success' || result.fallbackUsed ? 'HUMAN_REVIEW_REQUIRED' : (OCRArchitecture.detectGarbled(result.rawText).garbled ? 'FAILED_VERIFICATION' : 'HUMAN_REVIEW_REQUIRED');
+      result.runtimeRunId = trace?.run_id || '';
+      await this.recordRuntimeFinish(trace?.run_id, { execution_status: executionStatus, verification_status: verificationStatus,
+        error_code: result.errors?.[0]?.code || '', error_message: result.errors?.[0]?.message || '' });
       this.persistOcrResult(result);
       const garbage = OCRArchitecture.detectGarbled(result.rawText);
       if (garbage.garbled) this.recordOcrProviderError({ requestId, provider: registry.get(result.providerId) || {},
@@ -5928,6 +5976,8 @@ const App = {
       this.rerender();
       this.toast(result.fallbackUsed ? '真实识别不可用，已使用明确标注的演示降级结果。' : result.status === 'partial_success' ? '识别结果疑似异常，请人工复核或更换 Provider。' : 'OCR 识别完成，请人工复核。', result.status === 'partial_success' ? 'warning' : 'success');
     }).catch(error => {
+      const executionStatus = error?.code === 'request_timeout' || error?.code === 'TIMEOUT' ? 'TIMEOUT' : error?.code === 'CANCELLED' ? 'CANCELLED' : error?.code === 'provider_unavailable' ? 'BLOCKED' : 'FAILED';
+      this.recordRuntimeFinish(o.lastRuntimeRunId, { execution_status: executionStatus, verification_status: 'NOT_VERIFIED', error_code: error?.code || 'ocr_failed', error_message: Utils.friendlyErrorMessage(error?.message || error) });
       o.retryCount = retryCount + 1;
       o.status = error?.code === 'request_timeout' || error?.code === 'TIMEOUT' ? 'OCR 超时' : `OCR 失败：${Utils.friendlyErrorMessage(error?.message || error)}`;
       this.updateOcrDailyStats({ success: false, fallbackUsed: false });
