@@ -209,6 +209,19 @@ async function testOcr() {
   await sleep(1200);
   const uploadState = JSON.parse(await evalValue(send, `JSON.stringify({ name: window.App?.temp?.ocr?.file?.name || '', status: window.App?.temp?.ocr?.status || '' })`));
   if (uploadState.name !== 'ocr-test.png') throw new Error(`OCR 上传后文件状态异常：${JSON.stringify(uploadState)}`);
+  // A previous document session can contain text from an earlier OCR run.
+  // Clear only transient UI results so this test must observe the current
+  // upload completing or reaching an explicit failure/timeout state.
+  await evalValue(send, `(() => {
+    const o = window.App?.temp?.ocr;
+    if (!o) return false;
+    o.providerId = 'auto';
+    o.providerResult = null;
+    o.result = '';
+    o.original = '';
+    o.status = '等待识别';
+    return true;
+  })()`);
   await evalValue(send, `document.querySelector('[data-action="ocr-run"]').click()`);
   let runState = { status: '', text: '' };
   for (let attempt = 0; attempt < 12; attempt += 1) {
@@ -217,11 +230,11 @@ async function testOcr() {
       status: window.App?.temp?.ocr?.providerResult?.status || window.App?.temp?.ocr?.status || '',
       text: window.App?.temp?.ocr?.providerResult?.rawText || window.App?.temp?.ocr?.result || ''
     })`));
-    if (runState.text.trim() || /failed|error|unavailable|失败|不可用/i.test(runState.status)) break;
+    if (runState.text.trim() || /failed|error|unavailable|timeout|失败|不可用|超时/i.test(runState.status)) break;
   }
   const statusAfterRun = runState.status;
   const text = runState.text;
-  if (!text.trim() && !/failed|error|unavailable|失败|不可用/i.test(statusAfterRun)) throw new Error(`OCR 未返回结果且无明确降级状态：${statusAfterRun}`);
+  if (!text.trim() && !/failed|error|unavailable|timeout|失败|不可用|超时/i.test(statusAfterRun)) throw new Error(`OCR 未返回结果且无明确降级状态：${statusAfterRun}`);
   if (/Mock OCR 成功/.test(statusAfterRun)) throw new Error('OCR 仍误报 Mock 成功');
   ws.close();
   return 'ocr: ok';
