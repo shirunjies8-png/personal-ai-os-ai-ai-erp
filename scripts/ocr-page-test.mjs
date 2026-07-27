@@ -69,7 +69,8 @@ const ocrRunSource = appSource.slice(appSource.indexOf('async ocrRun('), appSour
 assert.doesNotMatch(ocrRunSource, /this\.recordTask\(/);
 assert.match(ocrRunSource, /this\.upsertStabilityTask\(/);
 assert.match(appSource, /if \(fields\.customer_name\) patch\.customerName/);
-assert.match(appSource, /if \(!String\(action \|\| ''\)\.startsWith\('ocr-'\)\) console\.error/);
+assert.match(appSource, /!error\?\.userFacing && !String\(action \|\| ''\)\.startsWith\('ocr-'\)/);
+assert.match(appSource, /error\.userFacing = true/);
 assert.match(appSource, /code: 'user_rejected'/);
 assert.match(appSource, /data-ocr-review-field/);
 assert.match(coreSource, /ocrData:/);
