@@ -371,7 +371,7 @@ const App = {
       dock.hidden = true;
       return;
     }
-    const alerts = this.getVisibleBugAlerts().filter(item => !item.confirmed && !item.fixed && !item.ignored).slice(0, 3);
+    const alerts = this.getVisibleBugAlerts().filter(item => !['resolved', 'ignored'].includes(item.lifecycle || this.bugAlertLifecycle(item))).slice(0, 3);
     if (!alerts.length) {
       dock.innerHTML = '';
       dock.hidden = true;
@@ -392,14 +392,18 @@ const App = {
 
   bugAlertLifecycle(item = {}) {
     if (item.lifecycle === 'ignored' || item.status === '已忽略' || item.ignored) return 'ignored';
-    if (item.lifecycle === 'resolved' || item.status === '已修复' || item.confirmed || item.fixed) return 'resolved';
+    if (item.lifecycle === 'resolved' || item.lifecycle === 'verified' || item.status === '已验证' || item.confirmed) return 'resolved';
+    if (item.lifecycle === 'fixed' || item.status === '待验证' || item.fixed) return 'fixed';
+    if (item.lifecycle === 'investigating' || item.status === '处理中') return 'investigating';
     return 'active';
   },
 
   bugAlertStatusLabel(item = {}) {
     const lifecycle = this.bugAlertLifecycle(item);
     if (lifecycle === 'ignored') return '已忽略';
-    if (lifecycle === 'resolved') return '已修复';
+    if (lifecycle === 'resolved') return '已验证';
+    if (lifecycle === 'fixed') return '待验证';
+    if (lifecycle === 'investigating') return '处理中';
     return item.status === '待修复' ? '待修复' : '待确认';
   },
 
@@ -492,13 +496,14 @@ const App = {
 
   renderBugAlertCard(item, compact = false) {
     const lifecycle = item.lifecycle || this.bugAlertLifecycle(item);
-    const statusLabel = lifecycle === 'resolved' ? '已修复' : lifecycle === 'ignored' ? '已忽略' : '待确认';
+    const statusLabel = this.bugAlertStatusLabel({ ...item, lifecycle });
     const badgeClass = lifecycle === 'resolved'
       ? 'success'
       : lifecycle === 'ignored'
         ? ''
         : 'warning';
-    return `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">首次：${Utils.formatDate(item.firstAt || item.time, true)} · 最近：${Utils.formatDate(item.lastAt || item.time, true)} · 次数：${item.count || 1}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-detail" data-id="${item.id}">查看详情</button>${lifecycle === 'resolved' ? '' : lifecycle === 'ignored' ? `<button class="secondary-btn compact" data-action="bug-restore" data-id="${item.id}">恢复</button>` : `<button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">确认修复</button><button class="secondary-btn compact" data-action="bug-ignore" data-id="${item.id}">忽略</button>`}</div><div class="table-actions"><span class="status-pill${badgeClass ? ` ${badgeClass}` : ''}">${statusLabel}</span></div></div>`;
+    const nextLabel = lifecycle === 'investigating' ? '标记待验证' : lifecycle === 'fixed' ? '验证通过' : '开始处理';
+    return `<div class="bug-monitor-body"><div class="bug-row"><b>${Utils.escape(item.module || '系统')}</b><small>${Utils.escape(item.feature || item.type || '未知功能')}</small></div><div class="bug-detail">${Utils.escape(item.type || '异常')}：${Utils.escape(item.message || item.description || '已检测到问题')}</div><div class="bug-suggestion">${Utils.escape(item.suggestion || '请根据错误信息修复')}</div><div class="bug-meta">首次：${Utils.formatDate(item.firstAt || item.time, true)} · 最近：${Utils.formatDate(item.lastAt || item.time, true)} · 次数：${item.count || 1}${item.requestId ? ` · ${Utils.escape(item.requestId)}` : ''}</div><div class="button-row"><button class="secondary-btn compact" data-action="bug-detail" data-id="${item.id}">查看详情</button>${lifecycle === 'resolved' ? '' : lifecycle === 'ignored' ? `<button class="secondary-btn compact" data-action="bug-restore" data-id="${item.id}">恢复</button>` : `<button class="secondary-btn compact" data-action="bug-confirm" data-id="${item.id}">${nextLabel}</button><button class="secondary-btn compact" data-action="bug-ignore" data-id="${item.id}">忽略</button>`}</div><div class="table-actions"><span class="status-pill${badgeClass ? ` ${badgeClass}` : ''}">${statusLabel}</span></div></div>`;
   },
 
   reportBug(payload = {}) {
@@ -549,14 +554,24 @@ const App = {
     const item = (Store.state.bugAlerts || []).find(alert => alert.id === id);
     if (!item) return;
     const now = Date.now();
-    item.lifecycle = 'resolved';
-    item.status = '已修复';
-    item.confirmed = true;
-    item.fixed = true;
-    item.confirmedAt = now;
-    item.fixedAt = now;
+    const current = this.bugAlertLifecycle(item);
+    const next = current === 'investigating' ? 'fixed' : current === 'fixed' ? 'resolved' : 'investigating';
+    item.lifecycle = next;
+    item.status = next === 'resolved' ? '已验证' : next === 'fixed' ? '待验证' : '处理中';
+    item.confirmed = next === 'resolved';
+    item.fixed = ['fixed', 'resolved'].includes(next);
+    item.confirmedAt = next === 'resolved' ? now : 0;
+    item.fixedAt = next === 'fixed' ? now : item.fixedAt || 0;
     item.ignored = false;
     item.ignoredAt = 0;
+    if (next !== 'resolved') {
+      this.updateStabilityHealthSnapshot(`error-${next}`);
+      Store.save();
+      this.toast(next === 'fixed' ? '已标记为待验证，验证通过前仍计入待处理。' : '已开始处理，问题尚未关闭。');
+      if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+      else this.renderBugMonitor();
+      return;
+    }
     Store.state.repairRecords = Store.state.repairRecords || [];
     Store.state.repairRecords.unshift({
       id: uid(),
@@ -575,19 +590,19 @@ const App = {
       if ((error.requestId && error.requestId === item.requestId) || `${error.message || ''}` === `${item.message || ''}`) {
         error.fixed = true;
         error.fixedAt = now;
-        error.status = '已修复';
+        error.status = '已验证';
       }
     });
     (Store.state.errorLog || []).forEach(entry => {
       if ((entry.requestId && entry.requestId === item.requestId) || `${entry.message || ''}` === `${item.message || ''}`) {
         entry.fixed = true;
         entry.fixedAt = now;
-        entry.status = '已修复';
+        entry.status = '已验证';
       }
     });
     this.updateStabilityHealthSnapshot('error-resolved');
     Store.save();
-    this.toast('已记录该问题，请开发者根据错误信息修复。');
+    this.toast('验证已通过，问题已关闭。');
     if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
     else this.renderBugMonitor();
   },
@@ -721,6 +736,12 @@ const App = {
     const afterRestore = (Store.state.bugAlerts || []).find(item => item.signature === signature);
     const restoreOk = Boolean(afterRestore && (afterRestore.lifecycle || this.bugAlertLifecycle(afterRestore)) === 'active');
     this.confirmBugAlert(merged?.id || first?.id || second?.id);
+    const afterInvestigating = (Store.state.bugAlerts || []).find(item => item.signature === signature);
+    const investigatingOk = Boolean(afterInvestigating && (afterInvestigating.lifecycle || this.bugAlertLifecycle(afterInvestigating)) === 'investigating');
+    this.confirmBugAlert(merged?.id || first?.id || second?.id);
+    const afterFixed = (Store.state.bugAlerts || []).find(item => item.signature === signature);
+    const fixedOk = Boolean(afterFixed && (afterFixed.lifecycle || this.bugAlertLifecycle(afterFixed)) === 'fixed');
+    this.confirmBugAlert(merged?.id || first?.id || second?.id);
     const afterConfirm = (Store.state.bugAlerts || []).find(item => item.signature === signature);
     const confirmOk = Boolean(afterConfirm && (afterConfirm.lifecycle || this.bugAlertLifecycle(afterConfirm)) === 'resolved');
     const healthChecks = Array.isArray(Store.state.systemHealth?.checks) ? Store.state.systemHealth.checks : [];
@@ -732,7 +753,9 @@ const App = {
       { label: '查看详情', ok: detailOk },
       { label: '忽略', ok: ignoreOk && activeAfterIgnore },
       { label: '恢复', ok: restoreOk },
-      { label: '确认修复', ok: confirmOk },
+      { label: '开始处理', ok: investigatingOk },
+      { label: '标记待验证', ok: fixedOk },
+      { label: '验证通过', ok: confirmOk },
       { label: '健康统计', ok: healthOk },
       { label: '错误聚合', ok: aggregationOk },
       { label: '是否产生新增 JS 报错', ok: jsErrorOk }
@@ -761,7 +784,7 @@ const App = {
       this.toast('未找到问题详情', 'error');
       return;
     }
-    const status = item.status || (item.confirmed || item.fixed ? '已修复' : item.ignored ? '已忽略' : '待确认');
+    const status = item.status || (item.confirmed ? '已验证' : item.fixed ? '待验证' : item.ignored ? '已忽略' : '待确认');
     const confirmedAt = item.confirmedAt || item.fixedAt || item.ignoredAt || item.time || 0;
     const lines = [
       `模块：${item.module || item.context || '系统'}`,
@@ -4428,7 +4451,7 @@ const App = {
     const errors = this.getVisibleBugAlerts ? this.getVisibleBugAlerts() : (Store.state.bugAlerts || []).map(item => Stability.normalizeError(item));
     const activeTasks = tasks.filter(item => ['pending', 'running', 'waiting_human'].includes(item.status));
     const failedTasks = tasks.filter(item => ['failed', 'timeout', 'interrupted'].includes(item.status));
-    const activeErrors = errors.filter(item => item.lifecycle === 'active');
+    const activeErrors = errors.filter(item => !['resolved', 'ignored'].includes(item.lifecycle));
     const checks = [
       {
         name: 'Task Center',
@@ -4616,7 +4639,7 @@ const App = {
       report.push({ name, status, reason: reason || '', suggestion: suggestion || '', time: now });
     };
     const normalizedBugAlerts = this.getVisibleBugAlerts();
-    const unresolvedErrors = normalizedBugAlerts.filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'active');
+    const unresolvedErrors = normalizedBugAlerts.filter(item => !['resolved', 'ignored'].includes(item.lifecycle || this.bugAlertLifecycle(item)));
     const latestFix = (Store.state.repairRecords || []).length
       ? Store.state.repairRecords[0]
       : normalizedBugAlerts.filter(item => (item.lifecycle || this.bugAlertLifecycle(item)) === 'resolved').sort((a, b) => (b.confirmedAt || b.fixedAt || b.lastAt || b.time || 0) - (a.confirmedAt || a.fixedAt || a.lastAt || a.time || 0))[0] || null;
@@ -5782,6 +5805,11 @@ const App = {
   async ocrRun(btn, forceRetry = false) {
     const o = this.temp.ocr;
     if (!o.file) throw new Error('请先上传或拍摄图片');
+    if (o.loading) {
+      this.toast('OCR 识别正在进行，请勿重复提交。', 'warning');
+      return;
+    }
+    o.loading = true;
     const registry = this.setupOcrProviders();
     const providerId = o.providerId || Store.state.ocrData.providerConfig.selectedProviderId || 'auto';
     const stabilityTaskId = uid();
@@ -5868,15 +5896,6 @@ const App = {
       Store.state.ocrResult = ocrState;
       if (typeof emit === 'function') emit('ocr:completed', ocrState);
       syncGlobalSystemState({ ocrResult: ocrState });
-      this.recordTask({
-        type: 'OCR识别',
-        fileName: o.file.name,
-        module: 'ocr',
-        status: result.status === 'fallback' ? '完成' : result.status,
-        summary: `${result.providerName} · ${result.status} · 待人工复核`, result: o.result,
-        requestId: result.requestId, durationMs: result.durationMs, retryCount,
-        fallbackUsed: result.fallbackUsed, providerId: result.providerId
-      });
       o.retryCount = retryCount;
       this.upsertStabilityTask({
         id: stabilityTaskId,

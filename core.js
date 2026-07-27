@@ -325,7 +325,7 @@ const Stability = {
     const moduleName = entry.module || entry.context || 'system';
     const feature = entry.feature || entry.context || '';
     const type = entry.type || '系统错误';
-    const lifecycle = entry.lifecycle || (entry.ignored ? 'ignored' : entry.fixed || entry.confirmed ? 'resolved' : 'active');
+    const lifecycle = entry.lifecycle || (entry.ignored ? 'ignored' : entry.confirmed ? 'resolved' : entry.fixed ? 'fixed' : 'active');
     const signature = entry.signature || [moduleName, feature, type, message].join('|');
     return {
       id: entry.id || uid(),
@@ -342,7 +342,7 @@ const Stability = {
       requestId: entry.requestId || entry.request_id || '',
       source: entry.source || 'frontend',
       lifecycle,
-      status: lifecycle === 'resolved' ? '已修复' : lifecycle === 'ignored' ? '已忽略' : entry.status || '待确认',
+      status: lifecycle === 'resolved' ? '已验证' : lifecycle === 'fixed' ? '待验证' : lifecycle === 'investigating' ? '处理中' : lifecycle === 'ignored' ? '已忽略' : entry.status || '待确认',
       count: Math.max(1, Number(entry.count || 1)),
       firstAt: Number(entry.firstAt || entry.time || now),
       lastAt: Number(entry.lastAt || entry.time || now),
@@ -351,8 +351,8 @@ const Stability = {
       confirmedAt: Number(entry.confirmedAt || (lifecycle === 'resolved' ? entry.time || now : 0)),
       ignored: lifecycle === 'ignored',
       ignoredAt: Number(entry.ignoredAt || (lifecycle === 'ignored' ? entry.time || now : 0)),
-      fixed: lifecycle === 'resolved',
-      fixedAt: Number(entry.fixedAt || (lifecycle === 'resolved' ? entry.time || now : 0)),
+      fixed: ['fixed', 'resolved'].includes(lifecycle),
+      fixedAt: Number(entry.fixedAt || (['fixed', 'resolved'].includes(lifecycle) ? entry.time || now : 0)),
       rawError: entry.rawError || entry.detail || ''
     };
   },
@@ -376,7 +376,7 @@ const Stability = {
     const normalizedChecks = checks.map(item => this.normalizeHealthCheck(item));
     const normalizedTasks = tasks.map(item => this.normalizeTask(item));
     const normalizedErrors = errors.map(item => this.normalizeError(item));
-    const activeErrors = normalizedErrors.filter(item => item.lifecycle === 'active');
+    const activeErrors = normalizedErrors.filter(item => !['resolved', 'ignored'].includes(item.lifecycle));
     const failedTasks = normalizedTasks.filter(item => ['failed', 'timeout', 'interrupted'].includes(item.status));
     return {
       schemaVersion: 1,

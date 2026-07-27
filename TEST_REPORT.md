@@ -1885,3 +1885,11 @@ Industrial AI OS 已从 AI 办公 MVP 升级为具备企业级 Agent Runtime V1 
 - RFQ 数量从 88 修改为 99；刷新后数量和备注保持，历史记录为 2 条。
 - 发现 Bug Monitor 详情卡遮挡核心按钮；调整为紧凑入口后，同一“为该客户创建项目”按钮点击成功。
 - 390×844 下客户、项目、RFQ 三页均无横向溢出；控制台 0 errors / 0 warnings。
+
+### OCR 去重与 Error Center 状态机补充（2026-07-27）
+
+- OCR 运行中 Provider、开始和重试控件同时禁用；重复入口被统一运行锁阻断。
+- 修复单次 OCR 双写任务后，显式 Mock 回归任务总数 12→13，只新增一条 `id=requestId` 的 success 记录。
+- Mock 结果明确显示“当前为演示数据，非真实 OCR 识别结果”，低置信度与缺失字段可见，未批准转报价/询价按钮禁用。
+- Error Center 必须经过“处理中→待验证→已验证”；前两阶段仍计入 Active，只有第三阶段进入 Resolved。
+- `ENV-OCR-E2E-001` 仍为 `open / environment`：真实 Tesseract 本轮再次停留在 `initializing tesseract`，没有用 Mock 替代真实 OCR 验收。
