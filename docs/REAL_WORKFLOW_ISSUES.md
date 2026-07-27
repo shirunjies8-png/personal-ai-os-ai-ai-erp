@@ -16,14 +16,14 @@
 
 | ID | 问题与复现步骤 | 初始根因/证据 | 修改文件 | 修复与验证计划 | Evidence | 状态 |
 |---|---|---|---|---|---|---|
-| ISSUE-01 | 中文发货单上传后出现乱码、错字与表格丢失。 | 已定位真实基准样本；Tesseract 当前 Provider 与中文语言包存在，但尚未得到本轮 OCR 输出。 | — | 用同一真实样本记录 Provider、requestId、耗时、原文和关键字段 Before/After。 | 基准图已定位 | OPEN |
-| ISSUE-02 | 同图中客户、单号、日期、产品、数量等字段缺失或错误。 | `OCRService.structure()` 为规则提取；真实样本已定位，尚未完成回归基线。 | — | 真实图 → 原文 → 字段 → 置信度 → 人工修正 → 批准 → 重开 → 导出。 | 基准图已定位 | OPEN |
-| ISSUE-03 | OCR AI 纠错显示 `deepseek-not-configured`。 | 有服务端 AI Gateway 与前端降级路径；真实安全模型可用性未验收。 | — | 仅在服务端密钥已安全配置时进行一次无敏感调用，否则建立 `must_split_subtask=ocr_ai_gateway`。 | 待补充 | OPEN |
-| ISSUE-04 | 同一图短时间出现多个 OCR 任务。 | `ocrRun()` 与 retry 共用入口；尚未验证 loading/disabled 和事件绑定。 | — | 浏览器双击、回车、重渲染、重试分别记录 requestId 数量。 | 待补充 | OPEN |
-| ISSUE-05 | 普通按钮点击后页面跳到顶部。 | `rerender()` 已采用 `preserveScroll`；跨模块浏览器操作未验。 | `app.js`（既有修复） | OCR/Excel/Word/PDF/成本的保存、导出、AI 按钮逐项验证。 | 待补充 | FIXED_NOT_VERIFIED |
+| ISSUE-01 | 中文发货单上传后出现乱码、错字与表格丢失。 | 已定位真实基准样本；Tesseract 当前 Provider 与中文语言包存在，但尚未得到本轮 OCR 输出。 | — | 用同一真实样本记录 Provider、requestId、耗时、原文和关键字段 Before/After。 | 真实 Provider 仍停留在 `initializing tesseract`；没有生成假原文或假字段 | BLOCKED |
+| ISSUE-02 | 同图中客户、单号、日期、产品、数量等字段缺失或错误。 | `OCRService.structure()` 为规则提取；真实样本已定位，尚未完成回归基线。 | — | 真实图 → 原文 → 字段 → 置信度 → 人工修正 → 批准 → 重开 → 导出。 | 受 `ENV-OCR-E2E-001` 阻塞；不能用 Mock 字段代替真实基线 | BLOCKED |
+| ISSUE-03 | OCR AI 纠错显示 `deepseek-not-configured`。 | 有服务端 AI Gateway 与前端降级路径；真实安全模型可用性未验收。 | — | 仅在服务端密钥已安全配置且得到真实调用授权时进行一次无敏感调用。 | 本轮未执行收费/真实模型调用；不得据本地配置文案声称可用 | BLOCKED |
+| ISSUE-04 | 同一图短时间出现多个 OCR 任务。 | 两个按钮可并发触发，且一次完成同时写入 `recordTask()` 与 `upsertStabilityTask()`。 | `app.js`、`ui.js`、`scripts/ocr-page-test.mjs` | 统一运行锁并只保留稳定性任务记录。 | 浏览器处理中 Provider/开始/重试同时 disabled；修复后显式 Mock 单次运行任务数 12→13，新增记录 id=requestId，未再重复 | VERIFIED |
+| ISSUE-05 | 普通按钮点击后页面跳到顶部。 | `rerender()` 已采用 `preserveScroll`。 | `app.js`（既有修复） | OCR/Excel/Word/PDF/成本的保存、导出、AI 按钮逐项验证。 | Excel、Word、PDF、成本与 OCR 的真实浏览器操作均未出现破坏性跳顶；相关 Session 可恢复 | VERIFIED |
 | ISSUE-06 | 失败或重复点击后错误累计、重复创建。 | 制造 API 已有 Idempotency-Key；真实 HTTP 重试返回同一记录。 | — | 页面失败→重试→成功与表单内容保留验证。 | HTTP 幂等验收通过；成本负数失败后输入保留，修正重试成功且 Session 数量未增加 | VERIFIED |
-| ISSUE-07 | Bug Monitor 可错误关闭尚未验证的问题。 | 状态/监控代码存在，尚未验证 UI 状态转换约束。 | — | 检查 Open→Investigating→Fixed→Verified 的真实状态机。 | 待补充 | OPEN |
-| ISSUE-08 | OCR 失败自动显示看似正确的结果。 | 自动失败已返回 `partial_success`、空字段、人工确认提示；显式 Mock 保留标签。 | `ocr-provider.js`（既有修复） | 真实 Provider 失败时浏览器确认无假字段、无假成功。 | Provider 单测通过 | FIXED_NOT_VERIFIED |
+| ISSUE-07 | Bug Monitor 可错误关闭尚未验证的问题。 | 原实现一次点击“确认修复”即写入 resolved。 | `app.js`、`core.js`、`ui.js`、`scripts/workspace-focus-test.mjs` | 强制 Open→Investigating→Fixed→Verified，待验证仍计入 Active。 | 浏览器依次显示“处理中”→“待验证”→“已验证”；前两步 Active=3，第三步才 Resolved=1；测试后原记录已恢复 | VERIFIED |
+| ISSUE-08 | OCR 失败自动显示看似正确的结果。 | 自动失败返回空字段和人工确认提示；显式 Mock 保留标签。 | `ocr-provider.js`（既有修复） | 真实 Provider 失败时浏览器确认无假字段、无假成功。 | 真实 Provider 初始化阻塞时原文为空、转报价/询价禁用；显式 Mock 显示“当前为演示数据，非真实 OCR 识别结果” | VERIFIED |
 | ISSUE-09 | 成本数据需要大量人工输入。 | 成本模块是本地确定性计算；现已增加从当前真实 RFQ 仅带入已有字段。 | `app.js`、`ui.js`、`core.js` | 分别验收独立成本 Session 和 RFQ 真实字段带入；无数据不生成。 | 浏览器从 RFQ-202607-000001 带入客户、产品、数量、单位、材料；材料单价保持空白，sourceTrace 保留 RFQ id/no | VERIFIED |
 | ISSUE-10 | ERP 没有真实业务闭环。 | Connector 默认未配置，无订单/采购/库存/生产/财务关系。 | — | 保持 DEMO_ONLY。 | 未配置 Connector | DEFERRED |
 | ISSUE-11 | MES 没有生产任务、工序和报工链路。 | 仅演示入口/设备数据。 | — | 保持 DEMO_ONLY；`must_split_subtask=mes_real_execution`。 | 未发现执行模型 | DEFERRED |
@@ -31,8 +31,8 @@
 | ISSUE-13 | 工艺助手没有正式工艺数据与人工确认入库。 | 仅建议/模板入口。 | — | 保持 DEMO_ONLY。 | 未发现正式模型 | DEFERRED |
 | ISSUE-14 | SQL 辅助工具可能被误解为可执行数据库操作。 | 无安全 SQL 执行层；现有功能为文本辅助。 | — | 页面与测试保持“生成/解释/格式化，不执行任意 SQL”。 | 无执行连接层 | VERIFIED |
 | ISSUE-15 | AI 按钮不能区分真实模型、确定性、Mock、未配置。 | 多处 `mockFallback` 和网关调用并存。 | — | 全量扫描按钮并在 UI 显式展示四类状态。 | 待补充 | OPEN |
-| ISSUE-16 | Provider 不可用时可能白屏、乱码或假结果。 | `APIClient` 有网络错误提示；OCR 有错误对象。 | — | 断网/未配置模型的浏览器回归，确认本地确定性能力仍可用。 | 待补充 | OPEN |
-| ISSUE-17 | 全系统中文编码与渲染未完成真实回归。 | UTF-8 资源和中文文案存在；未覆盖导出、OCR、数据库回显。 | — | UI、Toast、日志、TXT/Word/Excel/PDF、OCR、SQLite 回显测试。 | 待补充 | OPEN |
+| ISSUE-16 | Provider 不可用时可能白屏、乱码或假结果。 | `APIClient` 有网络错误提示；OCR 有错误对象。 | `app.js`、`ui.js` | 断网/未配置模型的浏览器回归，确认本地确定性能力仍可用。 | Tesseract 初始化阻塞时页面持续可用、按钮受控、原文为空；切换显式 Mock 后醒目标记演示且人工门禁保持 | VERIFIED |
+| ISSUE-17 | 全系统中文编码与渲染未完成真实回归。 | UTF-8 资源和中文文案存在。 | — | UI、Toast、日志、TXT/Word/Excel/PDF、OCR、SQLite 回显测试。 | 客户/项目/RFQ 中文 SQLite 回显、OCR 中文演示字段、Word/PDF/Excel/成本浏览器回归均无乱码；真实 Tesseract 中文输出仍由 ISSUE-01 单独阻塞 | VERIFIED |
 | ISSUE-18 | 客户→联系人→项目→RFQ 浏览器主链路无证据。 | SQLite/API/tenant/幂等已通过真实 HTTP 验收。 | `app.js`（稳定性修复） | 真实浏览器创建、刷新、打开、修改、再刷新。 | Playwright 创建 CUS-2026-000002 → 联系人 → PRJ-2026-000002 → RFQ-202607-000002；关联校验为 true；数量 88→99，刷新后仍为 99，历史 2 条 | VERIFIED |
 | ISSUE-19 | 成本浏览器保存与重新打开未验收。 | 已增加统一可复用 Session、重开、复制和来源追踪。 | `app.js`、`ui.js`、`core.js` | 输入→计算→保存→离开→重开→历史验证。 | Playwright 390×844：示例计算得总成本 10037.00、建议报价 12546.25；刷新后输入和同一结果仍存在，会话列表可重开 | VERIFIED |
 | ISSUE-20 | 390×844 仅有布局或历史证据，缺完整真实操作。 | 响应式样式与旧报告存在。 | — | 首页、客户、项目、RFQ、OCR、Excel、成本、错误恢复、刷新逐项记录。 | Playwright：home/OCR/Excel/Word/PDF/cost/客户/项目/RFQ 均为 scrollWidth=390、viewport=390；成本保存恢复、客户主链路与错误恢复已实际操作 | VERIFIED |
@@ -74,3 +74,10 @@
 - 首次保存数量 88，随后修改为 99 并更新备注；刷新后数量仍为 99、备注保持、历史记录为 2 条。
 - 首次点击“为该客户创建项目”发现 Bug Monitor 详情浮层拦截 pointer events。最小修复后浮层仅显示计数和“查看”入口，详细错误统一进入 Stability Center；同一按钮重新点击成功。
 - 390×844 下客户、项目、RFQ 页面均为 `scrollWidth=390`、`viewport=390`，无横向溢出；控制台为 0 errors / 0 warnings。
+
+## OCR 去重与错误状态机证据（2026-07-27）
+
+- 当前 Provider 识别中，Provider 下拉框、“开始识别”和“重试”同时禁用；第二入口无法并发提交。
+- 原实现单次 OCR 会形成两条相同 requestId 任务。移除重复 `recordTask()` 后，显式 Mock 回归的 OCR 任务总数由 12 增至 13，仅增加一条，最新记录 `id=requestId` 且状态为 success。
+- 显式 Mock 页面在 Provider、结果和复核区域均显示“演示数据，非真实 OCR 识别结果”；低置信度、缺失字段和人工门禁继续显示，未批准时转报价/询价保持禁用。
+- Error Center 真实浏览器依次推进“开始处理”→“标记待验证”→“验证通过”。处理中和待验证均未从 Active 移除，只有验证通过后才进入 Resolved/最近修复；验证使用的既有记录随后恢复原状态，未污染真实问题数据。
