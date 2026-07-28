@@ -5,118 +5,66 @@ const approvalService = require('./approvalService');
 const permissionService = require('./permissionService');
 
 const ERROR_TYPES = new Set(['transient_error', 'validation_error', 'permission_error', 'business_rule_error', 'system_error', 'unknown_error']);
+const OPERATION_STATUSES = new Set(['PENDING', 'IN_PROGRESS', 'WAITING_APPROVAL', 'SUCCESS', 'FAILED', 'BLOCKED', 'UNKNOWN', 'CANCELLED']);
+const TRACE_LEVELS = new Set(['FULL', 'STANDARD', 'SUMMARY']);
+const VALIDATION_SOURCES = new Set(['SNAPSHOT', 'READ_COMMITTED', 'SERIALIZABLE_TRANSACTION']);
 const now = () => new Date().toISOString();
 const json = value => JSON.stringify(value || {});
 const parse = value => { try { return JSON.parse(value || '{}'); } catch { return {}; } };
-
-function assertTenant(run, enterpriseId) {
-  if (!run || run.enterprise_id !== enterpriseId) throw Object.assign(new Error('运行记录不存在'), { status: 404 });
-  return run;
+const compact = (value, maxBytes = 4096, maxTokens = 1024) => {
+  const raw = json(value); const max = Math.max(256, Number(maxBytes) || 4096);
+  const ceiling = Math.min(max, Math.max(256, Number(maxTokens || 1024) * 4));
+  return Buffer.byteLength(raw, 'utf8') <= ceiling ? raw : `${Buffer.from(raw).subarray(0, ceiling - 28).toString('utf8')}…[TRUNCATED]`;
+};
+function traceConfig(input = {}, failed = false) {
+  const level = TRACE_LEVELS.has(input.trace_level) ? input.trace_level : 'STANDARD';
+  return { level: failed || input.high_risk ? 'FULL' : level, samplingRate: Math.max(0, Math.min(1, Number(input.sampling_rate ?? 1))), maxBytes: Math.max(256, Math.min(65536, Number(input.max_bytes || 4096))), maxTokens: Math.max(64, Math.min(16384, Number(input.max_tokens || 1024))) };
 }
-function getRun(runId, enterpriseId) {
-  return assertTenant(db.prepare('SELECT * FROM runtime_runs WHERE run_id=?').get(runId), enterpriseId);
+function sanitizeOutput(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) return { ok: true, value: payload };
+  if (typeof payload !== 'string') return { ok: false, reason: '输出不是合法结构' };
+  const source = payload.trim();
+  const fenced = source.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = fenced ? fenced[1].trim() : source;
+  try { const value = JSON.parse(candidate); return value && typeof value === 'object' && !Array.isArray(value) ? { ok: true, value, sanitized: candidate !== source } : { ok: false, reason: 'JSON 顶层必须为对象' }; }
+  catch { return { ok: false, reason: fenced ? 'Markdown 包裹内容无法解析为 JSON' : 'JSON 无法解析或包含非预期文本' }; }
 }
+function assertTenant(run, enterpriseId) { if (!run || run.enterprise_id !== enterpriseId) throw Object.assign(new Error('运行记录不存在'), { status: 404 }); return run; }
+function getRun(runId, enterpriseId) { return assertTenant(db.prepare('SELECT * FROM runtime_runs WHERE run_id=?').get(runId), enterpriseId); }
 function details(runId, enterpriseId) {
   const run = getRun(runId, enterpriseId);
-  return { run, steps: db.prepare('SELECT * FROM runtime_steps WHERE run_id=? AND enterprise_id=? ORDER BY step_no').all(runId, enterpriseId),
-    attempts: db.prepare('SELECT * FROM runtime_attempts WHERE run_id=? AND enterprise_id=? ORDER BY created_at').all(runId, enterpriseId),
-    validations: db.prepare('SELECT * FROM runtime_validations WHERE run_id=? AND enterprise_id=? ORDER BY created_at').all(runId, enterpriseId),
-    approvals: db.prepare('SELECT * FROM runtime_approvals WHERE run_id=? AND enterprise_id=? ORDER BY created_at').all(runId, enterpriseId),
-    outcome: db.prepare('SELECT * FROM runtime_outcome_feedback WHERE run_id=? AND enterprise_id=? ORDER BY created_at DESC LIMIT 1').get(runId, enterpriseId) || null };
+  return { run, operation: db.prepare('SELECT * FROM business_operations WHERE run_id=? AND enterprise_id=?').get(runId, enterpriseId) || null,
+    steps: db.prepare('SELECT * FROM runtime_steps WHERE run_id=? AND enterprise_id=? ORDER BY step_no').all(runId, enterpriseId), attempts: db.prepare('SELECT * FROM runtime_attempts WHERE run_id=? AND enterprise_id=? ORDER BY created_at').all(runId, enterpriseId), validations: db.prepare('SELECT * FROM runtime_validations WHERE run_id=? AND enterprise_id=? ORDER BY created_at').all(runId, enterpriseId), approvals: db.prepare('SELECT * FROM runtime_approvals WHERE run_id=? AND enterprise_id=? ORDER BY created_at').all(runId, enterpriseId), outcome: db.prepare('SELECT * FROM runtime_outcome_feedback WHERE run_id=? AND enterprise_id=? ORDER BY created_at DESC LIMIT 1').get(runId, enterpriseId) || null };
 }
-function recordValidation({ run, stepId, attemptId, type, version = '1', schemaVersion = '', ruleId = '', input = {}, result, reason = '' }) {
-  db.prepare(`INSERT INTO runtime_validations(id,run_id,step_id,attempt_id,enterprise_id,validator_type,validator_version,schema_version,rule_id,rule_version,input_snapshot,validation_result,failure_reason,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(uuid(), run.run_id, stepId, attemptId, run.enterprise_id, type, version, schemaVersion, ruleId, version, json(input), result, String(reason), now());
+function recordValidation({ run, stepId, attemptId, type, version = '1', schemaVersion = '', ruleId = '', input = {}, result, reason = '', source = 'SNAPSHOT', staleWarning = '', overrideAllowed = false, config = {} }) {
+  db.prepare(`INSERT INTO runtime_validations(id,run_id,step_id,attempt_id,enterprise_id,validator_type,validator_version,schema_version,rule_id,rule_version,input_snapshot,validation_result,failure_reason,validation_source,stale_warning,override_allowed,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(uuid(), run.run_id, stepId, attemptId, run.enterprise_id, type, version, schemaVersion, ruleId, version, compact(input, config.maxBytes, config.maxTokens), result, String(reason), VALIDATION_SOURCES.has(source) ? source : 'SNAPSHOT', staleWarning, overrideAllowed ? 1 : 0, now());
 }
-function schemaValidate(payload) {
-  const required = { customer: 'string', product: 'string', quantity: 'number' };
-  for (const [key, type] of Object.entries(required)) {
-    if (typeof payload?.[key] !== type) return { ok: false, reason: `field type mismatch: ${key} must be ${type}` };
-  }
-  return { ok: true, reason: '' };
-}
-function inventoryRule(payload) {
-  const current = Number(payload?.current_inventory); const issue = Number(payload?.issue_quantity);
-  if (!Number.isFinite(current) || !Number.isFinite(issue)) return { ok: false, reason: 'inventory values must be numbers', remaining: null };
-  const remaining = current - issue;
-  return remaining >= 0 ? { ok: true, remaining } : { ok: false, remaining, reason: `库存数量不得小于 0，当前计算结果：${remaining}` };
-}
-function finishAttempt(attemptId, status, error = {}) {
-  db.prepare('UPDATE runtime_attempts SET status=?,error_type=?,error_code=?,error_message=?,finished_at=?,duration_ms=? WHERE id=?').run(status, error.type || '', error.code || '', error.message || '', now(), 0, attemptId);
-}
-function recordOutcome(run, input, actual, validationResult, feedbackType = '') {
-  db.prepare(`INSERT INTO runtime_outcome_feedback(id,run_id,enterprise_id,prediction_confidence,prediction_risk,validator_result,actual_result,feedback_type,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?)`).run(uuid(), run.run_id, run.enterprise_id, Number(input.prediction_confidence || 0), String(input.prediction_risk || ''), validationResult, actual, feedbackType, now());
-}
+function schemaValidate(payload) { const required = { customer: 'string', product: 'string', quantity: 'number' }; for (const [key, type] of Object.entries(required)) if (typeof payload?.[key] !== type) return { ok: false, reason: `field type mismatch: ${key} must be ${type}` }; return { ok: true, reason: '' }; }
+function inventoryRule(payload, source) { const current = Number(payload?.current_inventory); const issue = Number(payload?.issue_quantity); if (!Number.isFinite(current) || !Number.isFinite(issue)) return { ok: false, reason: 'inventory values must be numbers', remaining: null, staleWarning: '' }; const remaining = current - issue; const staleWarning = source === 'SNAPSHOT' ? 'STALE_VALIDATION_WARNING: Data may be stale' : ''; return remaining >= 0 ? { ok: true, remaining, staleWarning } : { ok: false, remaining, staleWarning, reason: `库存数量不得小于 0，当前计算结果：${remaining}` }; }
+function finishAttempt(id, status, error = {}) { db.prepare('UPDATE runtime_attempts SET status=?,error_type=?,error_code=?,error_message=?,finished_at=?,duration_ms=? WHERE id=?').run(status, error.type || '', error.code || '', error.message || '', now(), 0, id); }
+function recordOutcome(run, input, actual, validationResult, feedbackType = '', failed = false) { const config = traceConfig(input, failed); db.prepare('INSERT INTO runtime_outcome_feedback(id,run_id,enterprise_id,prediction_confidence,prediction_risk,validator_result,actual_result,feedback_type,trace_level,sampling_rate,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(uuid(), run.run_id, run.enterprise_id, Number(input.prediction_confidence || 0), String(input.prediction_risk || ''), validationResult, actual, feedbackType, config.level, config.samplingRate, now()); }
+function activeResponse(existing, enterpriseId) { const result = parse(existing.result_snapshot); if (existing.status === 'SUCCESS') return { idempotent: true, operation: existing, result, run: getRun(existing.run_id, enterpriseId) }; if (existing.status === 'IN_PROGRESS' || existing.status === 'PENDING') return { idempotent: true, code: 'OPERATION_IN_PROGRESS', operation: existing, run: getRun(existing.run_id, enterpriseId) }; if (existing.status === 'WAITING_APPROVAL') return { idempotent: true, code: 'WAITING_EXISTING_APPROVAL', operation: existing, run: getRun(existing.run_id, enterpriseId) }; if (existing.status === 'UNKNOWN') return { idempotent: true, code: 'OPERATION_STATUS_UNKNOWN', operation: existing, run: getRun(existing.run_id, enterpriseId) }; return { idempotent: true, operation: existing, result, run: getRun(existing.run_id, enterpriseId) }; }
 function execute({ enterpriseId, userId, role, input = {} }) {
   permissionService.authorizeAgent({ role });
-  const operationType = String(input.operation_type || 'validation_demo');
-  const businessKey = String(input.business_operation_id || input.business_key || '');
-  if (!businessKey) throw new Error('business_operation_id 必填');
-  const existing = db.prepare('SELECT * FROM business_operations WHERE enterprise_id=? AND operation_type=? AND business_key=?').get(enterpriseId, operationType, businessKey);
-  if (existing && existing.status === 'SUCCESS') return { idempotent: true, operation: existing, result: parse(existing.result_snapshot), run: getRun(existing.run_id, enterpriseId) };
-  if (existing) return { idempotent: true, operation: existing, result: parse(existing.result_snapshot), run: getRun(existing.run_id, enterpriseId) };
-  const nonIdempotent = input.idempotent === false;
-  const componentId = String(input.component_id || 'agent-runtime');
-  const mode = String(input.execution_mode || 'DETERMINISTIC_RULE');
-  const run = runtime.start({ enterprise_id: enterpriseId, user_id: userId, component_id: componentId, component_type: input.component_type || 'SKILL', task_type: operationType, trigger_source: input.trigger_source || 'api', request_id: input.request_id || '', provider: input.provider || 'trusted-execution', runtime_or_model: input.runtime_or_model || 'deterministic-rule', execution_mode: mode, input_summary: `业务操作：${operationType} / ${businessKey}` });
-  db.prepare('INSERT INTO business_operations(id,enterprise_id,operation_type,business_key,run_id,status,result_snapshot,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?)').run(uuid(), enterpriseId, operationType, businessKey, run.run_id, nonIdempotent ? 'WAITING_APPROVAL' : 'RUNNING', '{}', now(), '');
-  const stepId = uuid();
-  db.prepare('INSERT INTO runtime_steps(id,run_id,enterprise_id,step_no,name,status,retry_policy,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(stepId, run.run_id, enterpriseId, 1, input.step_name || '执行并验证', nonIdempotent ? 'WAITING_APPROVAL' : 'RUNNING', json({ maxAttempts: Number(input.max_attempts || 1), retryableErrors: ['transient_error'], idempotent: !nonIdempotent }), now(), now());
-  if (nonIdempotent) {
-    db.prepare(`INSERT OR IGNORE INTO agent_tasks(id,enterprise_id,user_id,agent_name,title,goal,status,current_step,total_steps,input_payload,output_payload,error_code,error_message,retry_count,confidence,needs_approval,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(run.run_id, enterpriseId, userId, 'trusted-execution', '非幂等业务操作审批', operationType, 'waiting_approval', 0, 1, json({ businessKey }), '{}', '', '', 0, 0, 1, now(), now());
-    const approval = approvalService.request({ taskId: run.run_id, enterpriseId, userId, toolName: componentId, actionLabel: '非幂等业务操作', reason: '非幂等操作必须人工审批', payload: { operationType, businessKey } });
-    db.prepare('INSERT INTO runtime_approvals(id,run_id,enterprise_id,status,risk,reason,requested_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(approval.id, run.run_id, enterpriseId, 'WAITING_APPROVAL', 'HIGH', approval.reason, userId, now(), now());
-    runtime.finish(run.run_id, { execution_status: 'BLOCKED', verification_status: 'NOT_VERIFIED', error_code: 'waiting_approval', error_message: '非幂等业务操作等待人工审批' });
-    return { run: getRun(run.run_id, enterpriseId), waitingApproval: true, approvalId: approval.id };
-  }
-  return perform(run, stepId, input);
+  const operationType = String(input.operation_type || 'validation_demo'); const businessId = String(input.business_operation_id || input.business_key || ''); if (!businessId) throw new Error('business_operation_id 必填');
+  const existing = db.prepare('SELECT * FROM business_operations WHERE enterprise_id=? AND operation_type=? AND (business_operation_id=? OR (business_operation_id=\'\' AND business_key=?))').get(enterpriseId, operationType, businessId, businessId); if (existing) return activeResponse(existing, enterpriseId);
+  const nonIdempotent = input.idempotent === false; const componentId = String(input.component_id || 'agent-runtime'); const run = runtime.start({ enterprise_id: enterpriseId, user_id: userId, component_id: componentId, component_type: input.component_type || 'SKILL', task_type: operationType, trigger_source: input.trigger_source || 'api', request_id: input.request_id || '', provider: input.provider || 'trusted-execution', runtime_or_model: input.runtime_or_model || 'deterministic-rule', execution_mode: input.execution_mode || 'DETERMINISTIC_RULE', input_summary: `业务操作：${operationType} / ${businessId}` });
+  db.prepare('INSERT INTO business_operations(id,enterprise_id,operation_type,business_key,business_operation_id,run_id,status,result_snapshot,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(uuid(), enterpriseId, operationType, businessId, businessId, run.run_id, nonIdempotent ? 'WAITING_APPROVAL' : 'IN_PROGRESS', '{}', now(), '');
+  const stepId = uuid(); db.prepare('INSERT INTO runtime_steps(id,run_id,enterprise_id,step_no,name,status,retry_policy,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(stepId, run.run_id, enterpriseId, 1, input.step_name || '执行并验证', nonIdempotent ? 'WAITING_APPROVAL' : 'RUNNING', json({ maxAttempts: Number(input.max_attempts || 1), retryableErrors: ['transient_error'], idempotent: !nonIdempotent }), now(), now());
+  if (!nonIdempotent) return perform(run, stepId, input);
+  db.prepare('INSERT OR IGNORE INTO agent_tasks(id,enterprise_id,user_id,agent_name,title,goal,status,current_step,total_steps,input_payload,output_payload,error_code,error_message,retry_count,confidence,needs_approval,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(run.run_id, enterpriseId, userId, 'trusted-execution', '非幂等业务操作审批', operationType, 'waiting_approval', 0, 1, json({ businessId, input }), '{}', '', '', 0, 0, 1, now(), now());
+  const approval = approvalService.request({ taskId: run.run_id, enterpriseId, userId, toolName: componentId, actionLabel: '非幂等业务操作', reason: '非幂等操作必须人工审批', payload: { operationType, businessId } }); db.prepare('INSERT INTO runtime_approvals(id,run_id,enterprise_id,status,risk,reason,requested_by,created_at,updated_at,human_override,override_context) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(approval.id, run.run_id, enterpriseId, 'WAITING_APPROVAL', 'HIGH', approval.reason, userId, now(), now(), 0, '{}'); runtime.finish(run.run_id, { execution_status: 'BLOCKED', verification_status: 'NOT_VERIFIED', error_code: 'waiting_approval', error_message: '非幂等业务操作等待人工审批' }); return { run: getRun(run.run_id, enterpriseId), waitingApproval: true, approvalId: approval.id };
 }
-function perform(run, stepId, input) {
-  const maxAttempts = Math.max(1, Math.min(3, Number(input.max_attempts || 1)));
-  const transientFailures = Math.max(0, Number(input.transient_failures || 0));
-  let attemptId; let attemptNo = 0;
-  while (attemptNo < maxAttempts) {
-    attemptNo += 1; attemptId = uuid();
-    db.prepare('INSERT INTO runtime_attempts(id,run_id,step_id,enterprise_id,attempt_no,status,started_at,created_at) VALUES(?,?,?,?,?,?,?,?)').run(attemptId, run.run_id, stepId, run.enterprise_id, attemptNo, 'RUNNING', now(), now());
-    if (attemptNo <= transientFailures) { finishAttempt(attemptId, 'FAILED', { type: 'transient_error', code: 'simulated_transient', message: '可重试的临时错误' }); continue; }
-    break;
-  }
-  if (attemptNo <= transientFailures) {
-    db.prepare('UPDATE runtime_steps SET status=?,updated_at=? WHERE id=?').run('RETRY_EXHAUSTED', now(), stepId);
-    runtime.finish(run.run_id, { execution_status: 'FAILED', verification_status: 'NOT_VERIFIED', error_code: 'retry_exhausted', error_message: '临时错误重试次数已耗尽' });
-    const exhausted = { execution_status: 'FAILED', final_status: 'RETRY_EXHAUSTED', retryable: false };
-    db.prepare('UPDATE business_operations SET status=?,result_snapshot=?,completed_at=? WHERE run_id=?').run('RETRY_EXHAUSTED', json(exhausted), now(), run.run_id);
-    recordOutcome(run, input, 'RETRY_EXHAUSTED', 'NOT_VERIFIED');
-    return { run: getRun(run.run_id, run.enterprise_id), result: exhausted, details: details(run.run_id, run.enterprise_id) };
-  }
-  let validation; let final; let execution = 'SUCCESS';
-  if (input.scenario === 'inventory') {
-    validation = inventoryRule(input.payload || {});
-    recordValidation({ run, stepId, attemptId, type: 'BUSINESS_RULE_VALIDATOR', version: '1', ruleId: 'inventory.non_negative', input: input.payload, result: validation.ok ? 'PASSED' : 'BUSINESS_RULE_FAILED', reason: validation.reason });
-    final = validation.ok ? 'SUCCESS' : 'BLOCKED';
-  } else {
-    validation = schemaValidate(input.payload || {});
-    recordValidation({ run, stepId, attemptId, type: 'SCHEMA_VALIDATOR', version: '1', schemaVersion: 'ocr-result-v1', input: input.payload, result: validation.ok ? 'PASSED' : 'FAILED_VALIDATION', reason: validation.reason });
-    final = validation.ok ? 'SUCCESS' : 'HUMAN_REVIEW_REQUIRED';
-  }
-  finishAttempt(attemptId, execution);
-  db.prepare('UPDATE runtime_steps SET status=?,updated_at=? WHERE id=?').run(final, now(), stepId);
-  const verification = validation.ok ? 'VERIFIED' : final === 'BLOCKED' ? 'FAILED_VERIFICATION' : 'HUMAN_REVIEW_REQUIRED';
-  runtime.finish(run.run_id, { execution_status: execution, verification_status: verification, error_code: validation.ok ? '' : 'validation_failed', error_message: validation.reason });
-  const result = { execution_status: execution, final_status: final, validation, retryable: false };
-  db.prepare('UPDATE business_operations SET status=?,result_snapshot=?,completed_at=? WHERE run_id=?').run(final, json(result), now(), run.run_id);
-  recordOutcome(run, input, final, validation.ok ? 'PASSED' : 'FAILED', validation.ok ? '' : 'false_positive');
-  return { run: getRun(run.run_id, run.enterprise_id), result, details: details(run.run_id, run.enterprise_id) };
+function perform(run, stepId, input = {}) {
+  const config = traceConfig(input); const maxAttempts = Math.max(1, Math.min(3, Number(input.max_attempts || 1))); const transientFailures = Math.max(0, Number(input.transient_failures || 0)); let attemptId; let no = 0;
+  while (no < maxAttempts) { no += 1; attemptId = uuid(); db.prepare('INSERT INTO runtime_attempts(id,run_id,step_id,enterprise_id,attempt_no,status,started_at,created_at) VALUES(?,?,?,?,?,?,?,?)').run(attemptId, run.run_id, stepId, run.enterprise_id, no, 'RUNNING', now(), now()); if (no <= transientFailures) { finishAttempt(attemptId, 'FAILED', { type: 'transient_error', code: 'simulated_transient', message: '可重试的临时错误' }); continue; } break; }
+  if (no <= transientFailures) { return finalize(run, stepId, input, { execution: 'FAILED', final: 'RETRY_EXHAUSTED', validation: { ok: false, reason: '临时错误重试次数已耗尽' }, verification: 'NOT_VERIFIED', attemptId, config, errorCode: 'retry_exhausted' }); }
+  const sanitized = sanitizeOutput(input.payload); if (!sanitized.ok) { recordValidation({ run, stepId, attemptId, type: 'FORMAT_SANITIZER', input: { payload: input.payload }, result: 'EXECUTION_MALFORMED', reason: sanitized.reason, config }); return finalize(run, stepId, input, { execution: 'EXECUTION_MALFORMED', final: 'HUMAN_REVIEW_REQUIRED', validation: { ok: false, reason: sanitized.reason }, verification: 'NOT_VERIFIED', attemptId, config, errorCode: 'execution_malformed' }); }
+  const source = VALIDATION_SOURCES.has(input.validation_source) ? input.validation_source : 'SNAPSHOT'; const override = Boolean(input.human_override); let validation;
+  if (input.scenario === 'inventory') { validation = inventoryRule(sanitized.value, source); recordValidation({ run, stepId, attemptId, type: 'BUSINESS_RULE_VALIDATOR', ruleId: 'inventory.non_negative', input: sanitized.value, result: validation.ok ? 'PASSED' : 'BUSINESS_RULE_FAILED', reason: validation.reason, source, staleWarning: validation.staleWarning, overrideAllowed: true, config }); if (!validation.ok && !override) return finalize(run, stepId, input, { execution: 'SUCCESS', final: 'BLOCKED', validation, verification: 'FAILED_VERIFICATION', attemptId, config, errorCode: 'business_rule_failed' }); }
+  else { validation = schemaValidate(sanitized.value); recordValidation({ run, stepId, attemptId, type: 'SCHEMA_VALIDATOR', schemaVersion: 'ocr-result-v1', input: sanitized.value, result: validation.ok ? 'PASSED' : 'FAILED_VALIDATION', reason: validation.reason, config }); if (!validation.ok) return finalize(run, stepId, input, { execution: 'SUCCESS', final: 'HUMAN_REVIEW_REQUIRED', validation, verification: 'HUMAN_REVIEW_REQUIRED', attemptId, config, errorCode: 'validation_failed' }); }
+  return finalize(run, stepId, input, { execution: 'SUCCESS', final: override ? 'SUCCESS_WITH_HUMAN_OVERRIDE' : 'SUCCESS', validation: { ...validation, override }, verification: override ? 'HUMAN_REVIEW_REQUIRED' : 'VERIFIED', attemptId, config });
 }
-function decideApproval({ enterpriseId, actor, runId, approved, reason }) {
-  const item = db.prepare('SELECT * FROM runtime_approvals WHERE run_id=? AND enterprise_id=? AND status=?').get(runId, enterpriseId, 'WAITING_APPROVAL');
-  if (!item) throw new Error('待审批运行不存在');
-  approvalService.decide({ approvalId: item.id, actor, approved, reason });
-  db.prepare('UPDATE runtime_approvals SET status=?,reason=?,decided_by=?,decided_at=?,updated_at=? WHERE id=?').run(approved ? 'APPROVED' : 'REJECTED', reason || item.reason, actor.name || actor.userId, now(), now(), item.id);
-  const run = getRun(runId, enterpriseId);
-  if (!approved) { runtime.finish(runId, { execution_status: 'CANCELLED', verification_status: 'NOT_VERIFIED', error_code: 'approval_rejected', error_message: reason || '审批拒绝' }); db.prepare('UPDATE business_operations SET status=?,completed_at=? WHERE run_id=?').run('ABORTED', now(), runId); return details(runId, enterpriseId); }
-  return perform(run, db.prepare('SELECT id FROM runtime_steps WHERE run_id=? ORDER BY step_no LIMIT 1').get(runId).id, { operation_type: 'approved_operation', business_operation_id: 'approved', scenario: 'schema', payload: { customer: '', product: '', quantity: 0 } });
-}
-module.exports = { ERROR_TYPES, execute, details, decideApproval, schemaValidate, inventoryRule };
+function finalize(run, stepId, input, state) { finishAttempt(state.attemptId, state.execution === 'SUCCESS' ? 'SUCCESS' : 'FAILED', state.errorCode ? { type: state.errorCode === 'business_rule_failed' ? 'business_rule_error' : 'validation_error', code: state.errorCode, message: state.validation.reason } : {}); db.prepare('UPDATE runtime_steps SET status=?,updated_at=? WHERE id=?').run(state.final, now(), stepId); runtime.finish(run.run_id, { execution_status: state.execution, verification_status: state.verification, error_code: state.errorCode || '', error_message: state.validation.reason || '' }); const result = { execution_status: state.execution, final_status: state.final, validation: state.validation, retryable: false }; const opStatus = state.final.startsWith('SUCCESS') ? 'SUCCESS' : state.final === 'BLOCKED' ? 'BLOCKED' : state.final === 'HUMAN_REVIEW_REQUIRED' ? 'FAILED' : 'FAILED'; db.prepare('UPDATE business_operations SET status=?,result_snapshot=?,completed_at=? WHERE run_id=?').run(opStatus, compact(result, state.config.maxBytes, state.config.maxTokens), now(), run.run_id); recordOutcome(run, input, state.final, state.validation.ok ? 'PASSED' : 'FAILED', state.validation.ok ? '' : 'false_positive', !state.validation.ok); return { run: getRun(run.run_id, run.enterprise_id), result, details: details(run.run_id, run.enterprise_id) }; }
+function decideApproval({ enterpriseId, actor, runId, approved, reason, overrideContext = {} }) { const item = db.prepare('SELECT * FROM runtime_approvals WHERE run_id=? AND enterprise_id=? AND status=?').get(runId, enterpriseId, 'WAITING_APPROVAL'); if (!item) throw new Error('待审批运行不存在'); approvalService.decide({ approvalId: item.id, actor, approved, reason }); const run = getRun(runId, enterpriseId); const context = { human_override: Boolean(approved && overrideContext?.human_override), override_reason: String(overrideContext?.override_reason || reason || ''), approved_by: actor.name || actor.userId, approved_at: now(), override_scope: String(overrideContext?.override_scope || 'single_run') }; db.prepare('UPDATE runtime_approvals SET status=?,reason=?,decided_by=?,decided_at=?,updated_at=?,human_override=?,override_context=? WHERE id=?').run(approved ? 'APPROVED' : 'REJECTED', reason || item.reason, context.approved_by, now(), now(), context.human_override ? 1 : 0, json(context), item.id); if (!approved) { runtime.finish(runId, { execution_status: 'CANCELLED', verification_status: 'NOT_VERIFIED', error_code: 'approval_rejected', error_message: reason || '审批拒绝' }); db.prepare('UPDATE business_operations SET status=?,completed_at=? WHERE run_id=?').run('CANCELLED', now(), runId); return details(runId, enterpriseId); } const task = db.prepare('SELECT input_payload FROM agent_tasks WHERE id=?').get(runId); const saved = parse(task?.input_payload); const sourceInput = { ...(saved.input || {}), human_override: context.human_override, override_context: context }; db.prepare('UPDATE business_operations SET status=? WHERE run_id=?').run('IN_PROGRESS', runId); return perform(run, db.prepare('SELECT id FROM runtime_steps WHERE run_id=? ORDER BY step_no LIMIT 1').get(runId).id, sourceInput); }
+module.exports = { ERROR_TYPES, OPERATION_STATUSES, TRACE_LEVELS, VALIDATION_SOURCES, execute, details, decideApproval, schemaValidate, inventoryRule, sanitizeOutput };
