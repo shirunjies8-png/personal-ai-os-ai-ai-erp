@@ -221,6 +221,48 @@ CREATE TABLE IF NOT EXISTS runtime_outcome_feedback (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS mock_inventory (
+  material_id TEXT PRIMARY KEY,
+  material_name TEXT NOT NULL DEFAULT '',
+  current_stock INTEGER NOT NULL,
+  safety_stock INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS transaction_preparations (
+  id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  business_operation_id TEXT NOT NULL,
+  snapshot_data TEXT NOT NULL DEFAULT '{}',
+  validation_result TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  expired_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PREPARING'
+);
+CREATE INDEX IF NOT EXISTS idx_transaction_preparations_operation ON transaction_preparations(enterprise_id, business_operation_id, created_at);
+CREATE TABLE IF NOT EXISTS business_transactions (
+  id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  business_operation_id TEXT NOT NULL,
+  transaction_type TEXT NOT NULL,
+  preparation_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  execution_attempt INTEGER NOT NULL DEFAULT 1,
+  lock_version INTEGER NOT NULL DEFAULT 0,
+  failure_reason TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  completed_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_business_transactions_operation ON business_transactions(enterprise_id, business_operation_id, created_at);
+CREATE TABLE IF NOT EXISTS mock_material_ledger (
+  id TEXT PRIMARY KEY,
+  transaction_id TEXT NOT NULL,
+  material_id TEXT NOT NULL,
+  quantity INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_approvals (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
