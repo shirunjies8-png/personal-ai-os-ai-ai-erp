@@ -11,7 +11,7 @@ function detail(req, res) {
 }
 function decide(req, res) {
   try {
-    const item = service.decideApproval({ enterpriseId: req.user.enterprise_id, runId: req.params.id, approved: Boolean(req.body?.approved), reason: String(req.body?.reason || ''), actor: { enterpriseId: req.user.enterprise_id, userId: req.user.id, name: req.user.name, role: req.user.role } });
+    const item = service.decideApproval({ enterpriseId: req.user.enterprise_id, runId: req.params.id, approved: Boolean(req.body?.approved), reason: String(req.body?.reason || ''), overrideContext: req.body?.override_context || {}, actor: { enterpriseId: req.user.enterprise_id, userId: req.user.id, name: req.user.name, role: req.user.role } });
     ok(res, item, req.body?.approved ? '审批通过并执行' : '审批已拒绝');
   } catch (error) { fail(res, error.status || 400, error.message || '审批处理失败'); }
 }

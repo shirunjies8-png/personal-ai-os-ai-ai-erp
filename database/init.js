@@ -310,6 +310,12 @@ ensureColumns('apqp_evidence', { deleted_at: 'TEXT', deleted_by: 'TEXT', delete_
 ensureColumns('apqp_deliverables', { owner: 'TEXT DEFAULT \'\'', due_date: 'TEXT DEFAULT \'\'', notes: 'TEXT DEFAULT \'\'', is_applicable: 'INTEGER DEFAULT 1', not_applicable_reason: 'TEXT DEFAULT \'\'', required_evidence_count: 'INTEGER DEFAULT 1', completed_at: 'TEXT', completed_by: 'TEXT' });
 ensureColumns('apqp_risks', { description: 'TEXT DEFAULT \'\'', severity: "TEXT DEFAULT 'medium'", probability: 'INTEGER DEFAULT 0', impact: 'INTEGER DEFAULT 0', risk_level: "TEXT DEFAULT 'medium'", is_blocking: 'INTEGER DEFAULT 0', due_date: 'TEXT DEFAULT \'\'', mitigation: 'TEXT DEFAULT \'\'', acceptance_reason: 'TEXT DEFAULT \'\'', closure_evidence: 'TEXT DEFAULT \'\'' });
 ensureColumns('apqp_tasks', { description: 'TEXT DEFAULT \'\'', priority: "TEXT DEFAULT 'medium'", evidence_required: 'INTEGER DEFAULT 0', completion_note: 'TEXT DEFAULT \'\'', completed_at: 'TEXT' });
+ensureColumns('business_operations', { business_operation_id: "TEXT DEFAULT ''" });
+ensureColumns('runtime_runs', { trace_level: "TEXT DEFAULT 'STANDARD'", sampling_rate: 'REAL DEFAULT 1' });
+ensureColumns('runtime_validations', { validation_source: "TEXT DEFAULT 'SNAPSHOT'", stale_warning: "TEXT DEFAULT ''", override_allowed: 'INTEGER DEFAULT 0' });
+ensureColumns('runtime_approvals', { human_override: 'INTEGER DEFAULT 0', override_context: "TEXT DEFAULT '{}'" });
+ensureColumns('runtime_outcome_feedback', { trace_level: "TEXT DEFAULT 'STANDARD'", sampling_rate: 'REAL DEFAULT 1' });
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_business_operations_active_key ON business_operations(enterprise_id, operation_type, business_operation_id) WHERE business_operation_id <> \'\'');
 runManufacturingPhase2Migrations(db);
 
 async function seed() {
