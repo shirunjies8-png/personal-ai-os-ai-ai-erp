@@ -190,6 +190,37 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runtime_runs_enterprise ON runtime_runs(enterprise_id, created_at);
 
+CREATE TABLE IF NOT EXISTS runtime_steps (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, step_no INTEGER NOT NULL,
+  name TEXT NOT NULL, status TEXT NOT NULL, retry_policy TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES runtime_runs(run_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS runtime_attempts (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, step_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, attempt_no INTEGER NOT NULL,
+  status TEXT NOT NULL, error_type TEXT DEFAULT '', error_code TEXT DEFAULT '', error_message TEXT DEFAULT '',
+  started_at TEXT NOT NULL, finished_at TEXT DEFAULT '', duration_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES runtime_runs(run_id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS runtime_validations (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, step_id TEXT NOT NULL, attempt_id TEXT NOT NULL, enterprise_id TEXT NOT NULL,
+  validator_type TEXT NOT NULL, validator_version TEXT NOT NULL, schema_version TEXT DEFAULT '', rule_id TEXT DEFAULT '', rule_version TEXT DEFAULT '',
+  input_snapshot TEXT DEFAULT '{}', validation_result TEXT NOT NULL, failure_reason TEXT DEFAULT '', created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS runtime_approvals (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, status TEXT NOT NULL, risk TEXT DEFAULT '', reason TEXT DEFAULT '',
+  requested_by TEXT DEFAULT '', decided_by TEXT DEFAULT '', decided_at TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS business_operations (
+  id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, operation_type TEXT NOT NULL, business_key TEXT NOT NULL, run_id TEXT DEFAULT '',
+  status TEXT NOT NULL, result_snapshot TEXT DEFAULT '{}', created_at TEXT NOT NULL, completed_at TEXT DEFAULT '',
+  UNIQUE(enterprise_id, operation_type, business_key)
+);
+CREATE TABLE IF NOT EXISTS runtime_outcome_feedback (
+  id TEXT PRIMARY KEY, run_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, prediction_confidence REAL DEFAULT 0,
+  prediction_risk TEXT DEFAULT '', validator_result TEXT DEFAULT '', actual_result TEXT DEFAULT '', feedback_type TEXT DEFAULT '',
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agent_approvals (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,

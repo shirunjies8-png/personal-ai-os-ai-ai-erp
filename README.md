@@ -1,5 +1,17 @@
 # Industrial AI OS
 
+> **A trusted AI Agent execution platform for enterprise workflows.**
+>
+> 面向企业真实业务流程的可信 AI Agent 执行平台：通过 Runtime Trace、Validator、Risk Control 和 Human Approval，让 AI 从生成答案走向安全执行任务。
+
+## Trusted execution direction
+
+本项目的重点不是聊天，而是可审计的业务执行：每次 Agent / Skill 运行保留 Run、Step、Attempt、Validator、Approval 与 Outcome Feedback。失败 Attempt 不会被后续成功覆盖；执行成功也不等同于业务验证成功。
+
+设计参考包括吴恩达 Agentic AI 的 Planning、Tool Use、Reflection、Evaluation，以及 OpenWorker 的 Human Approval、Tool Integration、Local First 与 Model Agnostic。我们额外强调执行轨迹、Attempt 级审计、业务规则验证、数学约束、风险控制、人工审批和结果重新验证。
+
+Phase B 当前只记录 Outcome Feedback，不会自动调整模型、规则或阈值；基于历史结果的 Confidence Calibration 属于后续阶段。
+
 Industrial AI OS · v1.4 RFQ Demo
 
 面向小工厂的 AI 办公演示系统，支持 RFQ 报价审批闭环、单据识别、成本报价、工作模板、错误监控和本地规则 AI 助手。
