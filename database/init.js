@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS inventory (
   stock_quantity REAL NOT NULL DEFAULT 0,
   safety_stock REAL NOT NULL DEFAULT 0,
   location TEXT DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT '',
   updated_at TEXT NOT NULL,
   FOREIGN KEY (enterprise_id) REFERENCES enterprises(id) ON DELETE CASCADE
 );
@@ -262,6 +264,50 @@ CREATE TABLE IF NOT EXISTS mock_material_ledger (
   quantity INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS stock_transactions (
+  id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  inventory_id TEXT NOT NULL,
+  business_operation_id TEXT NOT NULL DEFAULT '',
+  transaction_id TEXT NOT NULL,
+  transaction_type TEXT NOT NULL,
+  quantity_delta REAL NOT NULL,
+  stock_before REAL NOT NULL,
+  stock_after REAL NOT NULL,
+  reference_type TEXT DEFAULT '',
+  reference_id TEXT DEFAULT '',
+  created_by TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  note TEXT DEFAULT '',
+  FOREIGN KEY (inventory_id) REFERENCES inventory(id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_stock_transactions_inventory ON stock_transactions(enterprise_id, inventory_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_transactions_transaction ON stock_transactions(transaction_id);
+CREATE TABLE IF NOT EXISTS material_requisitions (
+  id TEXT PRIMARY KEY,
+  enterprise_id TEXT NOT NULL,
+  business_operation_id TEXT NOT NULL,
+  inventory_id TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  requested_by TEXT NOT NULL,
+  status TEXT NOT NULL,
+  preparation_id TEXT DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (inventory_id) REFERENCES inventory(id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_material_requisitions_operation ON material_requisitions(enterprise_id, business_operation_id, created_at);
+CREATE TABLE IF NOT EXISTS material_reservations (
+  id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, inventory_id TEXT DEFAULT '', material_id TEXT DEFAULT '', business_operation_id TEXT NOT NULL,
+  reserved_quantity INTEGER NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, expired_at TEXT NOT NULL,
+  released_at TEXT DEFAULT '', UNIQUE(enterprise_id, material_id, business_operation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_material_reservations_active ON material_reservations(enterprise_id, material_id, status, expired_at);
+CREATE TABLE IF NOT EXISTS audit_retry_queue (
+  id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, run_id TEXT NOT NULL, event_type TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS agent_approvals (
   id TEXT PRIMARY KEY,
@@ -352,11 +398,16 @@ ensureColumns('apqp_evidence', { deleted_at: 'TEXT', deleted_by: 'TEXT', delete_
 ensureColumns('apqp_deliverables', { owner: 'TEXT DEFAULT \'\'', due_date: 'TEXT DEFAULT \'\'', notes: 'TEXT DEFAULT \'\'', is_applicable: 'INTEGER DEFAULT 1', not_applicable_reason: 'TEXT DEFAULT \'\'', required_evidence_count: 'INTEGER DEFAULT 1', completed_at: 'TEXT', completed_by: 'TEXT' });
 ensureColumns('apqp_risks', { description: 'TEXT DEFAULT \'\'', severity: "TEXT DEFAULT 'medium'", probability: 'INTEGER DEFAULT 0', impact: 'INTEGER DEFAULT 0', risk_level: "TEXT DEFAULT 'medium'", is_blocking: 'INTEGER DEFAULT 0', due_date: 'TEXT DEFAULT \'\'', mitigation: 'TEXT DEFAULT \'\'', acceptance_reason: 'TEXT DEFAULT \'\'', closure_evidence: 'TEXT DEFAULT \'\'' });
 ensureColumns('apqp_tasks', { description: 'TEXT DEFAULT \'\'', priority: "TEXT DEFAULT 'medium'", evidence_required: 'INTEGER DEFAULT 0', completion_note: 'TEXT DEFAULT \'\'', completed_at: 'TEXT' });
+ensureColumns('inventory', { version: 'INTEGER NOT NULL DEFAULT 0', created_at: "TEXT DEFAULT ''" });
 ensureColumns('business_operations', { business_operation_id: "TEXT DEFAULT ''" });
 ensureColumns('runtime_runs', { trace_level: "TEXT DEFAULT 'STANDARD'", sampling_rate: 'REAL DEFAULT 1' });
 ensureColumns('runtime_validations', { validation_source: "TEXT DEFAULT 'SNAPSHOT'", stale_warning: "TEXT DEFAULT ''", override_allowed: 'INTEGER DEFAULT 0' });
 ensureColumns('runtime_approvals', { human_override: 'INTEGER DEFAULT 0', override_context: "TEXT DEFAULT '{}'" });
 ensureColumns('runtime_outcome_feedback', { trace_level: "TEXT DEFAULT 'STANDARD'", sampling_rate: 'REAL DEFAULT 1' });
+ensureColumns('transaction_preparations', { expected_version: 'INTEGER DEFAULT 0', read_at: "TEXT DEFAULT ''", snapshot_source: "TEXT DEFAULT 'inventory'", ttl_seconds: 'INTEGER DEFAULT 3600', approval_window_type: "TEXT DEFAULT 'NORMAL'" });
+ensureColumns('material_reservations', { inventory_id: "TEXT DEFAULT ''" });
+ensureColumns('business_operations', { business_operation_id: "TEXT DEFAULT ''", final_status: "TEXT DEFAULT ''", current_transaction_id: "TEXT DEFAULT ''", attempt_count: 'INTEGER DEFAULT 0', updated_at: "TEXT DEFAULT ''" });
+ensureColumns('business_transactions', { audit_status: "TEXT DEFAULT 'RECORDED'" });
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_business_operations_active_key ON business_operations(enterprise_id, operation_type, business_operation_id) WHERE business_operation_id <> \'\'');
 runManufacturingPhase2Migrations(db);
 
