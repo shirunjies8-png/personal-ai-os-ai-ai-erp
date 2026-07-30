@@ -6,13 +6,13 @@ const approvalService = require('./approvalService');
 const permissionService = require('./permissionService');
 const inventoryRepository = require('../repositories/inventoryRepository');
 
-const TX_STATUSES = new Set(['PREPARING', 'VALIDATING', 'WAITING_APPROVAL', 'APPROVED', 'EXECUTING', 'COMMITTED', 'ROLLED_BACK', 'CONCURRENCY_ABORT', 'FAILED', 'EXPIRED']);
+const TX_STATUSES = new Set(['PREPARING', 'VALIDATING', 'WAITING_APPROVAL', 'APPROVED', 'EXECUTING', 'COMMITTED', 'ISSUED', 'REJECTED', 'ROLLED_BACK', 'CONCURRENCY_ABORT', 'FAILED', 'EXPIRED', 'UNKNOWN']);
 const TRANSITIONS = Object.freeze({
   PREPARING: new Set(['VALIDATING', 'FAILED']), VALIDATING: new Set(['WAITING_APPROVAL', 'FAILED']),
-  WAITING_APPROVAL: new Set(['APPROVED', 'EXPIRED']), APPROVED: new Set(['EXECUTING', 'EXPIRED']),
+  WAITING_APPROVAL: new Set(['APPROVED', 'REJECTED', 'EXPIRED']), APPROVED: new Set(['EXECUTING', 'EXPIRED']),
   EXECUTING: new Set(['COMMITTED', 'ROLLED_BACK', 'CONCURRENCY_ABORT', 'FAILED']),
   ROLLED_BACK: new Set(['EXECUTING']), CONCURRENCY_ABORT: new Set(['EXECUTING']), FAILED: new Set(['EXECUTING']),
-  COMMITTED: new Set(), EXPIRED: new Set()
+  COMMITTED: new Set(), ISSUED: new Set(), REJECTED: new Set(), EXPIRED: new Set(), UNKNOWN: new Set()
 });
 const OPERATION_TYPE = 'REAL_INVENTORY_ISSUE';
 const now = () => new Date().toISOString();
@@ -90,12 +90,23 @@ function details(id, enterpriseId) {
   };
 }
 
+function listRequisitions(enterpriseId) {
+  return db.prepare(`SELECT r.*, p.expired_at, p.status AS preparation_status, p.validation_result
+    FROM material_requisitions r
+    LEFT JOIN transaction_preparations p ON p.id=r.preparation_id AND p.enterprise_id=r.enterprise_id
+    WHERE r.enterprise_id=? ORDER BY r.updated_at DESC LIMIT 100`).all(enterpriseId).map(row => ({
+    ...row, approval_card: parse(row.validation_result)
+  }));
+}
+
 function validatorFor(snapshot) {
   const remaining = Number(snapshot.stock_quantity) - Number(snapshot.quantity);
   return {
     type: remaining < 0 ? 'STOCK_NEGATIVE' : remaining < Number(snapshot.safety_stock) ? 'SAFETY_STOCK_FAILED' : 'PASSED',
     inventory_id: snapshot.inventory_id, current_stock: Number(snapshot.stock_quantity), safety_stock: Number(snapshot.safety_stock),
     requested_quantity: Number(snapshot.quantity), remaining_stock: remaining,
+    override_allowed: remaining >= 0 && remaining < Number(snapshot.safety_stock),
+    override_rule: remaining >= 0 && remaining < Number(snapshot.safety_stock) ? 'SAFETY_STOCK' : '',
     reason: remaining < 0 ? '库存不足，禁止领料' : remaining < Number(snapshot.safety_stock) ? '库存低于安全库存，需要人工审批或明确覆盖' : '预检查通过',
     validation_source: 'SNAPSHOT'
   };
@@ -111,7 +122,8 @@ function prepare({ enterpriseId, userId, role, input = {} }) {
   }
   const existing = operation(enterpriseId, operationId);
   if (existing?.final_status === 'COMMITTED') return { code: 'COMMITTED_HISTORY', operation: existing, result: parse(existing.result_snapshot) };
-  if (existing && ['PREPARING', 'WAITING_APPROVAL', 'EXECUTING'].includes(existing.final_status)) {
+  if (existing?.final_status === 'UNKNOWN') return { code: 'OPERATION_STATUS_UNKNOWN', operation: existing };
+  if (existing && ['PREPARING', 'WAITING_APPROVAL', 'APPROVED', 'EXECUTING'].includes(existing.final_status)) {
     return { code: existing.final_status === 'WAITING_APPROVAL' ? 'WAITING_EXISTING_APPROVAL' : 'OPERATION_IN_PROGRESS', operation: existing };
   }
   const inventory = inventoryRepository.readSnapshot(enterpriseId, inventoryId);
@@ -135,7 +147,9 @@ function prepare({ enterpriseId, userId, role, input = {} }) {
     db.prepare('INSERT INTO transaction_preparations(id,enterprise_id,run_id,business_operation_id,snapshot_data,validation_result,created_at,expired_at,status,expected_version,read_at,snapshot_source,ttl_seconds,approval_window_type) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .run(preparationId, enterpriseId, run.run_id, operationId, json(snapshot), json(validator), now(), expiredAt, 'WAITING_APPROVAL', snapshot.expected_version, readAt, 'inventory', win.ttl, win.type);
     db.prepare('INSERT INTO material_reservations(id,enterprise_id,inventory_id,material_id,business_operation_id,reserved_quantity,status,created_at,expired_at,released_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
-      .run(uuid(), enterpriseId, inventoryId, '', operationId, quantity, 'ACTIVE', now(), expiredAt, '');
+      // material_id is a legacy compatibility column. The real relation is inventory_id;
+      // use an attempt-scoped legacy value so historical reservations remain immutable.
+      .run(uuid(), enterpriseId, inventoryId, `${inventoryId}:${attemptNo}`, operationId, quantity, 'ACTIVE', now(), expiredAt, '');
     db.prepare('INSERT INTO material_requisitions(id,enterprise_id,business_operation_id,inventory_id,quantity,requested_by,status,preparation_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)')
       .run(uuid(), enterpriseId, operationId, inventoryId, quantity, userId, 'WAITING_APPROVAL', preparationId, now(), now());
     db.prepare('INSERT OR REPLACE INTO business_operations(id,enterprise_id,operation_type,business_key,business_operation_id,run_id,status,result_snapshot,created_at,completed_at,final_status,current_transaction_id,attempt_count,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -160,21 +174,38 @@ function prepare({ enterpriseId, userId, role, input = {} }) {
 
 function decide({ enterpriseId, actor, preparationId, approved, reason = '', humanOverride = false }) {
   const current = details(preparationId, enterpriseId); const prep = current.preparation;
-  transition(prep.status, approved ? 'APPROVED' : 'EXPIRED');
+  if (Date.now() > Date.parse(prep.expired_at)) {
+    if (prep.status === 'WAITING_APPROVAL') {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('EXPIRED', preparationId);
+        releaseReservation(prep, 'EXPIRED');
+        db.prepare("UPDATE material_requisitions SET status='EXPIRED',updated_at=? WHERE preparation_id=? AND enterprise_id=?").run(now(), preparationId, enterpriseId);
+        updateOperation(enterpriseId, prep.business_operation_id, { status: 'EXPIRED' }); db.exec('COMMIT');
+      } catch (error) { try { db.exec('ROLLBACK'); } catch {} throw error; }
+    }
+    throw Object.assign(new Error('预检查快照已过期，请重新发起申请'), { status: 409, code: 'PREPARATION_EXPIRED' });
+  }
+  transition(prep.status, approved ? 'APPROVED' : 'REJECTED');
   const approval = db.prepare("SELECT * FROM runtime_approvals WHERE run_id=? AND enterprise_id=? AND status='WAITING_APPROVAL'").get(prep.run_id, enterpriseId);
   if (!approval) throw Object.assign(new Error('审批记录不存在'), { status: 404 });
+  const requisition = db.prepare('SELECT * FROM material_requisitions WHERE preparation_id=? AND enterprise_id=?').get(preparationId, enterpriseId);
+  if (!requisition) throw Object.assign(new Error('领料申请不存在'), { status: 404 });
+  if (actor.userId === requisition.requested_by) throw Object.assign(new Error('申请人不得审批自己的领料申请'), { status: 403, code: 'SELF_APPROVAL_FORBIDDEN' });
+  const card = parse(prep.validation_result);
   if (humanOverride && !reason.trim()) throw Object.assign(new Error('人工覆盖必须填写原因'), { status: 400 });
+  if (humanOverride && !card.override_allowed) throw Object.assign(new Error('当前规则不允许人工覆盖'), { status: 409, code: 'OVERRIDE_NOT_ALLOWED' });
   approvalService.decide({ approvalId: approval.id, actor, approved, reason });
-  const context = { approval_card: parse(prep.validation_result), human_override: Boolean(humanOverride), override_reason: humanOverride ? reason : '', approved_by: actor.name || actor.userId, approved_at: now(), override_scope: humanOverride ? 'single_transaction' : 'none' };
+  const context = { approval_card: card, human_override: Boolean(humanOverride), override_reason: humanOverride ? reason : '', approved_by: actor.name || actor.userId, approved_at: now(), override_scope: humanOverride ? 'single_transaction' : 'none', rule: humanOverride ? card.override_rule : '' };
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare('UPDATE runtime_approvals SET status=?,reason=?,decided_by=?,decided_at=?,updated_at=?,human_override=?,override_context=? WHERE id=?')
       .run(approved ? 'APPROVED' : 'REJECTED', reason || approval.reason, context.approved_by, now(), now(), context.human_override ? 1 : 0, json(context), approval.id);
     if (!approved) {
-      db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('EXPIRED', preparationId);
+      db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('REJECTED', preparationId);
       releaseReservation(prep);
       db.prepare("UPDATE material_requisitions SET status='REJECTED',updated_at=? WHERE preparation_id=? AND enterprise_id=?").run(now(), preparationId, enterpriseId);
-      updateOperation(enterpriseId, prep.business_operation_id, { status: 'EXPIRED' });
+      updateOperation(enterpriseId, prep.business_operation_id, { status: 'REJECTED' });
     } else {
       db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('APPROVED', preparationId);
       db.prepare("UPDATE material_requisitions SET status='APPROVED',updated_at=? WHERE preparation_id=? AND enterprise_id=?").run(now(), preparationId, enterpriseId);
@@ -187,8 +218,9 @@ function decide({ enterpriseId, actor, preparationId, approved, reason = '', hum
 
 function executionFailure({ prep, tx, run, stepId, attemptId, snapshot, status, code, reason }) {
   db.prepare('UPDATE business_transactions SET status=?,failure_reason=?,completed_at=? WHERE id=?').run(status, json({ code, reason }), now(), tx.id);
-  db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('APPROVED', prep.id);
+  db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run(status, prep.id);
   db.prepare("UPDATE material_requisitions SET status=?,updated_at=? WHERE preparation_id=? AND enterprise_id=?").run(status, now(), prep.id, prep.enterprise_id);
+  releaseReservation(prep, status === 'EXPIRED' ? 'EXPIRED' : 'RELEASED');
   updateOperation(prep.enterprise_id, prep.business_operation_id, { status, transactionId: tx.id, attemptCount: tx.execution_attempt });
   recordValidation(run, stepId, attemptId, status === 'CONCURRENCY_ABORT' ? 'CONCURRENCY_ABORT' : 'BUSINESS_RULE_FAILED', snapshot, reason, 'READ_COMMITTED');
   safeAudit(run, () => audit.markAttempt(attemptId, 'FAILED', code), { code, reason }, 'runtime_attempt_update');
@@ -198,27 +230,35 @@ function executionFailure({ prep, tx, run, stepId, attemptId, snapshot, status, 
 
 function execute({ enterpriseId, preparationId, simulateLedgerFailure = false, simulateAuditFailure = false }) {
   const state = details(preparationId, enterpriseId); const prep = state.preparation;
-  if (prep.status !== 'APPROVED') throw Object.assign(new Error('预检查尚未获批'), { status: 409 });
+  if (prep.status !== 'APPROVED') throw Object.assign(new Error('预检查尚未获批或已终态，需重新发起申请'), { status: 409 });
   if (Date.now() > Date.parse(prep.expired_at)) {
     transition(prep.status, 'EXPIRED'); db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('EXPIRED', preparationId);
-    releaseReservation(prep, 'EXPIRED'); updateOperation(enterpriseId, prep.business_operation_id, { status: 'EXPIRED' }); return details(preparationId, enterpriseId);
+    releaseReservation(prep, 'EXPIRED'); db.prepare("UPDATE material_requisitions SET status='EXPIRED',updated_at=? WHERE preparation_id=? AND enterprise_id=?").run(now(), preparationId, enterpriseId); updateOperation(enterpriseId, prep.business_operation_id, { status: 'EXPIRED' }); return details(preparationId, enterpriseId);
   }
   const run = { run_id: prep.run_id, enterprise_id: enterpriseId };
   const step = db.prepare('SELECT * FROM runtime_steps WHERE run_id=? ORDER BY step_no LIMIT 1').get(prep.run_id);
-  let tx = state.transactions.at(-1);
-  if (!tx || tx.status !== 'WAITING_APPROVAL') {
-    tx = { id: uuid(), execution_attempt: Number(tx?.execution_attempt || 0) + 1, lock_version: Number(prep.expected_version) };
-    db.prepare('INSERT INTO business_transactions(id,enterprise_id,business_operation_id,transaction_type,preparation_id,status,run_id,execution_attempt,lock_version,failure_reason,created_at,completed_at,audit_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .run(tx.id, enterpriseId, prep.business_operation_id, 'INVENTORY_ISSUE', preparationId, 'APPROVED', prep.run_id, tx.execution_attempt, prep.expected_version, '{}', now(), '', 'RECORDED');
-    updateOperation(enterpriseId, prep.business_operation_id, { status: 'APPROVED', transactionId: tx.id, attemptCount: tx.execution_attempt });
-  }
+  const tx = state.transactions.at(-1);
+  if (!tx || tx.status !== 'WAITING_APPROVAL') throw Object.assign(new Error('当前业务操作不可执行，需重新发起申请'), { status: 409, code: 'OPERATION_NOT_EXECUTABLE' });
   const snapshot = parse(prep.snapshot_data);
   const approval = db.prepare("SELECT * FROM runtime_approvals WHERE run_id=? AND enterprise_id=? AND status='APPROVED'").get(prep.run_id, enterpriseId);
-  const override = Boolean(parse(approval?.override_context).human_override);
+  if (!approval) throw Object.assign(new Error('缺少有效审批'), { status: 409 });
+  const overrideContext = parse(approval.override_context);
+  const override = Boolean(overrideContext.human_override);
+  const currentOperation = operation(enterpriseId, prep.business_operation_id);
+  if (!currentOperation || currentOperation.final_status === 'UNKNOWN' || currentOperation.final_status === 'COMMITTED') throw Object.assign(new Error('业务操作状态不允许执行'), { status: 409, code: 'OPERATION_NOT_EXECUTABLE' });
   const attemptId = safeAudit(run, () => audit.recordAttempt({ run, stepId: step.id, attemptNo: tx.execution_attempt, status: 'RUNNING' }), {}, 'runtime_attempt');
 
   try {
     transition(prep.status, 'EXECUTING'); db.exec('BEGIN IMMEDIATE');
+    const reservation = db.prepare("SELECT * FROM material_reservations WHERE enterprise_id=? AND inventory_id=? AND business_operation_id=? AND status='ACTIVE' AND expired_at>?").get(enterpriseId, snapshot.inventory_id, prep.business_operation_id, now());
+    if (!reservation || Number(reservation.reserved_quantity) !== Number(snapshot.quantity)) {
+      db.exec('ROLLBACK');
+      return executionFailure({ prep, tx, run, stepId: step.id, attemptId, snapshot, status: 'EXPIRED', code: 'reservation_expired', reason: '库存意向保留已失效，请重新发起申请' });
+    }
+    if (override && (overrideContext.rule !== 'SAFETY_STOCK' || overrideContext.override_scope !== 'single_transaction' || !overrideContext.approved_by || !overrideContext.approved_at)) {
+      db.exec('ROLLBACK');
+      return executionFailure({ prep, tx, run, stepId: step.id, attemptId, snapshot, status: 'FAILED', code: 'invalid_override', reason: '人工覆盖上下文不完整或范围非法' });
+    }
     db.prepare('UPDATE transaction_preparations SET status=? WHERE id=?').run('EXECUTING', prep.id);
     db.prepare('UPDATE business_transactions SET status=? WHERE id=?').run('EXECUTING', tx.id);
     updateOperation(enterpriseId, prep.business_operation_id, { status: 'EXECUTING', transactionId: tx.id, attemptCount: tx.execution_attempt });
@@ -260,4 +300,4 @@ function execute({ enterpriseId, preparationId, simulateLedgerFailure = false, s
   return details(preparationId, enterpriseId);
 }
 
-module.exports = { TX_STATUSES, TRANSITIONS, prepare, decide, execute, preparationDetails: details };
+module.exports = { TX_STATUSES, TRANSITIONS, prepare, decide, execute, preparationDetails: details, listRequisitions };

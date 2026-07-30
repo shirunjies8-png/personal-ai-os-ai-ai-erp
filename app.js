@@ -123,6 +123,7 @@ const App = {
     inquirySelectedId: '',
     inquirySearch: '',
     inquiryLoading: false,
+    materialIssue: { preparationId: localStorage.getItem('personal-ai-os-material-issue-preparation') || '', detail: null, requisitions: [] },
     manufacturing: ManufacturingWorkspace.emptyState(),
     apqp: { open: false, loading: false, projects: [], selectedId: '', project: null, error: '' },
     agent: {
@@ -1314,6 +1315,13 @@ const App = {
       'inventory-refresh': () => this.refreshInventory(true),
       'inventory-save': () => this.saveInventory(),
       'inventory-delete': () => this.deleteInventory(el.dataset.id),
+      'material-issue-prepare': () => this.prepareMaterialIssue(),
+      'material-issue-refresh': () => this.refreshMaterialIssue(true),
+      'material-issue-open': () => this.openMaterialIssue(el.dataset.id),
+      'material-issue-approve': () => this.decideMaterialIssue(true, false),
+      'material-issue-override': () => this.decideMaterialIssue(true, true),
+      'material-issue-reject': () => this.decideMaterialIssue(false, false),
+      'material-issue-execute': () => this.executeMaterialIssue(),
       'plan-sample': () => this.planSample(el),
       'plan-csv-template': () => this.downloadPlanCsvTemplate(el),
       'plan-analyze': () => this.planAnalyze(el),
@@ -9654,6 +9662,7 @@ const App = {
     }
     const res = await APIClient.request('/api/inventory');
     Store.state.inventory = res.data.items || [];
+    await this.refreshMaterialIssue(false);
     Store.save();
     await this.refreshDashboard();
     if (showToast) this.toast('库存已刷新');
@@ -9705,6 +9714,70 @@ const App = {
     await APIClient.request(`/api/inventory/${id}`, { method: 'DELETE' });
     await this.refreshInventory();
     this.toast('库存已删除');
+  },
+
+  async refreshMaterialIssue(showToast = false) {
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) {
+      this.temp.materialIssue.detail = null;
+      this.temp.materialIssue.requisitions = [];
+      if (showToast) this.toast('当前为静态/演示模式，真实领料需连接后端');
+      return;
+    }
+    const list = await APIClient.request('/api/transaction-safety/requisitions');
+    this.temp.materialIssue.requisitions = list.data.items || [];
+    const id = this.temp.materialIssue.preparationId;
+    if (id) {
+      const detail = await APIClient.request(`/api/transaction-safety/preparations/${encodeURIComponent(id)}`);
+      this.temp.materialIssue.detail = detail.data;
+    }
+    if (showToast) this.toast('领料状态已从后端刷新');
+    if (this.route === 'inventory') this.rerender();
+  },
+
+  async openMaterialIssue(preparationId) {
+    if (!preparationId) throw new Error('缺少领料申请标识');
+    this.temp.materialIssue.preparationId = preparationId;
+    localStorage.setItem('personal-ai-os-material-issue-preparation', preparationId);
+    await this.refreshMaterialIssue();
+  },
+
+  async prepareMaterialIssue() {
+    if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) throw new Error('当前为静态/演示模式，真实领料申请需连接本地或生产服务');
+    const inventoryId = document.getElementById('materialIssueInventory')?.value;
+    const operationId = document.getElementById('materialIssueOperation')?.value.trim();
+    const quantity = Number(document.getElementById('materialIssueQuantity')?.value);
+    const approvalWindow = document.getElementById('materialIssueWindow')?.value;
+    if (!inventoryId || !operationId || !Number.isFinite(quantity) || quantity <= 0) throw new Error('请选择库存，并填写业务操作号和正数领料数量');
+    if (!confirm('确认发起真实领料预检查？此操作会创建待审批的后端记录，但不会立即扣减库存。')) return;
+    const res = await APIClient.request('/api/transaction-safety/preparations', { method: 'POST', body: JSON.stringify({ inventory_id: inventoryId, business_operation_id: operationId, quantity, approval_window_type: approvalWindow }) });
+    if (!res.data?.preparation?.id) {
+      this.toast(res.data?.code === 'COMMITTED_HISTORY' ? '该业务操作已完成，已返回历史结果' : (res.data?.code || '当前操作不可重复创建'));
+      return;
+    }
+    await this.openMaterialIssue(res.data.preparation.id);
+    this.toast('领料预检查已保存，等待非申请人管理员审批');
+  },
+
+  async decideMaterialIssue(approved, humanOverride) {
+    const id = this.temp.materialIssue.preparationId;
+    if (!id) throw new Error('请先选择领料申请');
+    const label = humanOverride ? '安全库存覆盖批准' : (approved ? '批准领料申请' : '拒绝领料申请');
+    const reason = prompt(`${label}原因${humanOverride || !approved ? '（必填）' : '（可选）'}：`, '');
+    if (reason === null) return;
+    if ((humanOverride || !approved) && !reason.trim()) throw new Error('该操作必须填写原因');
+    if (!confirm(`确认${label}？审批结论将写入后端审计记录。`)) return;
+    await APIClient.request(`/api/transaction-safety/preparations/${encodeURIComponent(id)}/approval`, { method: 'POST', body: JSON.stringify({ approved, reason, human_override: humanOverride }) });
+    await this.refreshMaterialIssue();
+    this.toast(`${label}已提交，状态已从后端重新读取`);
+  },
+
+  async executeMaterialIssue() {
+    const id = this.temp.materialIssue.preparationId;
+    if (!id) throw new Error('请先选择已审批的领料申请');
+    if (!confirm('确认执行受控库存扣减？系统会在短事务内重新验证版本、库存、安全库存、TTL 和 Reservation。')) return;
+    await APIClient.request(`/api/transaction-safety/preparations/${encodeURIComponent(id)}/execute`, { method: 'POST', body: JSON.stringify({}) });
+    await this.refreshInventory();
+    this.toast('领料执行完成，已从 SQLite 重新读取状态和库存');
   },
 
   getPlanWorkspace() {

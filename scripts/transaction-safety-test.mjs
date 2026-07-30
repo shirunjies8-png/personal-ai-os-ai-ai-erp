@@ -17,6 +17,7 @@ const routes = require('../routes/transactionSafetyRoutes');
 const stamp = new Date().toISOString();
 const enterpriseId = 'real-tx-a'; const otherEnterpriseId = 'real-tx-b';
 const user = { enterpriseId, userId: 'real-admin', role: '企业管理员', name: '库存管理员' };
+const approver = { enterpriseId, userId: 'real-approver', role: '企业管理员', name: '独立审批人' };
 
 function insertEnterprise(id) { db.prepare('INSERT INTO enterprises(id,name,created_at,updated_at) VALUES(?,?,?,?)').run(id, id, stamp, stamp); }
 function insertUser(id, enterprise) { db.prepare('INSERT INTO users(id,enterprise_id,email,password_hash,name,role,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id, enterprise, `${id}@example.test`, 'hash', id, '企业管理员', '启用', stamp, stamp); }
@@ -25,10 +26,10 @@ function seed(id, enterprise = enterpriseId, stock = 100, safety = 0, version = 
     .run(id, enterprise, id, `物料-${id}`, stock, safety, 'A01', version, stamp, stamp);
 }
 function prepare(operationId, inventoryId, quantity, extra = {}) { return service.prepare({ ...user, input: { business_operation_id: operationId, inventory_id: inventoryId, quantity, ...extra } }); }
-function approve(prep, options = {}) { return service.decide({ enterpriseId, preparationId: prep.preparation.id, approved: true, reason: Object.prototype.hasOwnProperty.call(options, 'reason') ? options.reason : '测试批准', humanOverride: Boolean(options.humanOverride), actor: user }); }
+function approve(prep, options = {}) { return service.decide({ enterpriseId, preparationId: prep.preparation.id, approved: true, reason: Object.prototype.hasOwnProperty.call(options, 'reason') ? options.reason : '测试批准', humanOverride: Boolean(options.humanOverride), actor: approver }); }
 function fakeResponse() { return { statusCode: 200, body: null, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } }; }
 
-insertEnterprise(enterpriseId); insertEnterprise(otherEnterpriseId); insertUser(user.userId, enterpriseId); insertUser('other-admin', otherEnterpriseId);
+insertEnterprise(enterpriseId); insertEnterprise(otherEnterpriseId); insertUser(user.userId, enterpriseId); insertUser(approver.userId, enterpriseId); insertUser('other-admin', otherEnterpriseId);
 try {
   const paths = routes.stack.filter(layer => layer.route).map(layer => `${Object.keys(layer.route.methods)[0].toUpperCase()} ${layer.route.path}`);
   for (const expected of ['POST /preparations', 'GET /preparations/:id', 'POST /preparations/:id/approval', 'POST /preparations/:id/execute']) assert.ok(paths.includes(expected));
@@ -47,6 +48,9 @@ try {
   seed('INV-26'); const prep26 = prepare('ISSUE-26', 'INV-26', 10, { ttl_seconds: 7200 });
   assert.equal(prep26.preparation.status, 'WAITING_APPROVAL'); assert.equal(db.inTransaction, false);
 
+  // Workflow approval is admin-only and cannot be approved by its applicant.
+  assert.throws(() => service.decide({ enterpriseId, preparationId: prep26.preparation.id, approved: true, reason: 'self', actor: user }), /申请人不得审批/);
+
   // CASE 27 / 31: an external version change during approval causes an optimistic-lock abort.
   seed('INV-27'); const prep27 = prepare('ISSUE-27', 'INV-27', 80); approve(prep27);
   db.prepare('UPDATE inventory SET stock_quantity=?,version=version+1 WHERE id=? AND enterprise_id=?').run(0, 'INV-27', enterpriseId);
@@ -54,11 +58,12 @@ try {
   assert.equal(abort27.transactions.at(-1).status, 'CONCURRENCY_ABORT');
   assert.equal(db.prepare('SELECT stock_quantity FROM inventory WHERE id=?').get('INV-27').stock_quantity, 0);
 
-  // CASE 28 and 29: ledger failure rolls back stock; the next attempt gets a new transaction and commits.
+  // CASE 28 and 29: ledger failure rolls back stock; a new Preparation gets a new transaction and commits.
   seed('INV-28'); const prep28 = prepare('ISSUE-28', 'INV-28', 20); approve(prep28);
   const rollback28 = service.execute({ enterpriseId, preparationId: prep28.preparation.id, simulateLedgerFailure: true });
   assert.equal(rollback28.transactions.at(-1).status, 'ROLLED_BACK'); assert.equal(db.prepare('SELECT stock_quantity FROM inventory WHERE id=?').get('INV-28').stock_quantity, 100);
-  const retry28 = service.execute({ enterpriseId, preparationId: prep28.preparation.id });
+  const retryPreparation28 = prepare('ISSUE-28', 'INV-28', 20); approve(retryPreparation28);
+  const retry28 = service.execute({ enterpriseId, preparationId: retryPreparation28.preparation.id });
   assert.equal(retry28.transactions.at(-1).status, 'COMMITTED'); assert.equal(retry28.transactions.at(-1).execution_attempt, 2);
   assert.equal(db.prepare('SELECT stock_quantity,version FROM inventory WHERE id=?').get('INV-28').stock_quantity, 80);
   assert.equal(db.prepare('SELECT version FROM inventory WHERE id=?').get('INV-28').version, 1);
@@ -95,6 +100,14 @@ try {
   assert.equal(committed36.transactions.at(-1).status, 'COMMITTED');
   const override36 = db.prepare('SELECT override_context FROM runtime_approvals WHERE run_id=?').get(prep36.preparation.run_id);
   assert.equal(JSON.parse(override36.override_context).human_override, true); assert.equal(JSON.parse(override36.override_context).override_reason, '紧急生产订单');
+
+  // CASE 42: expired TTL/reservation cannot be approved or executed, and the old preparation cannot be renewed.
+  seed('INV-42'); const prep42 = prepare('ISSUE-42', 'INV-42', 10);
+  db.prepare('UPDATE transaction_preparations SET expired_at=? WHERE id=?').run(new Date(Date.now() - 1).toISOString(), prep42.preparation.id);
+  db.prepare('UPDATE material_reservations SET expired_at=? WHERE business_operation_id=?').run(new Date(Date.now() - 1).toISOString(), 'ISSUE-42');
+  assert.throws(() => approve(prep42), /预检查快照已过期/);
+  assert.equal(db.prepare('SELECT stock_quantity FROM inventory WHERE id=?').get('INV-42').stock_quantity, 100);
+  assert.equal(db.prepare('SELECT status FROM transaction_preparations WHERE id=?').get(prep42.preparation.id).status, 'EXPIRED');
 
   // Tenant isolation and persistence: enterprise A cannot prepare against enterprise B inventory; committed data remains queryable.
   seed('INV-B', otherEnterpriseId); assert.throws(() => prepare('ISSUE-CROSS', 'INV-B', 1), /库存记录不存在/);
