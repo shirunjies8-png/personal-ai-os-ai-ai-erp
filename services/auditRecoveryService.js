@@ -3,6 +3,7 @@ const { v4: uuid } = require('uuid');
 const db = require('../database/client');
 const { sanitize, info, error: logError } = require('../utils/logger');
 const transactionAudit = require('./transactionAuditService');
+const recoveryDecision = require('./materialIssueRecoveryDecisionService');
 
 const STATES = Object.freeze({ PENDING_RETRY: 'PENDING_RETRY', CLAIMED: 'CLAIMED', RUNNING: 'RUNNING', SUCCEEDED: 'SUCCEEDED', RETRY_SCHEDULED: 'RETRY_SCHEDULED', DEAD: 'DEAD', CANCELLED: 'CANCELLED', UNKNOWN: 'UNKNOWN' });
 const TERMINAL = new Set([STATES.SUCCEEDED, STATES.DEAD, STATES.CANCELLED, STATES.UNKNOWN]);
@@ -27,9 +28,10 @@ function materialIssueFactResult(job) {
   const requisition = preparationId
     ? db.prepare('SELECT * FROM material_requisitions WHERE enterprise_id=? AND preparation_id=? AND business_operation_id=?').get(job.enterprise_id, preparationId, operationId)
     : db.prepare('SELECT * FROM material_requisitions WHERE enterprise_id=? AND business_operation_id=? ORDER BY created_at DESC LIMIT 1').get(job.enterprise_id, operationId);
+  const transactions = db.prepare('SELECT * FROM business_transactions WHERE enterprise_id=? AND business_operation_id=? ORDER BY created_at').all(job.enterprise_id, operationId);
   const transaction = transactionId
     ? db.prepare('SELECT * FROM business_transactions WHERE enterprise_id=? AND id=? AND business_operation_id=?').get(job.enterprise_id, transactionId, operationId)
-    : db.prepare('SELECT * FROM business_transactions WHERE enterprise_id=? AND business_operation_id=? ORDER BY created_at DESC LIMIT 1').get(job.enterprise_id, operationId);
+    : transactions.at(-1);
   const ledger = transaction
     ? db.prepare("SELECT * FROM stock_transactions WHERE enterprise_id=? AND transaction_id=? AND business_operation_id=? AND transaction_type='INVENTORY_ISSUE'").all(job.enterprise_id, transaction.id, operationId)
     : [];
@@ -50,6 +52,15 @@ function materialIssueFactResult(job) {
     runtime_run_id: run,
     runtime_attempt_count: Number(attempts?.count || 0)
   };
+  const allLedger = db.prepare("SELECT * FROM stock_transactions WHERE enterprise_id=? AND business_operation_id=? AND transaction_type='INVENTORY_ISSUE' ORDER BY created_at").all(job.enterprise_id, operationId);
+  const conflictCodes = [];
+  if (requisition?.status === 'COMMITTED' && allLedger.length === 0) conflictCodes.push('COMMITTED_REQUISITION_WITHOUT_LEDGER');
+  if (allLedger.length > 1) conflictCodes.push('MULTIPLE_INVENTORY_ISSUE_LEDGER_FACTS');
+  if (allLedger.some(item => !transactions.some(candidate => candidate.id === item.transaction_id))) conflictCodes.push('LEDGER_TRANSACTION_REFERENCE_MISMATCH');
+  if (allLedger.length && transaction && transaction.status !== 'COMMITTED') conflictCodes.push('LEDGER_WITH_NON_COMMITTED_TRANSACTION');
+  if (payload.runtime_run_id && operation?.run_id && payload.runtime_run_id !== operation.run_id) conflictCodes.push('RUNTIME_RUN_REFERENCE_MISMATCH');
+  if (transactions.length > 1 && new Set(transactions.map(item => item.status)).size > 1 && allLedger.length) conflictCodes.push('MULTIPLE_INCONSISTENT_BUSINESS_TRANSACTIONS');
+  if (conflictCodes.length) return { result: 'CONFLICT', evidence: { ...evidence, conflict_codes: conflictCodes, operation_transaction_count: transactions.length, operation_ledger_count: allLedger.length }, reason: 'Material Issue 业务事实存在冲突，禁止推断结果' };
   const committed = transaction?.status === 'COMMITTED' && requisition?.status === 'COMMITTED' && operation?.final_status === 'COMMITTED' && ledger.length === 1 && inventory && Number(ledger[0].stock_after) === Number(inventory.stock_quantity);
   if (committed) return { result: 'COMMITTED', evidence, reason: '库存流水、领料申请、业务事务和操作状态一致地证明已提交' };
   const terminalNotCommitted = ['FAILED', 'REJECTED', 'EXPIRED', 'CONCURRENCY_ABORT', 'ROLLED_BACK'];
@@ -103,8 +114,10 @@ const defaultHandlers = {
           validatorType: 'MATERIAL_ISSUE_FACT_VALIDATOR', ruleId: 'material_issue.fact_reconciliation'
         });
       }
-      if (result.result === 'STILL_UNKNOWN') return { unknown: true, code: 'material_issue_still_unknown', message: result.reason, result };
-      return { ok: true, result };
+      const decision = recoveryDecision.record({ job, fact: result });
+      const governed = { ...result, decision };
+      if (result.result === 'STILL_UNKNOWN' || result.result === 'CONFLICT') return { unknown: true, code: result.result === 'CONFLICT' ? 'material_issue_fact_conflict' : 'material_issue_still_unknown', message: result.reason, result: governed };
+      return { ok: true, result: governed };
     },
     verify({ outcome }) {
       return { ok: outcome?.result?.result !== 'STILL_UNKNOWN', message: 'Material Issue 事实验证未得到确定结论' };
@@ -165,6 +178,14 @@ class AuditRecoveryService {
     if (running.recovery_deadline_at && running.recovery_deadline_at < now) return this.finishFailure(running, attemptId, { nonRetryable: true, code: 'recovery_window_exhausted', message: '恢复时间窗口已耗尽' }, situationFingerprint);
     const handler = this.handlers[running.handler_type]; let outcome;
     try { if (!handler?.execute) throw Object.assign(new Error('恢复处理器未注册'), { code: 'handler_unavailable' }); outcome = handler.execute({ job: publicJob(running), attemptNo, situation }); } catch (err) { outcome = { ok: false, code: err.code || 'handler_error', message: err.message }; }
+    if (outcome?.result?.decision) {
+      const decision = outcome.result.decision;
+      this.event(running.enterprise_id, running.id, 'RECOVERY_FACT_VALIDATED', { factResult: outcome.result.result }, attemptId);
+      this.event(running.enterprise_id, running.id, 'RECOVERY_DECISION_CREATED', { decision: decision.decision, executionAllowed: false, approvalRequired: Boolean(decision.approvalRequired) }, attemptId);
+      if (decision.decision === 'RECHECK_REQUIRED') this.event(running.enterprise_id, running.id, 'RECOVERY_RECHECK_REQUIRED', { reasonCodes: decision.reasonCodes }, attemptId);
+      if (decision.decision === 'BLOCKED_CONFLICT') this.event(running.enterprise_id, running.id, 'RECOVERY_BLOCKED_CONFLICT', { reasonCodes: decision.reasonCodes }, attemptId);
+      if (decision.approvalRequired) this.event(running.enterprise_id, running.id, 'RECOVERY_APPROVAL_REQUIRED', { approvalId: decision.approval?.id || '', decision: decision.decision }, attemptId);
+    }
     // An ambiguous external outcome may already have produced a side effect;
     // retrying it automatically would turn uncertainty into a duplicate action.
     if (outcome?.unknown) return this.finishUnknown(running, attemptId, outcome, situationFingerprint);
