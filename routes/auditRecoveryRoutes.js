@@ -1,0 +1,11 @@
+const express = require('express');
+const { authRequired } = require('../middleware/auth');
+const controller = require('../controllers/auditRecoveryController');
+const router = express.Router();
+router.use(authRequired);
+router.post('/jobs', controller.create);
+router.get('/jobs', controller.list);
+router.get('/jobs/:id', controller.detail);
+router.post('/jobs/:id/retry', controller.retry);
+router.post('/scan', controller.scan);
+module.exports = router;

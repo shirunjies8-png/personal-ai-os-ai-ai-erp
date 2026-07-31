@@ -309,6 +309,47 @@ CREATE TABLE IF NOT EXISTS audit_retry_queue (
   last_error TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
+-- Durable recovery orchestration. These records are observability/recovery state,
+-- not inventory or material-issue facts, so a recovery failure never changes a
+-- completed business transaction.
+CREATE TABLE IF NOT EXISTS audit_recovery_jobs (
+  id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, handler_type TEXT NOT NULL,
+  payload TEXT NOT NULL DEFAULT '{}', idempotency_key TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING_RETRY', execution_status TEXT NOT NULL DEFAULT 'NOT_STARTED', verification_status TEXT NOT NULL DEFAULT 'NOT_VERIFIED',
+  claim_token TEXT DEFAULT '', lease_version INTEGER NOT NULL DEFAULT 0, claimed_by TEXT DEFAULT '', claimed_at TEXT DEFAULT '', lease_expires_at TEXT DEFAULT '',
+  next_retry_at TEXT DEFAULT '', attempt_count INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3,
+  first_failed_at TEXT DEFAULT '', recovery_deadline_at TEXT DEFAULT '', last_error_type TEXT DEFAULT '', last_error_code TEXT DEFAULT '', last_error_signature TEXT DEFAULT '',
+  last_situation_fingerprint TEXT DEFAULT '', no_progress_count INTEGER NOT NULL DEFAULT 0, parent_job_id TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_recovery_active_idempotency ON audit_recovery_jobs(enterprise_id,idempotency_key) WHERE status IN ('PENDING_RETRY','CLAIMED','RUNNING','RETRY_SCHEDULED','UNKNOWN');
+CREATE INDEX IF NOT EXISTS idx_audit_recovery_due ON audit_recovery_jobs(status,next_retry_at,lease_expires_at);
+CREATE TABLE IF NOT EXISTS audit_recovery_attempts (
+  id TEXT PRIMARY KEY, job_id TEXT NOT NULL, enterprise_id TEXT NOT NULL, attempt_no INTEGER NOT NULL,
+  claim_token TEXT NOT NULL, situation_state TEXT NOT NULL DEFAULT '{}', situation_fingerprint TEXT DEFAULT '',
+  execution_status TEXT NOT NULL DEFAULT 'NOT_STARTED', verification_status TEXT NOT NULL DEFAULT 'NOT_VERIFIED',
+  failure_class TEXT DEFAULT '', failure_code TEXT DEFAULT '', failure_reason TEXT DEFAULT '', strategy TEXT DEFAULT '',
+  started_at TEXT NOT NULL, finished_at TEXT DEFAULT '', created_at TEXT NOT NULL,
+  UNIQUE(job_id,attempt_no), FOREIGN KEY(job_id) REFERENCES audit_recovery_jobs(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS audit_recovery_idempotency (
+  enterprise_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, job_id TEXT NOT NULL, status TEXT NOT NULL,
+  result_snapshot TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY(enterprise_id,idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS audit_recovery_workers (
+  worker_id TEXT PRIMARY KEY, status TEXT NOT NULL, heartbeat_at TEXT NOT NULL, current_job_id TEXT DEFAULT '', updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_recovery_circuits (
+  enterprise_id TEXT NOT NULL, handler_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'CLOSED', failure_count INTEGER NOT NULL DEFAULT 0,
+  opened_at TEXT DEFAULT '', cooldown_until TEXT DEFAULT '', half_open_claim TEXT DEFAULT '', updated_at TEXT NOT NULL,
+  PRIMARY KEY(enterprise_id,handler_type)
+);
+CREATE TABLE IF NOT EXISTS audit_recovery_events (
+  id TEXT PRIMARY KEY, enterprise_id TEXT NOT NULL, job_id TEXT NOT NULL, attempt_id TEXT DEFAULT '', event_type TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_recovery_events_job ON audit_recovery_events(job_id,created_at);
+
 CREATE TABLE IF NOT EXISTS agent_approvals (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL,
