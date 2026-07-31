@@ -23,9 +23,9 @@ function recordAttempt({ run, stepId, attemptNo, status, code = '', message = ''
   });
 }
 
-function recordValidation({ run, stepId, attemptId, result, snapshot, reason, source = 'SNAPSHOT', overrideAllowed = true }) {
+function recordValidation({ run, stepId, attemptId, result, snapshot, reason, source = 'SNAPSHOT', overrideAllowed = true, validatorType = 'BUSINESS_RULE_VALIDATOR', ruleId = 'inventory.non_negative_and_safety' }) {
   return withAudit(auditDb => auditDb.prepare('INSERT INTO runtime_validations(id,run_id,step_id,attempt_id,enterprise_id,validator_type,validator_version,schema_version,rule_id,rule_version,input_snapshot,validation_result,failure_reason,validation_source,stale_warning,override_allowed,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(uuid(), run.run_id, stepId, attemptId, run.enterprise_id, 'BUSINESS_RULE_VALIDATOR', '1', '', 'inventory.non_negative_and_safety', '1', json(snapshot), result, reason, source, source === 'SNAPSHOT' ? 'STALE_VALIDATION_WARNING: pre-approval data may change' : '', overrideAllowed ? 1 : 0, now()));
+    .run(uuid(), run.run_id, stepId, attemptId, run.enterprise_id, validatorType, '1', '', ruleId, '1', json(snapshot), result, reason, source, source === 'SNAPSHOT' ? 'STALE_VALIDATION_WARNING: pre-approval data may change' : '', overrideAllowed ? 1 : 0, now()));
 }
 
 function markAttempt(id, status, code = '') {

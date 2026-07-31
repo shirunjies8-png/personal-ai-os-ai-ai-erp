@@ -1,8 +1,10 @@
 const express = require('express');
 const { authRequired } = require('../middleware/auth');
 const controller = require('../controllers/auditRecoveryController');
+const materialIssueRecoveryController = require('../controllers/materialIssueRecoveryController');
 const router = express.Router();
 router.use(authRequired);
+router.get('/material-issue/:businessOperationId', materialIssueRecoveryController.status);
 router.post('/jobs', controller.create);
 router.get('/jobs', controller.list);
 router.get('/jobs/:id', controller.detail);

@@ -2,6 +2,7 @@ const crypto = require('node:crypto');
 const { v4: uuid } = require('uuid');
 const db = require('../database/client');
 const { sanitize, info, error: logError } = require('../utils/logger');
+const transactionAudit = require('./transactionAuditService');
 
 const STATES = Object.freeze({ PENDING_RETRY: 'PENDING_RETRY', CLAIMED: 'CLAIMED', RUNNING: 'RUNNING', SUCCEEDED: 'SUCCEEDED', RETRY_SCHEDULED: 'RETRY_SCHEDULED', DEAD: 'DEAD', CANCELLED: 'CANCELLED', UNKNOWN: 'UNKNOWN' });
 const TERMINAL = new Set([STATES.SUCCEEDED, STATES.DEAD, STATES.CANCELLED, STATES.UNKNOWN]);
@@ -16,6 +17,50 @@ const parse = value => { try { return JSON.parse(value || '{}'); } catch { retur
 const stable = value => JSON.stringify(value && typeof value === 'object' ? Object.keys(value).sort().reduce((out, key) => { out[key] = value[key]; return out; }, {}) : value);
 const fingerprint = value => crypto.createHash('sha256').update(stable(value)).digest('hex');
 const publicJob = job => job && ({ ...job, payload: parse(job.payload) });
+
+function materialIssueFactResult(job) {
+  const payload = job.payload || {};
+  const operationId = String(payload.business_operation_id || '');
+  const preparationId = String(payload.material_issue_id || payload.preparation_id || '');
+  const transactionId = String(payload.transaction_id || '');
+  const operation = db.prepare('SELECT * FROM business_operations WHERE enterprise_id=? AND business_operation_id=? AND operation_type=?').get(job.enterprise_id, operationId, 'REAL_INVENTORY_ISSUE');
+  const requisition = preparationId
+    ? db.prepare('SELECT * FROM material_requisitions WHERE enterprise_id=? AND preparation_id=? AND business_operation_id=?').get(job.enterprise_id, preparationId, operationId)
+    : db.prepare('SELECT * FROM material_requisitions WHERE enterprise_id=? AND business_operation_id=? ORDER BY created_at DESC LIMIT 1').get(job.enterprise_id, operationId);
+  const transaction = transactionId
+    ? db.prepare('SELECT * FROM business_transactions WHERE enterprise_id=? AND id=? AND business_operation_id=?').get(job.enterprise_id, transactionId, operationId)
+    : db.prepare('SELECT * FROM business_transactions WHERE enterprise_id=? AND business_operation_id=? ORDER BY created_at DESC LIMIT 1').get(job.enterprise_id, operationId);
+  const ledger = transaction
+    ? db.prepare("SELECT * FROM stock_transactions WHERE enterprise_id=? AND transaction_id=? AND business_operation_id=? AND transaction_type='INVENTORY_ISSUE'").all(job.enterprise_id, transaction.id, operationId)
+    : [];
+  const inventory = requisition ? db.prepare('SELECT id,stock_quantity,version FROM inventory WHERE enterprise_id=? AND id=?').get(job.enterprise_id, requisition.inventory_id) : null;
+  const run = String(payload.runtime_run_id || operation?.run_id || '');
+  const attempts = run ? db.prepare('SELECT COUNT(*) AS count FROM runtime_attempts WHERE enterprise_id=? AND run_id=?').get(job.enterprise_id, run) : { count: 0 };
+  const evidence = {
+    inventory_transaction: ledger.length === 1,
+    inventory_transaction_count: ledger.length,
+    material_issue_status: requisition?.status || 'NOT_FOUND',
+    business_transaction_status: transaction?.status || 'NOT_FOUND',
+    business_operation_status: operation?.final_status || 'NOT_FOUND',
+    business_operation_id: operationId,
+    transaction_id: transaction?.id || transactionId || '',
+    inventory_id: inventory?.id || requisition?.inventory_id || '',
+    inventory_stock_quantity: inventory?.stock_quantity ?? null,
+    inventory_version: inventory?.version ?? null,
+    runtime_run_id: run,
+    runtime_attempt_count: Number(attempts?.count || 0)
+  };
+  const committed = transaction?.status === 'COMMITTED' && requisition?.status === 'COMMITTED' && operation?.final_status === 'COMMITTED' && ledger.length === 1 && inventory && Number(ledger[0].stock_after) === Number(inventory.stock_quantity);
+  if (committed) return { result: 'COMMITTED', evidence, reason: '库存流水、领料申请、业务事务和操作状态一致地证明已提交' };
+  const terminalNotCommitted = ['FAILED', 'REJECTED', 'EXPIRED', 'CONCURRENCY_ABORT', 'ROLLED_BACK'];
+  // Existing rejection flow makes requisition/operation terminal while its
+  // pre-created business transaction remains WAITING_APPROVAL. That is still
+  // conclusive non-commit only when the ledger is absent and both authorities
+  // agree; this validator observes that fact without changing the workflow.
+  const failed = ledger.length === 0 && terminalNotCommitted.includes(String(requisition?.status || '')) && String(operation?.final_status || '') === String(requisition?.status || '') && (String(transaction?.status || '') === String(requisition?.status || '') || String(transaction?.status || '') === 'WAITING_APPROVAL');
+  if (failed) return { result: 'NOT_COMMITTED', evidence, reason: '没有扣减流水，且领料申请与业务操作存在一致的明确未提交终态' };
+  return { result: 'STILL_UNKNOWN', evidence, reason: '领料业务事实不完整或相互矛盾，不能安全判断是否已提交' };
+}
 
 // The first production handler deliberately supports only audit records whose
 // replay is deterministic. Ambiguous records are returned as UNKNOWN instead
@@ -40,6 +85,29 @@ const defaultHandlers = {
     verify({ job }) {
       const queue = db.prepare('SELECT status FROM audit_retry_queue WHERE id=? AND enterprise_id=?').get(String(job.payload.queue_id || ''), job.enterprise_id);
       return { ok: queue?.status === 'RECORDED', message: '审计重放回读失败' };
+    }
+  },
+  // This handler intentionally performs evidence reads only. It never calls the
+  // Material Issue executor, so recovery cannot create a second inventory effect.
+  material_issue_fact_validator: {
+    execute({ job }) {
+      const result = materialIssueFactResult(job);
+      const runId = String(job.payload.runtime_run_id || '');
+      const stepId = String(job.payload.runtime_step_id || '');
+      const attemptId = String(job.payload.runtime_attempt_id || '');
+      if (runId && stepId) {
+        transactionAudit.recordValidation({
+          run: { run_id: runId, enterprise_id: job.enterprise_id }, stepId, attemptId,
+          result: result.result, snapshot: result.evidence, reason: result.reason,
+          source: 'READ_COMMITTED', overrideAllowed: false,
+          validatorType: 'MATERIAL_ISSUE_FACT_VALIDATOR', ruleId: 'material_issue.fact_reconciliation'
+        });
+      }
+      if (result.result === 'STILL_UNKNOWN') return { unknown: true, code: 'material_issue_still_unknown', message: result.reason, result };
+      return { ok: true, result };
+    },
+    verify({ outcome }) {
+      return { ok: outcome?.result?.result !== 'STILL_UNKNOWN', message: 'Material Issue 事实验证未得到确定结论' };
     }
   }
 };
@@ -106,7 +174,7 @@ class AuditRecoveryService {
     if (!verification?.ok) return this.finishFailure(running, attemptId, { ...verification, code: verification.code || 'verification_failed', message: verification.message || '执行成功但独立验证失败', nonRetryable: true }, situationFingerprint, 'SUCCESS', 'FAILED');
     this.transition(running, STATES.SUCCEEDED, { executionStatus: 'SUCCESS', verificationStatus: 'VERIFIED', situationFingerprint }); db.prepare("UPDATE audit_recovery_attempts SET execution_status='SUCCESS',verification_status='VERIFIED',strategy='STOP',finished_at=? WHERE id=?").run(this.now(), attemptId); db.prepare("UPDATE audit_recovery_idempotency SET status='SUCCEEDED',result_snapshot=?,updated_at=? WHERE enterprise_id=? AND idempotency_key=?").run(JSON.stringify(outcome.result || {}), this.now(), running.enterprise_id, running.idempotency_key); this.updateCircuit(running, true); this.event(running.enterprise_id, running.id, 'VERIFIED_SUCCESS', { attemptNo }, attemptId); return publicJob(this.getJob(running.id, running.enterprise_id));
   }
-  finishUnknown(job, attemptId, outcome, fp, execution = 'UNKNOWN') { this.transition(job, STATES.UNKNOWN, { executionStatus: execution, verificationStatus: 'UNKNOWN', errorType: FAILURE.UNKNOWN, errorCode: outcome.code || 'unknown', errorSignature: fingerprint({ code: outcome.code || 'unknown' }), situationFingerprint: fp }); db.prepare("UPDATE audit_recovery_attempts SET execution_status=?,verification_status='UNKNOWN',failure_class='UNKNOWN',failure_code=?,failure_reason=?,strategy='MARK_UNKNOWN',finished_at=? WHERE id=?").run(execution, outcome.code || 'unknown', sanitize(outcome.message || ''), this.now(), attemptId); db.prepare("UPDATE audit_recovery_idempotency SET status='UNKNOWN',updated_at=? WHERE enterprise_id=? AND idempotency_key=?").run(this.now(), job.enterprise_id, job.idempotency_key); this.event(job.enterprise_id, job.id, 'MARKED_UNKNOWN', { code: outcome.code || 'unknown' }, attemptId); return publicJob(this.getJob(job.id, job.enterprise_id)); }
+  finishUnknown(job, attemptId, outcome, fp, execution = 'UNKNOWN') { this.transition(job, STATES.UNKNOWN, { executionStatus: execution, verificationStatus: 'UNKNOWN', errorType: FAILURE.UNKNOWN, errorCode: outcome.code || 'unknown', errorSignature: fingerprint({ code: outcome.code || 'unknown' }), situationFingerprint: fp }); db.prepare("UPDATE audit_recovery_attempts SET execution_status=?,verification_status='UNKNOWN',failure_class='UNKNOWN',failure_code=?,failure_reason=?,strategy='MARK_UNKNOWN',finished_at=? WHERE id=?").run(execution, outcome.code || 'unknown', sanitize(outcome.message || ''), this.now(), attemptId); db.prepare("UPDATE audit_recovery_idempotency SET status='UNKNOWN',result_snapshot=?,updated_at=? WHERE enterprise_id=? AND idempotency_key=?").run(JSON.stringify(outcome.result || {}), this.now(), job.enterprise_id, job.idempotency_key); this.event(job.enterprise_id, job.id, 'MARKED_UNKNOWN', { code: outcome.code || 'unknown', recoveryResult: outcome.result?.result || 'STILL_UNKNOWN' }, attemptId); return publicJob(this.getJob(job.id, job.enterprise_id)); }
   finishFailure(job, attemptId, outcome, fp, execution = 'FAILED', verification = 'NOT_VERIFIED') { const type = outcome.nonRetryable ? FAILURE.NON_RETRYABLE : classified(outcome); const signature = fingerprint({ type, code: outcome.code || '', message: outcome.message || '' }); const same = job.last_situation_fingerprint === fp && job.last_error_signature === signature; const noProgress = same ? Number(job.no_progress_count || 0) + 1 : 0; const exhausted = Number(job.attempt_count) + 1 >= Number(job.max_attempts) || (job.recovery_deadline_at && job.recovery_deadline_at < this.now()); let next = STATES.DEAD; let strategy = 'MARK_DEAD'; // Repeating identical evidence cannot add safety confidence, so stop this Run rather than loop indefinitely.
     if (type === FAILURE.UNKNOWN) { next = STATES.UNKNOWN; strategy = 'MARK_UNKNOWN'; } else if (type === FAILURE.RETRYABLE && !exhausted && noProgress < this.maxNoProgress) { next = STATES.RETRY_SCHEDULED; strategy = 'RETRY'; } else if (noProgress >= this.maxNoProgress) strategy = 'STOP_NO_PROGRESS';
     this.transition(job, next, { executionStatus: execution, verificationStatus: verification, nextRetryAt: next === STATES.RETRY_SCHEDULED ? this.later(retryDelay(Number(job.attempt_count) + 1)) : '', errorType: type, errorCode: outcome.code || 'execution_failed', errorSignature: signature, situationFingerprint: fp, noProgressCount: noProgress }); db.prepare('UPDATE audit_recovery_attempts SET execution_status=?,verification_status=?,failure_class=?,failure_code=?,failure_reason=?,strategy=?,finished_at=? WHERE id=?').run(execution, verification, type, outcome.code || 'execution_failed', sanitize(outcome.message || ''), strategy, this.now(), attemptId); db.prepare('UPDATE audit_recovery_idempotency SET status=?,updated_at=? WHERE enterprise_id=? AND idempotency_key=?').run(next, this.now(), job.enterprise_id, job.idempotency_key); this.updateCircuit(job, false); this.event(job.enterprise_id, job.id, noProgress >= this.maxNoProgress ? 'NO_PROGRESS' : 'ATTEMPT_FAILED', { type, code: outcome.code || '', strategy }, attemptId); return publicJob(this.getJob(job.id, job.enterprise_id));
@@ -117,4 +185,4 @@ class AuditRecoveryService {
   watchdog({ staleMs = 60000 } = {}) { const cutoff = new Date(new this.clock().getTime() - staleMs).toISOString(); const stale = db.prepare("SELECT * FROM audit_recovery_workers WHERE heartbeat_at<? AND status<>'STOPPED'").all(cutoff); for (const worker of stale) this.event('', worker.current_job_id || 'system', 'WORKER_HEARTBEAT_STALE', { workerId: worker.worker_id }); return { staleWorkers: stale.map(x => x.worker_id), reclaimed: this.reclaimExpiredLeases() }; }
   details(id, enterpriseId) { const job = this.getJob(id, enterpriseId); return { job: publicJob(job), attempts: db.prepare('SELECT * FROM audit_recovery_attempts WHERE job_id=? AND enterprise_id=? ORDER BY attempt_no').all(id, enterpriseId).map(x => ({ ...x, situation_state: parse(x.situation_state) })), events: db.prepare('SELECT * FROM audit_recovery_events WHERE job_id=? AND enterprise_id=? ORDER BY created_at').all(id, enterpriseId).map(x => ({ ...x, detail: parse(x.detail) })), circuit: this.circuit(enterpriseId, job.handler_type) }; }
 }
-module.exports = { AuditRecoveryService, STATES, FAILURE, TRANSITIONS, fingerprint, retryDelay };
+module.exports = { AuditRecoveryService, STATES, FAILURE, TRANSITIONS, fingerprint, retryDelay, materialIssueFactResult };

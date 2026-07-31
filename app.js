@@ -123,7 +123,7 @@ const App = {
     inquirySelectedId: '',
     inquirySearch: '',
     inquiryLoading: false,
-    materialIssue: { preparationId: localStorage.getItem('personal-ai-os-material-issue-preparation') || '', detail: null, requisitions: [] },
+    materialIssue: { preparationId: localStorage.getItem('personal-ai-os-material-issue-preparation') || '', detail: null, requisitions: [], recovery: null },
     manufacturing: ManufacturingWorkspace.emptyState(),
     apqp: { open: false, loading: false, projects: [], selectedId: '', project: null, error: '' },
     agent: {
@@ -1322,6 +1322,7 @@ const App = {
       'material-issue-override': () => this.decideMaterialIssue(true, true),
       'material-issue-reject': () => this.decideMaterialIssue(false, false),
       'material-issue-execute': () => this.executeMaterialIssue(),
+      'material-issue-result-unavailable': () => this.recordMaterialIssueResultUnavailable(),
       'plan-sample': () => this.planSample(el),
       'plan-csv-template': () => this.downloadPlanCsvTemplate(el),
       'plan-analyze': () => this.planAnalyze(el),
@@ -9720,6 +9721,7 @@ const App = {
     if (!AuthClient.isLoggedIn() || AuthClient.isDemo()) {
       this.temp.materialIssue.detail = null;
       this.temp.materialIssue.requisitions = [];
+      this.temp.materialIssue.recovery = null;
       if (showToast) this.toast('当前为静态/演示模式，真实领料需连接后端');
       return;
     }
@@ -9729,6 +9731,10 @@ const App = {
     if (id) {
       const detail = await APIClient.request(`/api/transaction-safety/preparations/${encodeURIComponent(id)}`);
       this.temp.materialIssue.detail = detail.data;
+      const operationId = detail.data?.preparation?.business_operation_id;
+      this.temp.materialIssue.recovery = operationId
+        ? (await APIClient.request(`/api/audit-recovery/material-issue/${encodeURIComponent(operationId)}`)).data
+        : null;
     }
     if (showToast) this.toast('领料状态已从后端刷新');
     if (this.route === 'inventory') this.rerender();
@@ -9778,6 +9784,15 @@ const App = {
     await APIClient.request(`/api/transaction-safety/preparations/${encodeURIComponent(id)}/execute`, { method: 'POST', body: JSON.stringify({}) });
     await this.refreshInventory();
     this.toast('领料执行完成，已从 SQLite 重新读取状态和库存');
+  },
+
+  async recordMaterialIssueResultUnavailable() {
+    const id = this.temp.materialIssue.preparationId;
+    if (!id) throw new Error('请先选择领料申请');
+    if (!confirm('仅当客户端未得到 Execute 确定响应时登记。系统只会核对已有事实，绝不会重新执行领料。')) return;
+    await APIClient.request(`/api/transaction-safety/preparations/${encodeURIComponent(id)}/result-unavailable`, { method: 'POST', body: JSON.stringify({}) });
+    await this.refreshMaterialIssue();
+    this.toast('未知结果已登记，等待只读事实验证');
   },
 
   getPlanWorkspace() {

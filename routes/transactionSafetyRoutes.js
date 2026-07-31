@@ -1,10 +1,12 @@
 const express = require('express');
 const { authRequired } = require('../middleware/auth');
 const controller = require('../controllers/transactionSafetyController');
+const recoveryController = require('../controllers/materialIssueRecoveryController');
 const router = express.Router();
 router.post('/preparations', authRequired, controller.prepare);
 router.get('/requisitions', authRequired, controller.requisitions);
 router.get('/preparations/:id', authRequired, controller.detail);
 router.post('/preparations/:id/approval', authRequired, controller.approve);
 router.post('/preparations/:id/execute', authRequired, controller.execute);
+router.post('/preparations/:id/result-unavailable', authRequired, recoveryController.unavailable);
 module.exports = router;
