@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 
 const root = process.cwd();
-const baseUrl = 'http://127.0.0.1:3000';
-const chromePort = 9222;
+const baseUrl = process.env.E2E_BASE_URL || 'http://127.0.0.1:3000';
+const chromePort = Number(process.env.E2E_CHROME_PORT || 9222);
+const environmentOnly = process.argv.includes('--environment-only');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -42,8 +43,14 @@ async function chromeNewTab(url) {
   return result;
 }
 
-function pickTab(tabs) {
-  return tabs.find(tab => tab.type === 'page') || tabs[0];
+function pickTab(tabs, targetUrl = '') {
+  const pages = tabs.filter(tab => tab.type === 'page' && !String(tab.url || '').startsWith('chrome-extension://'));
+  return pages.find(tab => tab.url === targetUrl)
+    || pages.find(tab => tab.url === 'about:blank')
+    || pages.find(tab => targetUrl && String(tab.url || '').startsWith(targetUrl))
+    || pages[0]
+    || tabs.find(tab => tab.type === 'page')
+    || tabs[0];
 }
 
 async function cdpConnect(wsUrl) {
@@ -75,11 +82,11 @@ async function cdpConnect(wsUrl) {
 
 async function openPage(url) {
   let tabs = await chromeTabs();
-  let tab = pickTab(tabs);
-  if (!tab) {
-    await chromeNewTab(url);
+  let tab = pickTab(tabs, url);
+  if (!tab || String(tab.url || '').startsWith('chrome-extension://')) {
+    const created = await chromeNewTab(url);
     tabs = await chromeTabs();
-    tab = pickTab(tabs);
+    tab = tabs.find(candidate => candidate.id === created.targetId) || pickTab(tabs, url);
   }
   const { ws, send, events } = await cdpConnect(tab.webSocketDebuggerUrl);
   await send('Page.enable');
@@ -527,9 +534,32 @@ async function testMonitor() {
   return 'monitor: ok';
 }
 
+// This is deliberately an environment probe only: it proves the managed
+// browser can navigate to the configured application entry without creating
+// users, changing inventory, or making business assertions.
+async function testEnvironmentEntry() {
+  const { ws, send } = await openPage(baseUrl);
+  const state = JSON.parse(await evalValue(send, `JSON.stringify({
+    readyState: document.readyState,
+    title: document.title,
+    bodyLength: (document.body?.innerText || '').trim().length,
+    url: location.href
+  })`));
+  ws.close();
+  if (state.readyState !== 'complete' || !state.bodyLength || !state.url.startsWith(baseUrl)) {
+    throw new Error(`应用入口未就绪：${JSON.stringify(state)}`);
+  }
+  return 'browser-environment-entry: ok';
+}
+
 async function main() {
   await waitForServer(baseUrl);
   const results = [];
+  if (environmentOnly) {
+    results.push(await testEnvironmentEntry());
+    console.log(results.join('\n'));
+    return;
+  }
   results.push(await testChat());
   results.push(await testOcr());
   results.push(await testQuotation());

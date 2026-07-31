@@ -90,6 +90,8 @@
 
 ## Current Decision
 
-**Environment status: BLOCKED.**
+**Environment status: READY.**
 
-原因不是笼统的“环境不稳定”，而是上述 Ready Criteria 尚无连续 2–3 次、由统一生命周期管理的浏览器可访问证据。现有 `npm run verify` 的脚本结构可以作为后续唯一的稳定化路径；本轮仅记录边界，不修改该脚本，也不把未完成的 Material Issue 浏览器场景改标为通过。
+历史 `BLOCKED` 记录不被删除：其原因是当时尚无连续、由统一生命周期管理的浏览器可访问证据。Phase C-3.2 后，`npm run verify -- --environment-only` 已连续两轮完成服务启动、health/self-test、Chrome CDP、应用入口导航、清理和端口释放；标准 `npm run verify` 亦成功。现有 `verify` 路径仍是唯一运行器边界。
+
+这只解除浏览器**环境**阻塞：此前未完成的 Material Issue 浏览器 Scenario 仍不得改标为 `VERIFIED`，直到分别获得 UI、API 与 SQLite Evidence。
