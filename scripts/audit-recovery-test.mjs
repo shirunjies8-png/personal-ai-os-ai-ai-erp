@@ -71,7 +71,10 @@ try {
   db.prepare('UPDATE audit_recovery_jobs SET lease_expires_at=? WHERE id=?').run(new Date(Date.now() - 1000).toISOString(), one.id); assert.equal(service.reclaimExpiredLeases(), 1); assert.equal(run(claimed.job).status, STATES.SUCCEEDED);
 
   // Circuit is isolated by handler/enterprise and has OPEN -> HALF_OPEN -> CLOSED recovery.
-  const circuitService = new AuditRecoveryService({ handlers, leaseMs: 5, maxNoProgress: 2, circuitThreshold: 3, circuitCooldownMs: 1 });
+  // The test explicitly expires this cooldown below. Keep the initial window
+  // long enough that normal event-loop scheduling cannot turn OPEN into
+  // HALF_OPEN before the assertion runs.
+  const circuitService = new AuditRecoveryService({ handlers, leaseMs: 5, maxNoProgress: 2, circuitThreshold: 3, circuitCooldownMs: 60000 });
   for (let i = 0; i < 3; i += 1) { const item = circuitService.create({ enterpriseId: circuitEnterprise, handlerType: 'controlled', payload: { mode: 'no_progress', marker: i }, idempotencyKey: `circuit-${i}`, maxAttempts: 1 }); circuitService.runOnce(`circuit-${i}`, circuitEnterprise); }
   assert.equal(circuitService.circuit(circuitEnterprise, 'controlled').status, 'OPEN');
   const blocked = circuitService.create({ enterpriseId: circuitEnterprise, handlerType: 'controlled', payload: { evidence_version: 'ready' }, idempotencyKey: 'circuit-blocked' }); assert.equal(circuitService.runOnce('blocked-worker', circuitEnterprise), null); assert.ok(circuitService.details(blocked.job.id, circuitEnterprise).events.some(event => event.event_type === 'CIRCUIT_BLOCKED'));
