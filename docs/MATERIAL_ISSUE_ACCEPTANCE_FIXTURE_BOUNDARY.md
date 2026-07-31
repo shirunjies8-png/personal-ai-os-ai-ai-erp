@@ -66,3 +66,13 @@ Create isolated SQLite database
 - 不修改 Material Issue、库存扣减、审批状态机、Recovery Runtime、生产 API、业务 schema 或 UI。
 - 不新增业务字段、业务表、Agent、Skill、Material Master 或任何测试后门。
 - 业务问题只能记录 Issue，不能在 Fixture Sprint 中修复。
+
+## 8. Fixture Readiness Evidence
+
+实现位置：`scripts/material-issue-fixture.mjs`；由现有 `scripts/verify.mjs` 在 `--material-issue-fixture` 参数下，于应用启动前创建临时目录并注入 `DB_PATH`。
+
+实际命令：`npm run verify -- --material-issue-fixture --environment-only`。
+
+验证结果：连续两轮均完成临时 schema 初始化、同企业 Requester/Approver 的真实 `/api/auth/login` JWT 登录、三条 inventory fixture、health/self-test、浏览器入口和 cleanup。`finally` 删除完整临时目录，因此 SQLite、WAL 与 SHM 不会留在开发库路径中。
+
+**Fixture status: READY.** 这不代表 Scenario A–E 已验证；它仅证明未来三证据验收能在不污染开发数据库的前提下启动。
