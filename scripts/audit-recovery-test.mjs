@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
+// This suite proves Recovery Runtime state, isolation, idempotency and governance.
+// It does not claim that arbitrary external systems are recovered or production is deployed.
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-office-audit-recovery-'));
 process.env.DB_PATH = path.join(root, 'recovery.sqlite3'); process.env.LOGS_DIR = path.join(root, 'logs'); process.env.JWT_SECRET = crypto.randomBytes(32).toString('hex');
 const require = createRequire(import.meta.url);
