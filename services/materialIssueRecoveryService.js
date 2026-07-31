@@ -34,6 +34,7 @@ function recordResultUnavailable({ enterpriseId, actor, preparationId }) {
     runtime_run_id: context.preparation.run_id,
     runtime_step_id: context.step.id,
     runtime_attempt_id: runtimeAttemptId,
+    requested_by: context.requisition.requested_by,
     input: { business_operation_id: context.preparation.business_operation_id, preparation_id: context.preparation.id, transaction_id: context.transaction.id },
     environment: 'client_result_unavailable'
   };
@@ -51,8 +52,8 @@ function lookup({ enterpriseId, businessOperationId }) {
   const idempotency = db.prepare('SELECT result_snapshot FROM audit_recovery_idempotency WHERE enterprise_id=? AND idempotency_key=?').get(enterpriseId, job.idempotency_key);
   const result = parse(idempotency?.result_snapshot);
   const checking = ['PENDING_RETRY', 'CLAIMED', 'RUNNING', 'RETRY_SCHEDULED'].includes(job.status);
-  const status = checking ? RECOVERY_STATUS.CHECKING : (result.result === RECOVERY_STATUS.COMMITTED ? RECOVERY_STATUS.COMMITTED : result.result === RECOVERY_STATUS.NOT_COMMITTED ? RECOVERY_STATUS.NOT_COMMITTED : RECOVERY_STATUS.STILL_UNKNOWN);
-  return { status, verified: status === RECOVERY_STATUS.COMMITTED || status === RECOVERY_STATUS.NOT_COMMITTED, source: result.evidence?.inventory_transaction ? 'inventory_transaction' : 'business_fact_reconciliation', trace_id: job.payload.runtime_run_id || operation.run_id, operation_id: businessOperationId, recovery_job_id: job.id, original_result: job.payload.observation || CLIENT_OBSERVATION.RESULT_UNAVAILABLE, evidence: result.evidence || {}, reason: result.reason || '' };
+  const factResult = checking ? RECOVERY_STATUS.CHECKING : (result.result || RECOVERY_STATUS.STILL_UNKNOWN);
+  return { status: factResult, factResult, decision: result.decision || null, verified: factResult === RECOVERY_STATUS.COMMITTED || factResult === RECOVERY_STATUS.NOT_COMMITTED, source: result.evidence?.inventory_transaction ? 'inventory_transaction' : 'business_fact_reconciliation', trace_id: job.payload.runtime_run_id || operation.run_id, operation_id: businessOperationId, recovery_job_id: job.id, original_result: job.payload.observation || CLIENT_OBSERVATION.RESULT_UNAVAILABLE, evidence: result.evidence || {}, reason: result.reason || '' };
 }
 
 module.exports = { CLIENT_OBSERVATION, RECOVERY_STATUS, recordResultUnavailable, lookup, operationContext, recovery };
