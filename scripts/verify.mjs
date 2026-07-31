@@ -19,6 +19,12 @@ const baseUrl = 'http://127.0.0.1:3000';
 const chromePort = 9222;
 const environmentOnly = process.argv.includes('--environment-only');
 const fixtureMode = process.argv.includes('--material-issue-fixture');
+const materialIssueScenarioA = process.argv.includes('--material-issue-scenario-a');
+const materialIssueScenarioB = process.argv.includes('--material-issue-scenario-b');
+const materialIssueScenarioC = process.argv.includes('--material-issue-scenario-c');
+const materialIssueScenarioD = process.argv.includes('--material-issue-scenario-d');
+const materialIssueScenarioE = process.argv.includes('--material-issue-scenario-e');
+const browserOnly = process.argv.includes('--browser-only');
 
 // A child can flush its final log line while the inherited output pipe is
 // closing. EPIPE is a transport teardown condition, not a browser or product
@@ -129,7 +135,7 @@ async function fetchJson(url) {
 
 async function verifyFixtureLogin(fixture) {
   if (!fixture) return;
-  for (const user of [fixture.requester, fixture.approver]) {
+  for (const user of [fixture.requester, fixture.requesterB, fixture.approver].filter(Boolean)) {
     const response = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: user.email, password: user.password }) });
     const body = await response.json();
     if (!response.ok || !body?.data?.token) throw new Error(`Fixture JWT login failed for ${user.id}`);
@@ -179,8 +185,28 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
     chrome.on('exit', (code, signal) => console.warn(`[verify] chrome 退出：code=${code} signal=${signal || ''}`));
     await waitFor(`http://127.0.0.1:${chromePort}/json/version`, 30000);
 
-    runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(environmentOnly ? ['--environment-only'] : [])], {
-      env: { ...runtimeEnv, E2E_BASE_URL: baseUrl, E2E_CHROME_PORT: String(chromePort) }
+    runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(environmentOnly ? ['--environment-only'] : []), ...(materialIssueScenarioA ? ['--material-issue-scenario-a'] : []), ...(materialIssueScenarioB ? ['--material-issue-scenario-b'] : []), ...(materialIssueScenarioC ? ['--material-issue-scenario-c'] : []), ...(materialIssueScenarioD ? ['--material-issue-scenario-d'] : []), ...(materialIssueScenarioE ? ['--material-issue-scenario-e'] : [])], {
+      env: {
+        ...runtimeEnv,
+        E2E_BASE_URL: baseUrl,
+        E2E_CHROME_PORT: String(chromePort),
+        E2E_CHROME_PID: String(chrome.pid || ''),
+        E2E_MATERIAL_ISSUE_SCENARIO_A: materialIssueScenarioA ? '1' : '',
+        E2E_MATERIAL_ISSUE_SCENARIO_B: materialIssueScenarioB ? '1' : '',
+        E2E_MATERIAL_ISSUE_SCENARIO_C: materialIssueScenarioC ? '1' : '',
+        E2E_MATERIAL_ISSUE_SCENARIO_D: materialIssueScenarioD ? '1' : '',
+        E2E_MATERIAL_ISSUE_SCENARIO_E: materialIssueScenarioE ? '1' : '',
+        ...(fixture ? {
+          E2E_FIXTURE_REQUESTER_EMAIL: fixture.requester.email,
+          E2E_FIXTURE_REQUESTER_PASSWORD: fixture.requester.password,
+          E2E_FIXTURE_REQUESTER_B_EMAIL: fixture.requesterB?.email || '',
+          E2E_FIXTURE_REQUESTER_B_PASSWORD: fixture.requesterB?.password || '',
+          E2E_FIXTURE_APPROVER_EMAIL: fixture.approver.email,
+          E2E_FIXTURE_APPROVER_PASSWORD: fixture.approver.password,
+          E2E_FIXTURE_ENTERPRISE_ID: fixture.enterpriseId,
+          E2E_FIXTURE_DB_PATH: fixture.dbPath
+        } : {})
+      }
     });
     evidence.result = 'READY';
     return evidence;
@@ -209,14 +235,21 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
 }
 
 async function main() {
-  log('1/4', 'node --check');
-  runChecked('npm', ['run', 'check']);
+  if (!browserOnly) {
+    log('1/4', 'node --check');
+    runChecked('npm', ['run', 'check']);
 
-  log('2/4', 'npm run build');
-  runChecked('npm', ['run', 'build']);
+    log('2/4', 'npm run build');
+    runChecked('npm', ['run', 'build']);
 
-  log('3/4', 'npm run bug:scan');
-  runChecked('npm', ['run', 'bug:scan', '--', '--check-only']);
+    log('3/4', 'npm run bug:scan');
+    runChecked('npm', ['run', 'bug:scan', '--', '--check-only']);
+  } else {
+    // Browser acceptance is sometimes invoked after the required check/unit/
+    // build gates have run separately.  It reuses this same lifecycle and
+    // must not create a second browser runner merely to fit a bounded host.
+    log('1-3/4', 'browser-only; quality gates run separately');
+  }
 
   log('4/4', environmentOnly ? 'browser environment' : 'browser e2e');
   const chromePath = chromeCandidates.find(candidate => existsSync(candidate));
@@ -225,10 +258,12 @@ async function main() {
     return;
   }
 
-  const fixture = fixtureMode ? await createMaterialIssueFixture() : null;
+  const fixture = fixtureMode || materialIssueScenarioA || materialIssueScenarioB || materialIssueScenarioC || materialIssueScenarioD || materialIssueScenarioE ? await createMaterialIssueFixture() : null;
   try {
     const runtimeEnv = fixture ? { ...process.env, DB_PATH: fixture.dbPath, UPLOADS_DIR: path.join(fixture.dir, 'uploads'), LOGS_DIR: path.join(fixture.dir, 'logs'), BACKUPS_DIR: path.join(fixture.dir, 'backups') } : process.env;
-    const cycles = environmentOnly || fixtureMode ? 2 : 1;
+    // Fixture readiness is checked twice only for the environment probe.  A
+    // Scenario mutates its isolated fixture, so it runs once per fixture.
+    const cycles = environmentOnly ? 2 : 1;
     for (let cycle = 1; cycle <= cycles; cycle += 1) {
       const result = await runBrowserLifecycle({ chromePath, cycle, runtimeEnv, fixture });
       console.log(`[verify] Browser environment cycle ${cycle}/${cycles}: ${result.result}`);
