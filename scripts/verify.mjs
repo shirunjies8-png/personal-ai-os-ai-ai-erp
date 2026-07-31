@@ -4,6 +4,7 @@ import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
+import { createMaterialIssueFixture, cleanupMaterialIssueFixture } from './material-issue-fixture.mjs';
 
 const root = process.cwd();
 // Keep every verification subprocess on the same Node runtime that started this
@@ -17,6 +18,7 @@ const chromeCandidates = [
 const baseUrl = 'http://127.0.0.1:3000';
 const chromePort = 9222;
 const environmentOnly = process.argv.includes('--environment-only');
+const fixtureMode = process.argv.includes('--material-issue-fixture');
 
 // A child can flush its final log line while the inherited output pipe is
 // closing. EPIPE is a transport teardown condition, not a browser or product
@@ -125,7 +127,16 @@ async function fetchJson(url) {
   return res.json();
 }
 
-async function runBrowserLifecycle({ chromePath, cycle }) {
+async function verifyFixtureLogin(fixture) {
+  if (!fixture) return;
+  for (const user of [fixture.requester, fixture.approver]) {
+    const response = await fetch(`${baseUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: user.email, password: user.password }) });
+    const body = await response.json();
+    if (!response.ok || !body?.data?.token) throw new Error(`Fixture JWT login failed for ${user.id}`);
+  }
+}
+
+async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env, fixture = null }) {
   let server;
   let chrome;
   let chromeProfile;
@@ -138,6 +149,7 @@ async function runBrowserLifecycle({ chromePath, cycle }) {
 
     server = spawn(nodeExecutable, ['server.js'], {
       cwd: root,
+      env: runtimeEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false
     });
@@ -151,6 +163,7 @@ async function runBrowserLifecycle({ chromePath, cycle }) {
     if (!health.ok) throw new Error('/api/health 未返回 ok');
     const selfTest = await fetchJson(`${baseUrl}/api/self-test`);
     if (!selfTest.ok) throw new Error('/api/self-test 未返回 ok');
+    await verifyFixtureLogin(fixture);
 
     chromeProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'eaos-verify-chrome-'));
     chrome = spawn(chromePath, [
@@ -167,7 +180,7 @@ async function runBrowserLifecycle({ chromePath, cycle }) {
     await waitFor(`http://127.0.0.1:${chromePort}/json/version`, 30000);
 
     runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(environmentOnly ? ['--environment-only'] : [])], {
-      env: { ...process.env, E2E_BASE_URL: baseUrl, E2E_CHROME_PORT: String(chromePort) }
+      env: { ...runtimeEnv, E2E_BASE_URL: baseUrl, E2E_CHROME_PORT: String(chromePort) }
     });
     evidence.result = 'READY';
     return evidence;
@@ -212,10 +225,16 @@ async function main() {
     return;
   }
 
-  const cycles = environmentOnly ? 2 : 1;
-  for (let cycle = 1; cycle <= cycles; cycle += 1) {
-    const result = await runBrowserLifecycle({ chromePath, cycle });
-    console.log(`[verify] Browser environment cycle ${cycle}/${cycles}: ${result.result}`);
+  const fixture = fixtureMode ? await createMaterialIssueFixture() : null;
+  try {
+    const runtimeEnv = fixture ? { ...process.env, DB_PATH: fixture.dbPath, UPLOADS_DIR: path.join(fixture.dir, 'uploads'), LOGS_DIR: path.join(fixture.dir, 'logs'), BACKUPS_DIR: path.join(fixture.dir, 'backups') } : process.env;
+    const cycles = environmentOnly || fixtureMode ? 2 : 1;
+    for (let cycle = 1; cycle <= cycles; cycle += 1) {
+      const result = await runBrowserLifecycle({ chromePath, cycle, runtimeEnv, fixture });
+      console.log(`[verify] Browser environment cycle ${cycle}/${cycles}: ${result.result}`);
+    }
+  } finally {
+    await cleanupMaterialIssueFixture(fixture);
   }
   if (!environmentOnly) {
     const report = await fs.readFile(path.join(root, 'TEST_REPORT.md'), 'utf8').catch(() => '');
