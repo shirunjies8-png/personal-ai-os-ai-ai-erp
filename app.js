@@ -372,14 +372,14 @@ const App = {
       dock.hidden = true;
       return;
     }
-    const alerts = this.getVisibleBugAlerts().filter(item => !['resolved', 'ignored'].includes(item.lifecycle || this.bugAlertLifecycle(item))).slice(0, 3);
-    if (!alerts.length) {
+    const model = this.getBugMonitorModel();
+    if (!model.currentPendingAlerts.length) {
       dock.innerHTML = '';
       dock.hidden = true;
       return;
     }
     dock.hidden = false;
-    dock.innerHTML = `<section class="bug-monitor-card bug-monitor-card-compact"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${alerts.length} 个待处理问题 · 详情已移至错误中心</small></div><button class="secondary-btn compact" data-action="bug-monitor-open">查看</button></div></section>`;
+    dock.innerHTML = `<section class="bug-monitor-card bug-monitor-card-compact"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${model.totalPendingCount} 个待处理问题 · 详情已移至错误中心</small></div><button class="secondary-btn compact" data-action="bug-monitor-open">查看</button></div></section>`;
   },
 
   bugAlertSignature(payload = {}) {
@@ -450,6 +450,17 @@ const App = {
       }
     });
     return Array.from(merged.values()).sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0));
+  },
+
+  getBugMonitorModel(alerts = this.getVisibleBugAlerts()) {
+    const context = { isGitHubPages: Utils.isGitHubPagesHost() };
+    const currentPendingAlerts = alerts.filter(item => Stability.bugAlertSemanticsModel(item, context).isCurrentPending);
+    return {
+      alerts,
+      currentPendingAlerts,
+      previewAlerts: currentPendingAlerts.slice(0, 3),
+      totalPendingCount: currentPendingAlerts.length
+    };
   },
 
   normalizeBugAlerts() {
@@ -4366,7 +4377,8 @@ const App = {
       description: String(error?.message || error || ''),
       suggestion: this.suggestFix(error),
       requestId: error?.requestId || '',
-      source: 'ai-error'
+      source: 'ai-error',
+      eventKind: error?.eventKind || ''
     });
     Store.addActivity(`AI错误：${context || '未知任务'}`, 'error');
     Store.save();
@@ -4469,7 +4481,7 @@ const App = {
     const errors = this.getVisibleBugAlerts ? this.getVisibleBugAlerts() : (Store.state.bugAlerts || []).map(item => Stability.normalizeError(item));
     const activeTasks = tasks.filter(item => ['pending', 'running', 'waiting_human'].includes(item.status));
     const failedTasks = tasks.filter(item => ['failed', 'timeout', 'interrupted'].includes(item.status));
-    const activeErrors = errors.filter(item => !['resolved', 'ignored'].includes(item.lifecycle));
+    const activeErrors = this.getBugMonitorModel(errors).currentPendingAlerts;
     const checks = [
       {
         name: 'Task Center',
@@ -4504,7 +4516,8 @@ const App = {
       tasks,
       errors,
       source,
-      gateway: Store.state.aiGatewayStatus
+      gateway: Store.state.aiGatewayStatus,
+      bugAlertContext: { isGitHubPages: Utils.isGitHubPagesHost() }
     });
     Store.state.runtimeMonitor = Store.state.runtimeMonitor || {};
     Store.state.runtimeMonitor.healthChecks = Store.state.systemHealth.checks;
@@ -5456,7 +5469,11 @@ const App = {
       const texts = [];
       for (const file of this.temp.pdf.files) {
         const parsed = await Utils.extractPdfTextRaw(file);
-        if (!Utils.isMostlyText(parsed.text)) throw new Error('该 PDF 可能是扫描件，请使用 OCR 图片识别');
+        if (!Utils.isMostlyText(parsed.text)) {
+          const guidance = new Error('该 PDF 可能是扫描件，请使用 OCR 图片识别');
+          guidance.eventKind = 'GUIDANCE';
+          throw guidance;
+        }
         texts.push(`【${file.name}】\n模式：文字层\n${parsed.text}`);
       }
       this.temp.pdf.extracted = texts.join('\n\n');

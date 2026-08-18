@@ -927,8 +927,8 @@ const UI = {
       });
       return Array.from(map.values()).sort((a, b) => (b.lastAt || b.time || 0) - (a.lastAt || a.time || 0));
     };
-    const bugAlerts = mergeBugAlerts(Store.state.bugAlerts || []);
-    const pendingAlerts = bugAlerts.filter(item => !['resolved', 'ignored'].includes(item.lifecycle || (item.ignored ? 'ignored' : item.confirmed ? 'resolved' : item.fixed ? 'fixed' : 'active')));
+    const bugAlerts = App.getVisibleBugAlerts();
+    const pendingAlerts = App.getBugMonitorModel(bugAlerts).currentPendingAlerts;
     const bugSummary = {
       total: bugAlerts.length,
       active: pendingAlerts.length,
@@ -941,7 +941,8 @@ const UI = {
       tasks: Store.state.taskRecords || [],
       errors: Store.state.bugAlerts || [],
       source: monitor.source || 'frontend',
-      gateway: Store.state.aiGatewayStatus
+      gateway: Store.state.aiGatewayStatus,
+      bugAlertContext: { isGitHubPages: Utils.isGitHubPagesHost() }
     });
     const healthChecks = Array.isArray(monitor.checks) && monitor.checks.length ? monitor.checks : [];
     const renderHealth = item => `<div class="activity"><span class="activity-icon">${icon(item.status.startsWith('🟢') ? 'check' : item.status.startsWith('⚪') ? 'dot' : item.status.startsWith('🟡') ? 'clock' : 'x')}</span><span><b>${Utils.escape(item.name)}</b><small>${Utils.escape(item.status)}${item.reason ? ` · ${Utils.escape(item.reason)}` : ''}${item.suggestion ? ` · ${Utils.escape(item.suggestion)}` : ''}</small></span></div>`;

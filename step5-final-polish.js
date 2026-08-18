@@ -93,11 +93,9 @@
     const checks = Array.isArray(store.state.systemHealth.checks) ? store.state.systemHealth.checks.slice() : [];
     const check = {
       name: 'STEP 5 Bug Monitor',
-      status: issues.length ? '🟡 待处理' : '🟢 正常',
-      reason: issues.length
-        ? `${issues.length} 个未确认且未忽略的问题会影响健康告警。`
-        : '已确认修复或已忽略的问题不会影响健康告警。',
-      suggestion: issues.length ? '请处理或忽略这些问题后再确认。' : '状态正常。',
+      status: '🟢 演示记录',
+      reason: `STEP 5 聚合演示记录 ${issues.length} 条，仅用于验证，不计入当前系统健康。`,
+      suggestion: '可在 STEP 5 演示面板查看测试证据；真实待处理问题请查看 Bug 监测。',
       time: safeNow()
     };
     const idx = checks.findIndex(item => item && item.name === 'STEP 5 Bug Monitor');
