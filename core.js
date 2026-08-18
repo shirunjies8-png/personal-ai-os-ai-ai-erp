@@ -341,6 +341,10 @@ const Stability = {
       suggestion: entry.suggestion || '请查看日志并重试。',
       requestId: entry.requestId || entry.request_id || '',
       source: entry.source || 'frontend',
+      // Preserve optional producer facts so presentation can classify a record
+      // without altering its lifecycle, persistence, or historical evidence.
+      eventKind: entry.eventKind || entry.semanticKind || '',
+      environment: entry.environment || null,
       lifecycle,
       status: lifecycle === 'resolved' ? '已验证' : lifecycle === 'fixed' ? '待验证' : lifecycle === 'investigating' ? '处理中' : lifecycle === 'ignored' ? '已忽略' : entry.status || '待确认',
       count: Math.max(1, Number(entry.count || 1)),
@@ -354,6 +358,34 @@ const Stability = {
       fixed: ['fixed', 'resolved'].includes(lifecycle),
       fixedAt: Number(entry.fixedAt || (['fixed', 'resolved'].includes(lifecycle) ? entry.time || now : 0)),
       rawError: entry.rawError || entry.detail || ''
+    };
+  },
+  bugAlertSemantics(alert = {}, context = {}) {
+    const lifecycle = alert.lifecycle || (alert.ignored ? 'ignored' : alert.confirmed ? 'resolved' : alert.fixed ? 'fixed' : 'active');
+    if (['resolved', 'ignored'].includes(lifecycle)) return 'HISTORICAL_RESOLVED';
+
+    const explicitKind = String(alert.eventKind || alert.semanticKind || '').toUpperCase();
+    if (['EXPECTED_DEGRADED', 'GUIDANCE', 'SYNTHETIC_TEST', 'UNKNOWN'].includes(explicitKind)) return explicitKind;
+
+    // STEP5 uses a stable persisted signature and fixture marker, not display text.
+    if (alert.step5Demo === true || alert.signature === 'STEP5_FINAL_DEMO_AGGREGATION' || alert.source === 'step5-demo') return 'SYNTHETIC_TEST';
+
+    const isGitHubPages = context.isGitHubPages ?? (typeof location !== 'undefined' && /(^|\.)github\.io$/i.test(location.hostname || ''));
+    if (isGitHubPages && alert.module === 'OCR' && alert.feature === 'AI 纠错建议' && alert.type === 'deepseek-not-configured') return 'EXPECTED_DEGRADED';
+
+    // Older scanned-PDF guidance records predate eventKind. Match their complete,
+    // persisted producer signature only; other unclassified events fail closed.
+    if (alert.source === 'ai-error' && alert.signature === 'pdf-extract|AI 调用|AI错误|该 PDF 可能是扫描件，请使用 OCR 图片识别') return 'GUIDANCE';
+
+    return 'CURRENT_BUG';
+  },
+  bugAlertSemanticsModel(alert = {}, context = {}) {
+    const classification = this.bugAlertSemantics(alert, context);
+    return {
+      classification,
+      isHistorical: classification === 'HISTORICAL_RESOLVED',
+      isCurrentPending: ['CURRENT_BUG', 'UNKNOWN'].includes(classification),
+      impactsHealth: ['CURRENT_BUG', 'UNKNOWN'].includes(classification)
     };
   },
   normalizeHealthCheck(entry = {}) {
@@ -372,11 +404,11 @@ const Stability = {
       time: Number(entry.time || Date.now())
     };
   },
-  buildHealthSnapshot({ checks = [], tasks = [], errors = [], source = 'frontend', gateway = null } = {}) {
+  buildHealthSnapshot({ checks = [], tasks = [], errors = [], source = 'frontend', gateway = null, bugAlertContext = {} } = {}) {
     const normalizedChecks = checks.map(item => this.normalizeHealthCheck(item));
     const normalizedTasks = tasks.map(item => this.normalizeTask(item));
     const normalizedErrors = errors.map(item => this.normalizeError(item));
-    const activeErrors = normalizedErrors.filter(item => !['resolved', 'ignored'].includes(item.lifecycle));
+    const activeErrors = normalizedErrors.filter(item => this.bugAlertSemanticsModel(item, bugAlertContext).impactsHealth);
     const failedTasks = normalizedTasks.filter(item => ['failed', 'timeout', 'interrupted'].includes(item.status));
     return {
       schemaVersion: 1,
