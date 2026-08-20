@@ -78,4 +78,30 @@ const appModel = App.getBugMonitorModel();
 assert.equal(appModel.totalPendingCount, 4, 'Bug Monitor total is independent from its three-item preview');
 assert.equal(appModel.previewAlerts.length, 3, 'Bug Monitor preview remains bounded to three records');
 
-console.log('bug-monitor-state-semantics-test: PASS (6 semantic fixture cases; UNKNOWN assertions=5)');
+const detailFixture = {
+  id: 'detail-action-1',
+  module: 'global',
+  feature: 'window.onerror',
+  type: 'JavaScript Error',
+  message: '详情动作测试',
+  source: 'system-error',
+  lifecycle: 'active',
+  time: Date.now()
+};
+vm.runInContext(`Store.state = { bugAlerts: [${JSON.stringify(detailFixture)}], aiErrors: [], repairRecords: [] };`, context);
+let detailActionError = null;
+let openedDetailHtml = '';
+App.recordAiError = (error, action) => {
+  detailActionError = { action, message: error?.message || String(error) };
+  return detailActionError.message;
+};
+App.toast = () => {};
+App.openModal = html => { openedDetailHtml = html; };
+await App.handleAction('bug-detail', { dataset: { id: detailFixture.id } });
+assert.equal(detailActionError, null, 'Bug Monitor detail action must not raise a runtime error');
+assert.match(openedDetailHtml, /问题详情/, 'Bug Monitor detail action must open the existing detail modal');
+assert.match(openedDetailHtml, /详情动作测试/, 'Bug Monitor detail modal must display the selected historical record');
+assert.equal(context.Store.state.bugAlerts.length, 1, 'opening details must preserve the original Bug Monitor history');
+assert.equal(context.Store.state.aiErrors.length, 0, 'opening details must not create a new error record');
+
+console.log('bug-monitor-state-semantics-test: PASS (6 semantic fixture cases; UNKNOWN assertions=5; detail action=1)');
