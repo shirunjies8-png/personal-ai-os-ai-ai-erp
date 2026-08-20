@@ -815,11 +815,7 @@ const App = {
       item.rawError ? `Raw Error：${item.rawError}` : '',
       repairRecords.some(entry => entry.id === item.id || entry.bugId === item.id) ? '来源：最近修复' : ''
     ].filter(Boolean).join('\n');
-    this.modal({
-      title: '问题详情',
-      body: `<pre class="log-box">${Utils.escape(lines)}</pre>`,
-      actions: `<button class="secondary-btn" data-action="modal-close">关闭</button>`
-    });
+    this.openModal(`<div class="modal-head"><h3>问题详情</h3><button class="icon-btn" data-action="modal-close" aria-label="关闭">×</button></div><div class="modal-body"><pre class="log-box">${Utils.escape(lines)}</pre><div class="button-row"><button class="secondary-btn" data-action="modal-close">关闭</button></div></div>`);
   },
 
   afterRender() {
