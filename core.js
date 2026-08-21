@@ -468,7 +468,7 @@ const StartupReliability = {
   legacyPagesTimeoutSignature: 'global|window.onunhandledrejection|系统错误|后端请求超时（10000ms），已保留本地演示数据。',
   // This cutoff is the published clean-open fix. Only an alert that predates
   // it can be migrated; a later occurrence must remain actionable.
-  legacyPagesTimeoutEligibleBefore: Date.UTC(2026, 7, 21, 13, 55, 50),
+  legacyPagesTimeoutEligibleBefore: Date.parse('2026-08-21T05:55:50Z'),
   isStaticDemoEnvironment(config = RuntimeConfig, isGitHubPages = Utils?.isGitHubPagesHost?.() || false) {
     return Boolean(config?.STATIC_DEMO_ONLY || (isGitHubPages && config?.DEMO_LOGIN_ONLY && !config?.API_BASE_URL));
   },

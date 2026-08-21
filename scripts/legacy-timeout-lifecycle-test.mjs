@@ -13,6 +13,8 @@ context.globalThis = context;
 vm.runInContext(startupSource, context, { filename: 'core.js' });
 const { StartupReliability } = context;
 
+const expectedCutoff = Date.parse('2026-08-21T05:55:50Z');
+assert.equal(StartupReliability.legacyPagesTimeoutEligibleBefore, expectedCutoff, 'cutoff must equal the immutable Clean Open commit time');
 const oldTimestamp = Date.UTC(2026, 7, 15, 8, 9, 0);
 const oldTimeout = {
   id: 'legacy-pages-timeout',
@@ -31,6 +33,17 @@ assert.equal(migrated.alerts[0].lifecycle, 'resolved');
 assert.equal(migrated.alerts[0].count, 1, 'CASE 1: history count must be preserved');
 assert.equal(migrated.alerts[0].lastAt, oldTimestamp, 'CASE 1: original last occurrence must be preserved');
 assert.match(migrated.alerts[0].resolutionReason, /隐式后端探测/);
+
+const migrationAt = lastAt => StartupReliability.resolveKnownLegacyStartupAlerts([{
+  ...oldTimeout,
+  time: lastAt,
+  firstAt: lastAt,
+  lastAt
+}], { staticDemo: true, now: expectedCutoff + 60_000 });
+assert.equal(migrationAt(expectedCutoff - 1).resolved, 1, 'CASE B: one millisecond before cutoff remains eligible');
+assert.equal(migrationAt(expectedCutoff).resolved, 0, 'CASE C: exactly at cutoff must remain active');
+assert.equal(migrationAt(expectedCutoff + 1).resolved, 0, 'CASE D: one millisecond after cutoff must remain active');
+assert.equal(migrationAt(expectedCutoff + 60_000).resolved, 0, 'CASE E: one minute after cutoff must remain active');
 
 const newOccurrence = StartupReliability.resolveKnownLegacyStartupAlerts([{
   ...migrated.alerts[0],
