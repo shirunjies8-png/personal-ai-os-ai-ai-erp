@@ -1,8 +1,14 @@
 const path = require('node:path');
 const dotenv = require('dotenv');
 
-dotenv.config({ path: path.join(process.cwd(), '.env') });
-dotenv.config({ path: path.join(process.cwd(), '.env.local'), override: true });
+// Isolated verification must never inherit a developer's database, port or
+// credentials from local dotenv files. Production and normal local startup
+// keep their existing dotenv behavior; the opt-in flag is only for hermetic
+// test processes that provide their complete environment explicitly.
+if (process.env.AI_OFFICE_SKIP_ENV_FILES !== '1') {
+  dotenv.config({ path: path.join(process.cwd(), '.env') });
+  dotenv.config({ path: path.join(process.cwd(), '.env.local'), override: true });
+}
 
 function normalizeDeepSeekKey(value) {
   const text = String(value || '')

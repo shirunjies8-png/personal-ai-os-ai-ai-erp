@@ -151,6 +151,13 @@ const App = {
     if (!Store.state.chats.length) this.createChat(false);
     // 先绑定交互事件，避免状态同步较慢时聊天提交被丢失。
     this.bindGlobalEvents();
+    const startupSession = StartupReliability.reconcileSession(AuthClient.session, {
+      staticDemo: StartupReliability.isStaticDemoEnvironment(RuntimeConfig, Utils.isGitHubPagesHost())
+    });
+    if (startupSession.action === 'CLEAR_STALE_REMOTE_SESSION') {
+      AuthClient.clear();
+      Store.syncStatus = { mode: 'local', state: 'fallback', message: 'GitHub Pages 静态演示模式', updatedAt: Date.now() };
+    }
     if (AuthClient.isDemo()) await this.tryPromoteDemoSession();
     await Store.hydrateFromServer();
     this.setupOcrProviders();
@@ -174,6 +181,10 @@ const App = {
         }
       });
     }
+    const legacyStartupAlerts = StartupReliability.resolveKnownLegacyStartupAlerts(Store.state.bugAlerts, {
+      staticDemo: StartupReliability.isStaticDemoEnvironment(RuntimeConfig, Utils.isGitHubPagesHost())
+    });
+    if (legacyStartupAlerts.resolved) Store.state.bugAlerts = legacyStartupAlerts.alerts;
     this.normalizeBugAlerts();
     this.applyTheme();
     this.renderNav();
@@ -183,11 +194,22 @@ const App = {
     await this.updateStorage();
     this.updateApiState();
     this.renderBugMonitor();
-    if (AuthClient.isLoggedIn()) {
+    if (AuthClient.isLoggedIn()) await this.refreshStartupAuthenticatedState();
+  },
+
+  async refreshStartupAuthenticatedState() {
+    try {
       await this.refreshDashboard();
       await this.refreshOrders();
       await this.refreshInventory();
       await this.refreshAgentRuntime();
+    } catch (error) {
+      if (!StartupReliability.isExpectedSessionExpiry(error)) throw error;
+      AuthClient.clear();
+      Store.syncStatus = { mode: 'local', state: 'expired', message: '登录已失效，请重新登录。', updatedAt: Date.now() };
+      this.renderNav();
+      this.navigate('login');
+      this.toast('登录已失效，请重新登录。', 'warning');
     }
   },
 

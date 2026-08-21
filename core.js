@@ -462,6 +462,54 @@ const AuthClient = {
   }
 };
 
+const StartupReliability = {
+  legacyStartupRelease: 'PUBLIC_DEMO_CLEAN_OPEN_V1',
+  legacyLoginExpirySignature: 'global|window.onunhandledrejection|系统错误|登录已失效',
+  isStaticDemoEnvironment(config = RuntimeConfig, isGitHubPages = Utils?.isGitHubPagesHost?.() || false) {
+    return Boolean(config?.STATIC_DEMO_ONLY || (isGitHubPages && config?.DEMO_LOGIN_ONLY && !config?.API_BASE_URL));
+  },
+  reconcileSession(session = {}, { staticDemo = false } = {}) {
+    if (staticDemo && session?.token && session?.demo !== true) {
+      return { action: 'CLEAR_STALE_REMOTE_SESSION', reason: 'static_demo_environment' };
+    }
+    return { action: 'KEEP_SESSION', reason: session?.token ? 'session_present' : 'session_missing' };
+  },
+  isExpectedSessionExpiry(error) {
+    const message = String(error?.message || error || '');
+    const status = Number(error?.status || error?.statusCode || 0);
+    return status === 401 || /登录已失效|session\s*(?:expired|invalid)|token\s*(?:expired|invalid)|\b401\b/i.test(message);
+  },
+  resolveKnownLegacyStartupAlerts(alerts = [], { staticDemo = false, now = Date.now() } = {}) {
+    if (!staticDemo || !Array.isArray(alerts)) return { alerts, resolved: 0 };
+    let resolved = 0;
+    const migrated = alerts.map(alert => {
+      const signature = String(alert?.signature || '');
+      const lifecycle = String(alert?.lifecycle || 'active');
+      const lastAt = Number(alert?.lastAt || alert?.time || 0);
+      const previousResolution = Number(alert?.legacyStartupResolvedAt || 0);
+      const eligible = signature === this.legacyLoginExpirySignature
+        && alert?.source === 'system-error'
+        && lifecycle === 'active'
+        && (!previousResolution || lastAt <= previousResolution);
+      if (!eligible) return alert;
+      resolved += 1;
+      return {
+        ...alert,
+        lifecycle: 'resolved',
+        status: '已验证',
+        confirmed: true,
+        confirmedAt: now,
+        fixed: true,
+        fixedAt: now,
+        legacyStartupRelease: this.legacyStartupRelease,
+        legacyStartupResolvedAt: now,
+        resolutionReason: '旧版 GitHub Pages 启动链路缺陷已由 PUBLIC_DEMO_CLEAN_OPEN_V1 修复；历史证据保留。'
+      };
+    });
+    return { alerts: migrated, resolved };
+  }
+};
+
 const APIClient = {
   async safeReadResponse(response) {
     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
