@@ -465,6 +465,10 @@ const AuthClient = {
 const StartupReliability = {
   legacyStartupRelease: 'PUBLIC_DEMO_CLEAN_OPEN_V1',
   legacyLoginExpirySignature: 'global|window.onunhandledrejection|系统错误|登录已失效',
+  legacyPagesTimeoutSignature: 'global|window.onunhandledrejection|系统错误|后端请求超时（10000ms），已保留本地演示数据。',
+  // This cutoff is the published clean-open fix. Only an alert that predates
+  // it can be migrated; a later occurrence must remain actionable.
+  legacyPagesTimeoutEligibleBefore: Date.UTC(2026, 7, 21, 13, 55, 50),
   isStaticDemoEnvironment(config = RuntimeConfig, isGitHubPages = Utils?.isGitHubPagesHost?.() || false) {
     return Boolean(config?.STATIC_DEMO_ONLY || (isGitHubPages && config?.DEMO_LOGIN_ONLY && !config?.API_BASE_URL));
   },
@@ -487,10 +491,18 @@ const StartupReliability = {
       const lifecycle = String(alert?.lifecycle || 'active');
       const lastAt = Number(alert?.lastAt || alert?.time || 0);
       const previousResolution = Number(alert?.legacyStartupResolvedAt || 0);
-      const eligible = signature === this.legacyLoginExpirySignature
+      const recurrenceSafe = !previousResolution || lastAt <= previousResolution;
+      const legacyLoginEligible = signature === this.legacyLoginExpirySignature
         && alert?.source === 'system-error'
         && lifecycle === 'active'
-        && (!previousResolution || lastAt <= previousResolution);
+        && recurrenceSafe;
+      const legacyTimeoutEligible = signature === this.legacyPagesTimeoutSignature
+        && alert?.source === 'system-error'
+        && lifecycle === 'active'
+        && lastAt > 0
+        && lastAt < this.legacyPagesTimeoutEligibleBefore
+        && recurrenceSafe;
+      const eligible = legacyLoginEligible || legacyTimeoutEligible;
       if (!eligible) return alert;
       resolved += 1;
       return {
@@ -503,7 +515,9 @@ const StartupReliability = {
         fixedAt: now,
         legacyStartupRelease: this.legacyStartupRelease,
         legacyStartupResolvedAt: now,
-        resolutionReason: '旧版 GitHub Pages 启动链路缺陷已由 PUBLIC_DEMO_CLEAN_OPEN_V1 修复；历史证据保留。'
+        resolutionReason: legacyTimeoutEligible
+          ? '旧版 GitHub Pages 隐式后端探测导致的启动超时已由 PUBLIC_DEMO_CLEAN_OPEN_V1 修复；历史证据保留。'
+          : '旧版 GitHub Pages 启动链路缺陷已由 PUBLIC_DEMO_CLEAN_OPEN_V1 修复；历史证据保留。'
       };
     });
     return { alerts: migrated, resolved };
