@@ -83,7 +83,8 @@ function responseShape(overrides = {}) {
     totalTokens: Number(overrides.totalTokens || 0), estimatedCost: Number(overrides.estimatedCost || 0), cost: overrides.cost || costControl.costView(overrides.estimatedCost || 0), durationMs: Number(overrides.durationMs || 0),
     cached: Boolean(overrides.cached), cacheCreatedAt: overrides.cacheCreatedAt || '', retryCount: Number(overrides.retryCount || 0),
     budgetStatus: overrides.budgetStatus || 'normal', warnings: Array.isArray(overrides.warnings) ? overrides.warnings : [],
-    errors: Array.isArray(overrides.errors) ? overrides.errors : [], createdAt: overrides.createdAt || new Date().toISOString()
+    errors: Array.isArray(overrides.errors) ? overrides.errors : [], createdAt: overrides.createdAt || new Date().toISOString(),
+    securityDecision: overrides.securityDecision || null
   };
 }
 
@@ -192,6 +193,22 @@ async function chat(input = {}, runtime = {}) {
   } catch (error) {
     const result = responseShape({ ...base, status: 'failed', errors: [sanitizeErrorMessage(error)] });
     recordOutcome(input, result, { errorSignature: 'deepseek-redaction-failed' });
+    return result;
+  }
+  const outbound = policy.canSendToExternalAI({
+    classification: input.dataClassification,
+    destination: 'EXTERNAL',
+    purpose: input.taskType,
+    dataScope: input.dataScope,
+    redactionStatus: protectedPayload.changed || String(input.redactionStatus || '').toUpperCase() === 'REDACTED' ? 'REDACTED' : 'NOT_REDACTED',
+    actor: input.actor || { id: input.userId },
+    tool: 'ai_gateway',
+    policy: input.outboundPolicy,
+    containsSecrets: Boolean(input.containsSecrets)
+  });
+  if (!outbound.allowed) {
+    const result = responseShape({ ...base, status: 'security_blocked', errors: ['安全与隐私策略阻止向外部 AI 发送当前数据。'], securityDecision: redaction.sanitizeAuditRecord({ actor: input.userId, action: 'SEND', decision: outbound.decision, policyId: outbound.policyId, resourceType: 'ai_gateway', classification: outbound.classification, destination: outbound.destination, timestamp: createdAt, requestId: requestIdValue, containsSecrets: input.containsSecrets }) });
+    recordOutcome(input, result, { errorSignature: `security-${String(outbound.reason || 'blocked').toLowerCase()}`, redactionCount: protectedPayload.total });
     return result;
   }
   const maxTokens = Math.min(Number(input.maxTokens || env.deepseekMaxOutputTokens), env.deepseekMaxOutputTokens);

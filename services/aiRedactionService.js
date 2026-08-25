@@ -2,7 +2,9 @@ const crypto = require('node:crypto');
 
 const RULES = Object.freeze([
   ['authorization', /\b(?:authorization|bearer)\s*[:=]?\s*[A-Za-z0-9._~+/=-]{8,}/gi, '[REDACTED_AUTHORIZATION]'],
-  ['api_key', /\b(?:api[_ -]?key|secret|token)\s*[:=]\s*[A-Za-z0-9._~+/=-]{8,}/gi, '[REDACTED_API_KEY]'],
+  ['credential', /\b(?:api[_ -]?key|secret|token|password|passwd|pwd)\s*[:=]\s*[^\s,;]{6,}/gi, '[REDACTED_CREDENTIAL]'],
+  ['sk_key', /\bsk-[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_API_KEY]'],
+  ['jwt', /\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]'],
   ['phone', /(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/g, '[REDACTED_PHONE]'],
   ['id_card', /(?<!\d)\d{17}[\dXx](?!\d)/g, '[REDACTED_ID]'],
   ['bank_card', /(?<!\d)(?:\d[ -]?){16,19}(?!\d)/g, '[REDACTED_BANK_CARD]'],
@@ -60,4 +62,34 @@ function hashPayload(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex');
 }
 
-module.exports = { RULES, redactText, protectMessages, hashPayload };
+const SECRET_KEY = /(?:api[-_]?key|authorization|password|token|secret|cookie|credential|session|private.?key)/i;
+
+// Logs and audit metadata are structured data as often as they are text. Redact
+// both forms so a nested request header cannot bypass the text-only rules above.
+function sanitizeForLog(value, key = '') {
+  if (SECRET_KEY.test(String(key || ''))) return '[REDACTED_CREDENTIAL]';
+  if (typeof value === 'string') return redactText(value).text;
+  if (Array.isArray(value)) return value.map(item => sanitizeForLog(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, sanitizeForLog(childValue, childKey)]));
+  }
+  return value;
+}
+
+function sanitizeAuditRecord(record = {}) {
+  const safe = sanitizeForLog({
+    actor: record.actor,
+    action: record.action,
+    decision: record.decision,
+    policyId: record.policyId,
+    resourceType: record.resourceType,
+    classification: record.classification,
+    destination: record.destination,
+    timestamp: record.timestamp,
+    requestId: record.requestId
+  });
+  const credentialPresent = Boolean(record.credentialPresent || record.containsSecrets || Object.keys(record).some(key => SECRET_KEY.test(key)));
+  return { ...safe, credentialPresent };
+}
+
+module.exports = { RULES, redactText, protectMessages, hashPayload, sanitizeForLog, sanitizeAuditRecord };

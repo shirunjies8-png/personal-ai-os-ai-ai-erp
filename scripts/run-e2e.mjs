@@ -24,6 +24,16 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function boundedCdpCall(call, timeoutMs, label) {
+  let timer;
+  return Promise.race([
+    Promise.resolve().then(call),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`${label} timed out after ${timeoutMs}ms`), { code: 'CDP_METHOD_TIMEOUT' })), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function waitForServer(url, timeoutMs = 30000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -363,7 +373,11 @@ async function openPage(url) {
   const removePageListener = created.browser.addEventListener(message => {
     if (message.sessionId !== sessionId && message.params?.sessionId !== sessionId) return;
     if (message.method) events.push(message);
-    if (!['Inspector.detached', 'Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextsCleared', 'Runtime.executionContextCreated'].includes(message.method)) return;
+    if (message.method === 'Target.detachedFromTarget') {
+      pageEvidence.sessionState = 'DETACHED';
+      pageEvidence.detachReason = message.params?.reason || '';
+    }
+    if (!['Target.detachedFromTarget', 'Inspector.detached', 'Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextsCleared', 'Runtime.executionContextCreated'].includes(message.method)) return;
     const detail = {
       timestamp: new Date().toISOString(),
       method: message.method,
@@ -433,6 +447,81 @@ async function recordOcrLifecycleStep(pageEvidence, send, step) {
   };
   console.error(`OCR_PAGE_LIFECYCLE_STEP ${JSON.stringify(detail)}`);
   return detail;
+}
+
+// OCR can legitimately occupy its worker for the product timeout window. This
+// monitor deliberately uses a separate browser-level transport and a bounded,
+// read-only Target.getTargets call every ten seconds: it observes ownership
+// without repeatedly evaluating page JavaScript or altering OCR timing.
+async function startOcrLongRunMonitor(pageEvidence) {
+  const version = await chromeVersion();
+  const monitorEvidence = {
+    transportKind: 'ocr_health_monitor',
+    browserPid: process.env.E2E_CHROME_PID || '',
+    currentStep: 'ocr_long_run_monitor',
+    targetEvents: [],
+    targetId: pageEvidence.targetId,
+    sessionId: pageEvidence.sessionId,
+    samples: []
+  };
+  const monitor = await cdpConnect(version.webSocketDebuggerUrl, monitorEvidence, message => {
+    if (!['Target.detachedFromTarget', 'Target.targetDestroyed', 'Target.targetCrashed', 'Inspector.detached'].includes(message.method)) return;
+    const detail = {
+      timestamp: new Date().toISOString(),
+      method: message.method,
+      targetId: message.params?.targetId || message.params?.targetInfo?.targetId || '',
+      sessionId: message.params?.sessionId || '',
+      reason: message.params?.reason || '',
+      status: message.params?.status || ''
+    };
+    monitorEvidence.targetEvents.push(detail);
+    console.error(`OCR_INFRA_EVENT ${JSON.stringify(detail)}`);
+  });
+  await monitor.send('Target.setDiscoverTargets', { discover: true });
+  let stopped = false;
+  let running = false;
+  const sample = async (phase = 'periodic') => {
+    if (stopped || running) return;
+    running = true;
+    const record = {
+      timestamp: new Date().toISOString(),
+      phase,
+      chromePid: processAlive(process.env.E2E_CHROME_PID),
+      browserWebSocket: wsStatus(pageEvidence.browserWs),
+      monitorWebSocket: wsStatus(monitor.ws),
+      sessionId: pageEvidence.sessionId || 'UNKNOWN',
+      targetId: pageEvidence.targetId || 'UNKNOWN',
+      browserContextId: pageEvidence.browserContextId || 'NONE',
+      currentUrl: pageEvidence.pageUrl || 'UNKNOWN',
+      lastSuccessfulCdpMethod: pageEvidence.lastCdpMethod || 'UNKNOWN',
+      targetExists: 'UNKNOWN',
+      sessionState: pageEvidence.sessionState || 'ATTACHED',
+      targetCrashed: false
+    };
+    try {
+      const result = await boundedCdpCall(() => monitor.send('Target.getTargets'), 3000, 'Target.getTargets');
+      const target = (result.targetInfos || []).find(item => item.targetId === pageEvidence.targetId);
+      record.targetExists = target ? 'EXISTS' : 'MISSING';
+      record.currentUrl = target?.url || record.currentUrl;
+    } catch (error) {
+      record.targetQuery = error.code || error.message || 'UNKNOWN';
+    } finally {
+      monitorEvidence.samples.push(record);
+      console.error(`OCR_INFRA_HEALTH ${JSON.stringify(record)}`);
+      running = false;
+    }
+  };
+  await sample('start');
+  const timer = setInterval(() => { sample('periodic').catch(() => {}); }, 10000);
+  return {
+    evidence: monitorEvidence,
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await sample('stop');
+      try { monitor.ws.close(); } catch {}
+    }
+  };
 }
 
 async function evalValue(send, expression) {
@@ -1307,6 +1396,7 @@ async function testChat() {
 async function testOcr() {
   const { ws, send, pageEvidence } = await openPage(`${baseUrl}/#/ocr`);
   const evidence = { entry: 'ocr-page', startedAt: new Date().toISOString(), browserProfile: 'verify-managed-ephemeral', pageTarget: 'dedicated-cdp-target' };
+  let monitor = null;
   try {
     await recordOcrLifecycleStep(pageEvidence, send, 'OCR_OPEN_START');
     await setAuth(send);
@@ -1362,13 +1452,23 @@ async function testOcr() {
     await recordOcrLifecycleStep(pageEvidence, send, 'OCR_BEFORE_RUNTIME_EVALUATE');
     evidence.workerBefore = JSON.parse(await evalValue(send, `JSON.stringify(window.OCRService?.health?.() || {})`));
     await recordOcrLifecycleStep(pageEvidence, send, 'OCR_AFTER_RUNTIME_EVALUATE');
+    monitor = await startOcrLongRunMonitor(pageEvidence);
     await evalValue(send, `document.querySelector('[data-action="ocr-run"]').click()`);
     const observed = [];
     const observationStarted = Date.now();
     let runState = { status: '', text: '', terminal: false };
+    let cdpStateReadBlocked = false;
     while (Date.now() - observationStarted <= evidence.observationBudgetMs) {
       await sleep(1000);
-      runState = JSON.parse(await evalValue(send, `JSON.stringify((() => {
+      if (cdpStateReadBlocked) {
+        // Keep observing browser ownership on the separate monitor until the
+        // product window ends, but do not turn a timed-out page query into a
+        // stream of additional Runtime.evaluate requests.
+        await sleep(Math.min(9000, Math.max(0, evidence.observationBudgetMs - (Date.now() - observationStarted))));
+        continue;
+      }
+      try {
+        runState = JSON.parse(await boundedCdpCall(() => evalValue(send, `JSON.stringify((() => {
         const o = window.App?.temp?.ocr || {};
         const result = o.providerResult || {};
         const data = window.Store?.state?.ocrData || {};
@@ -1382,21 +1482,45 @@ async function testOcr() {
           warnings: result.warnings || [], errors: result.errors || [], health,
           lastError: data.errors?.[0] || null, lastLog: data.providerLogs?.[0] || null
         };
-      })())`));
+        })())`), 5000, 'OCR state Runtime.evaluate'));
+      } catch (error) {
+        observed.push({ elapsedMs: Date.now() - observationStarted, status: 'CDP_STATE_UNAVAILABLE', cdpError: error.code || error.message });
+        evidence.cdpStateReadError = error.code || error.message;
+        cdpStateReadBlocked = true;
+        continue;
+      }
       observed.push({ elapsedMs: Date.now() - observationStarted, status: runState.status, progress: runState.progress, loading: runState.loading, health: runState.health, error: runState.errors?.[0]?.type || runState.lastError?.errorType || '' });
       if (runState.terminal) break;
     }
+    const arithmeticBeforeReload = await boundedCdpCall(() => evalValue(send, '1 + 1'), 5000, 'post-OCR Runtime.evaluate');
+    await boundedCdpCall(() => send('Page.reload'), 5000, 'post-OCR Page.reload');
+    await sleep(1500);
+    const arithmeticAfterReload = await boundedCdpCall(() => evalValue(send, '1 + 1'), 5000, 'post-reload Runtime.evaluate');
+    evidence.postOcrCdp = { arithmeticBeforeReload, reload: 'completed', arithmeticAfterReload };
+    if (arithmeticBeforeReload !== 2 || arithmeticAfterReload !== 2) {
+      throw new Error(`OCR_POST_RUN_CDP_QUALIFICATION_FAILED:${JSON.stringify(evidence.postOcrCdp)}`);
+    }
+    await monitor.stop();
+    evidence.infrastructureHealth = monitor.evidence.samples;
+    evidence.infrastructureEvents = monitor.evidence.targetEvents;
+    monitor = null;
     evidence.workerAfter = runState.health || {};
     evidence.observations = observed.slice(-18);
     evidence.final = { status: runState.status, providerId: runState.providerId, manualConfirmationRequired: runState.manualConfirmationRequired,
       fallbackUsed: runState.fallbackUsed, textLength: String(runState.text || '').length, warnings: runState.warnings, errors: runState.errors, lastError: runState.lastError, lastLog: runState.lastLog };
     const explicitManualState = runState.status === 'partial_success' && runState.manualConfirmationRequired && !runState.fallbackUsed;
     const explicitFailure = /failed|error|unavailable|timeout|失败|不可用|超时/i.test(runState.status);
+    if (evidence.cdpStateReadError) throw new Error(`OCR_CDP_STATE_READ_UNAVAILABLE:${JSON.stringify(evidence)}`);
     if (!runState.text.trim() && !explicitManualState && !explicitFailure) throw new Error(`OCR 未在 ${evidence.observationBudgetMs}ms 内进入明确终态：${JSON.stringify(evidence.final)}`);
     if (/Mock OCR 成功/.test(runState.status) || runState.providerId === 'mock') throw new Error('OCR 真实测试被错误标记为 Mock 成功');
     console.log(`OCR_E2E_EVIDENCE ${JSON.stringify(evidence)}`);
     return 'ocr: ok';
   } finally {
+    if (monitor) {
+      await monitor.stop().catch(() => {});
+      evidence.infrastructureHealth = monitor.evidence.samples;
+      evidence.infrastructureEvents = monitor.evidence.targetEvents;
+    }
     ws.close();
   }
 }

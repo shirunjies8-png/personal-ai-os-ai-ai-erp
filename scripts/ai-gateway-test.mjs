@@ -19,6 +19,8 @@ const base = (suffix, extra = {}) => ({
   requestId: `test-ai-${suffix}`, enterpriseId: tenant, userId: 'test-user', role: 'admin',
   agentId: 'agent-runtime', module: 'ocr', taskType: 'correct', promptVersion: 'test-v1',
   messages: [{ role: 'user', content: `测试任务 ${suffix}` }], maxTokens: 100, forceRegenerate: true,
+  dataClassification: 'PUBLIC', dataScope: 'enterprise:ai-test-tenant', actor: { id: 'test-user' },
+  outboundPolicy: { id: 'test-public-ai', outboundAllowed: true, allowedClassifications: ['PUBLIC'], allowedDestinations: ['EXTERNAL'], allowedPurposes: ['correct'], allowedDataScopes: ['enterprise:ai-test-tenant'], allowedTools: ['ai_gateway'] },
   ...extra
 });
 const jsonResponse = (body, status = 200) => ({ ok: status >= 200 && status < 300, status, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(body) });
@@ -44,7 +46,7 @@ assert.match(mock.content, /Mock 演示数据/);
 assert.equal(mock.estimatedCost, 0);
 
 let capturedRequest;
-const live = await gateway.chat(base('live', { messages: [{ role: 'user', content: '客户姓名：张三 手机号 13812345678 邮箱 user@example.com' }] }), {
+const live = await gateway.chat(base('live', { dataClassification: 'INTERNAL', redactionStatus: 'REDACTED', outboundPolicy: { id: 'test-internal-ai', outboundAllowed: true, allowedClassifications: ['INTERNAL'], allowedDestinations: ['EXTERNAL'], allowedPurposes: ['correct'], allowedDataScopes: ['enterprise:ai-test-tenant'], allowedTools: ['ai_gateway'] }, messages: [{ role: 'user', content: '客户姓名：张三 手机号 13812345678 邮箱 user@example.com' }] }), {
   apiKey: 'test-only-key', fetchImpl: async (_url, options) => { capturedRequest = JSON.parse(options.body); return successFetch(); }
 });
 assert.equal(live.status, 'success');
