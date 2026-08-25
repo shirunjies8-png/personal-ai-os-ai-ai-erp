@@ -155,6 +155,9 @@ const App = {
       staticDemo: StartupReliability.isStaticDemoEnvironment(RuntimeConfig, Utils.isGitHubPagesHost())
     });
     if (startupSession.action === 'CLEAR_STALE_REMOTE_SESSION') {
+      // A Pages open is intentionally local/demo-only.  A persisted remote
+      // token cannot be validated there, so clearing that stale reference
+      // prevents an expected environment state from escaping as a global bug.
       AuthClient.clear();
       Store.syncStatus = { mode: 'local', state: 'fallback', message: 'GitHub Pages 静态演示模式', updatedAt: Date.now() };
     }
@@ -205,6 +208,9 @@ const App = {
       await this.refreshAgentRuntime();
     } catch (error) {
       if (!StartupReliability.isExpectedSessionExpiry(error)) throw error;
+      // An expired credential is a normal session transition, not an
+      // application fault. Unknown transport and runtime failures still
+      // propagate to the global error boundary and remain actionable.
       AuthClient.clear();
       Store.syncStatus = { mode: 'local', state: 'expired', message: '登录已失效，请重新登录。', updatedAt: Date.now() };
       this.renderNav();
@@ -1031,7 +1037,10 @@ const App = {
         }
       }
       Store.save();
-      if (target.dataset.module === 'cost' && this.route === 'cost') this.rerender();
+      // Cost fields are edited as transient text. Re-rendering this workspace for each
+      // keystroke replaces the active input and makes normal continuous typing impossible.
+      // The current value is still persisted here; committed calculation/save actions render
+      // the updated plan through their existing explicit boundaries.
     }
     if (target.dataset.mailField) {
       const ws = this.getWorkspace('mail');
@@ -1758,6 +1767,7 @@ const App = {
       status: detail.status || ws.rfqApproval?.status || 'draft',
       riskId: detail.riskId || '',
       riskName: detail.riskName || '',
+      quotationId: detail.quotationId || '',
       approvalStatus: detail.approvalStatus || ws.rfqApproval?.status || 'draft',
       count: detail.count ?? (Array.isArray(ws.rfqRisks) ? ws.rfqRisks.length : 0),
       blockers: detail.blockers ?? (Array.isArray(ws.rfqBlockers) ? ws.rfqBlockers.length : 0),
@@ -2003,6 +2013,7 @@ const App = {
       ws.rfqDraft = '';
       ws.rfqAuditTrail = [];
       ws.rfqSavedDrafts = [];
+      ws.rfqActiveSavedDraftId = '';
       ws.rfqApproval = { status: 'draft', reason: '', history: [], updatedAt: Date.now() };
       ws.approvalReason = '';
       ws.selectedRiskName = '';
@@ -2063,6 +2074,7 @@ const App = {
     ws.rfqApprovalReason = '';
     ws.rfqDraft = '';
     ws.result = '';
+    ws.rfqActiveSavedDraftId = '';
     ws.rfqBlockers = [];
     ws.rfqAuditTrail = Array.isArray(ws.rfqAuditTrail) ? ws.rfqAuditTrail : [];
     ws.rfqSavedDrafts = Array.isArray(ws.rfqSavedDrafts) ? ws.rfqSavedDrafts : [];
@@ -2106,19 +2118,22 @@ const App = {
     ws.rfqDraft = ws.rfqDraft || ws.result || '';
     ws.result = ws.rfqDraft || ws.result || '';
     ws.rfqSavedDrafts = Array.isArray(ws.rfqSavedDrafts) ? ws.rfqSavedDrafts : [];
-    ws.rfqSavedDrafts.unshift({
+    const savedDraft = {
       id: uid(),
       time: Date.now(),
       status: ws.rfqApproval?.status || 'draft',
       draft: ws.rfqDraft,
       blockers: structuredClone(ws.rfqBlockers || [])
-    });
+    };
+    ws.rfqSavedDrafts.unshift(savedDraft);
     ws.rfqSavedDrafts = ws.rfqSavedDrafts.slice(0, 10);
+    ws.rfqActiveSavedDraftId = savedDraft.id;
     ws.updatedAt = Date.now();
     this.saveQuotationAudit('保存报价草稿', {
       status: ws.rfqApproval?.status || 'draft',
       message: '报价草稿已保存，登录后同步到企业 SQLite',
-      count: ws.rfqSavedDrafts.length
+      count: ws.rfqSavedDrafts.length,
+      quotationId: savedDraft.id
     });
     await this.persistBusinessState('报价草稿已保存');
     this.rerender();
@@ -2131,6 +2146,7 @@ const App = {
     ws.rfqDraft = saved.draft || '';
     ws.result = saved.draft || '';
     ws.rfqBlockers = structuredClone(saved.blockers || []);
+    ws.rfqActiveSavedDraftId = saved.id;
     ws.updatedAt = Date.now();
     this.saveQuotationAudit('打开历史报价草稿', { status: saved.status || 'draft', message: `draftId: ${id}` });
     Store.save();
@@ -2143,6 +2159,7 @@ const App = {
     if (!saved) throw new Error('报价草稿不存在或已删除');
     if (!confirm('确认删除该报价草稿？删除后将同步到企业数据库。')) return;
     ws.rfqSavedDrafts = ws.rfqSavedDrafts.filter(item => item.id !== id);
+    if (ws.rfqActiveSavedDraftId === id) ws.rfqActiveSavedDraftId = '';
     this.saveQuotationAudit('删除报价草稿', { status: saved.status || 'draft', message: `draftId: ${id}` });
     await this.persistBusinessState('报价草稿已删除');
     this.rerender();
@@ -2671,10 +2688,14 @@ const App = {
     const ws = this.syncWorkspaceFromDom('quotation');
     const draft = ws.rfqDraft || ws.result || '';
     if (!draft) throw new Error('暂无可复制的报价草稿');
+    const quotationId = String(ws.rfqActiveSavedDraftId || '');
+    const savedDraft = (ws.rfqSavedDrafts || []).find(item => item.id === quotationId);
+    if (!savedDraft || savedDraft.draft !== draft) throw new Error('请先保存当前报价草稿后再复制，确保审计可追溯');
     await this.copy(draft);
     this.saveQuotationAudit('复制报价草稿', {
       status: ws.rfqApproval?.status || 'draft',
-      message: '报价草稿已复制到剪贴板'
+      message: '报价草稿已复制到剪贴板',
+      quotationId
     });
     // Keep the user-visible audit trail in sync with the successful copy,
     // including a server-backed workspace when one is available.
@@ -2922,6 +2943,7 @@ const App = {
     ].join('\n');
     ws.rfqDraft = draftText ? `${summary}\n\n${draftText}` : summary;
     ws.result = ws.rfqDraft;
+    ws.rfqActiveSavedDraftId = '';
     ws.rfqLastComputedAt = Date.now();
     ws.updatedAt = Date.now();
     this.saveQuotationAudit('生成报价草稿', {
@@ -4418,8 +4440,21 @@ const App = {
     else Store.state.taskRecords.unshift(normalized);
     Store.state.taskRecords = Store.state.taskRecords.slice(0, 200);
     this.updateStabilityHealthSnapshot(entry.source || 'stability-task');
-    Store.save();
-    return normalized;
+    return Store.persistTaskWithReadback(normalized).task;
+  },
+
+  taskReadiness(task = {}) {
+    const requiresApi = Boolean(task.requiresApi);
+    const needsPersistence = task.needsPersistence !== false;
+    const staticDemo = typeof StartupReliability !== 'undefined' && StartupReliability.isStaticDemoEnvironment(RuntimeConfig, Utils.isGitHubPagesHost());
+    const hasApiBase = Boolean(APIClient.resolveGatewayBase());
+    const checks = [
+      { name: 'FRONTEND_RUNTIME', state: 'READY', required: true },
+      { name: 'PERSISTENCE_READY', state: needsPersistence ? 'READY' : 'DEGRADED', required: needsPersistence },
+      { name: 'API_BASE_CONFIGURATION', state: requiresApi ? (hasApiBase ? 'READY' : 'BLOCKED') : 'DEGRADED', required: requiresApi, reason: requiresApi && !hasApiBase ? '未配置可用 API 地址，尚未发送请求。' : '' },
+      { name: 'CURRENT_DEGRADED_MODE', state: staticDemo ? 'DEGRADED' : 'READY', required: false, reason: staticDemo ? '静态演示模式只允许本地安全降级。' : '' }
+    ];
+    return Stability.resolveReadiness({ checks, highRisk: Boolean(task.highRisk), hasSafeFallback: !requiresApi || Boolean(task.safeFallback) });
   },
 
   async runWithStability(kind, task, work) {
@@ -4431,13 +4466,44 @@ const App = {
     const startedAt = Date.now();
     const taskId = task.id || uid();
     const retryCount = Number(task.retryCount || 0);
-    Stability.start(kind);
-    this.upsertStabilityTask({
+    const operationId = task.operationId || `op-${taskId}`;
+    const readiness = this.taskReadiness(task);
+    const initialTask = {
       ...task,
       id: taskId,
-      status: retryCount ? 'retrying' : 'running',
+      status: 'pending',
+      lifecycleState: readiness.canStart ? 'READY' : 'BLOCKED',
       startedAt,
       updatedAt: startedAt,
+      currentStep: 'PRECHECK',
+      lastVerifiedStep: '',
+      operationIds: [...new Set([...(task.operationIds || []), operationId])],
+      checkpoints: [...(task.checkpoints || []), { stepId: 'INPUT_SAVED', status: 'VERIFIED', inputVersion: Number(task.inputVersion || 1), operationId, verificationStatus: 'VERIFIED', timestamp: startedAt, evidence: ['LOCAL_PERSISTENCE_READBACK'] }],
+      recoveryState: readiness.canStart ? '' : 'BLOCKED',
+      nextRecommendedAction: readiness.canStart ? '任务已保存，可以安全开始。' : (readiness.reasons[0] || '当前依赖未满足，未开始执行。'),
+      retryCount,
+      cancellable: false,
+      retryable: false,
+      source: `${kind}-preflight`
+    };
+    // Save-before-execute is deliberately synchronous and readback-verified:
+    // no external work starts until the user's recoverable task state exists.
+    this.upsertStabilityTask(initialTask);
+    if (!readiness.canStart) {
+      const error = new Error(initialTask.nextRecommendedAction);
+      error.code = 'TASK_READINESS_BLOCKED';
+      error.failureType = 'DEPENDENCY_UNAVAILABLE';
+      throw error;
+    }
+    Stability.start(kind);
+    this.upsertStabilityTask({
+      ...initialTask,
+      id: taskId,
+      status: retryCount ? 'retrying' : 'running',
+      lifecycleState: 'RUNNING',
+      startedAt,
+      updatedAt: startedAt,
+      currentStep: 'EXECUTING',
       retryCount,
       cancellable: true,
       retryable: false,
@@ -4445,15 +4511,22 @@ const App = {
     });
     const timeout = Stability.timeoutPromise(kind);
     try {
-      const result = await Promise.race([Promise.resolve(work({ taskId, startedAt, timeoutMs: timeout.timeoutMs })), timeout.promise]);
+      const result = await Promise.race([Promise.resolve(work({ taskId, startedAt, timeoutMs: timeout.timeoutMs, operationId })), timeout.promise]);
       const finishedAt = Date.now();
       this.upsertStabilityTask({
-        ...task,
+        ...initialTask,
         id: taskId,
         status: 'success',
+        lifecycleState: 'COMPLETED',
         startedAt,
         updatedAt: finishedAt,
         finishedAt,
+        currentStep: 'COMPLETED',
+        lastVerifiedStep: 'COMPLETED',
+        completedSteps: [...(initialTask.completedSteps || []), 'EXECUTING'],
+        checkpoints: [...(initialTask.checkpoints || []), { stepId: 'COMPLETED', status: 'VERIFIED', inputVersion: Number(task.inputVersion || 1), operationId, verificationStatus: 'VERIFIED', timestamp: finishedAt, evidence: ['WORK_RESOLVED'] }],
+        recoveryState: 'VERIFIED',
+        nextRecommendedAction: '任务已完成并保存。',
         durationMs: finishedAt - startedAt,
         retryCount,
         summary: task.summary || `${kind} completed`,
@@ -4472,17 +4545,27 @@ const App = {
           : error?.code === 'INTERRUPTED'
             ? 'interrupted'
             : 'failed';
+      const failureType = error?.failureType || Stability.classifyApiFailure(error) || Stability.classifyFailure(error?.message || error);
+      const previous = (Store.state.taskRecords || []).find(item => item.id === taskId) || initialTask;
+      const failureEvent = { at: finishedAt, step: previous.currentStep || 'EXECUTING', type: failureType, message: Utils.friendlyErrorMessage(error?.message || error), operationId };
       this.upsertStabilityTask({
-        ...task,
+        ...previous,
         id: taskId,
         status,
+        lifecycleState: failureType === 'UNKNOWN_OUTCOME' ? 'UNKNOWN' : (failureType === 'PERSISTENCE_FAILURE' ? 'BLOCKED' : 'SUSPENDED'),
         startedAt,
         updatedAt: finishedAt,
         finishedAt,
         durationMs: finishedAt - startedAt,
         retryCount,
         errorMessage: Utils.friendlyErrorMessage(error?.message || error),
-        failureType: Stability.classifyFailure(error?.message || error),
+        failureType,
+        failedStep: previous.currentStep || 'EXECUTING',
+        pendingSteps: ['EXECUTING'],
+        failureHistory: [...(previous.failureHistory || []), failureEvent],
+        pendingOperation: failureType === 'UNKNOWN_OUTCOME' ? { operationId, outcome: 'UNKNOWN_OUTCOME', startedAt } : null,
+        recoveryState: failureType === 'UNKNOWN_OUTCOME' ? 'REQUIRES_RECONCILIATION' : 'REQUIRES_RETRY',
+        nextRecommendedAction: failureType === 'UNKNOWN_OUTCOME' ? '正在确认上一次操作结果，请勿重复提交。' : '已保存已验证步骤；请在依赖恢复后从当前步骤继续。',
         cancellable: false,
         retryable: true,
         source: `${kind}-${status}`
@@ -9374,6 +9457,10 @@ const App = {
   },
 
   async settingsTestAI(btn) {
+    if (StartupReliability.isStaticDemoEnvironment(RuntimeConfig, Utils.isGitHubPagesHost())) {
+      this.toast('当前为 GitHub Pages 静态演示环境：HTTPS 后端未连接属于预期降级，不影响系统健康。', 'warning');
+      return;
+    }
     this.settingsSaveAI();
     if (Store.state.settings.accessMode === 'local') throw new Error('当前未配置 DeepSeek API Key，无法调用真实 AI。');
     await this.busy(btn, async () => {

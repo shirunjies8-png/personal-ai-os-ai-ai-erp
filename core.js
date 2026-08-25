@@ -191,7 +191,7 @@ const DefaultState = {
 const Stability = {
   limits: {
     ai: { concurrency: 2, timeoutMs: 60000 },
-    ocr: { concurrency: 1, timeoutMs: 120000 },
+    ocr: { concurrency: 1, timeoutMs: AIOfficeContracts.ocr.timeoutMs },
     pdf: { concurrency: 1, timeoutMs: 180000 },
     excel: { concurrency: 2, timeoutMs: 30000 },
     rag: { concurrency: 1, timeoutMs: 180000 },
@@ -286,12 +286,64 @@ const Stability = {
     if (/worker|OCR|PDF|Excel|文件/i.test(text)) return 'file';
     return text ? 'runtime' : '';
   },
+  readinessStates: Object.freeze(['READY', 'DEGRADED', 'BLOCKED', 'UNKNOWN']),
+  taskStates: Object.freeze(['DRAFT', 'READY', 'RUNNING', 'WAITING_EXTERNAL', 'WAITING_HUMAN', 'VERIFYING', 'SUSPENDED', 'RECOVERING', 'BLOCKED', 'FAILED', 'UNKNOWN', 'COMPLETED', 'ABANDONED']),
+  apiFailureCodes: Object.freeze(['NETWORK_UNAVAILABLE', 'DNS_FAILURE', 'TLS_FAILURE', 'CONNECT_TIMEOUT', 'READ_TIMEOUT', 'AUTH_REQUIRED', 'AUTH_EXPIRED', 'PERMISSION_DENIED', 'RATE_LIMITED', 'PROVIDER_UNAVAILABLE', 'DEPENDENCY_UNAVAILABLE', 'INVALID_RESPONSE', 'SCHEMA_MISMATCH', 'BUSINESS_VALIDATION_FAIL', 'PERSISTENCE_FAILURE', 'UNKNOWN_OUTCOME', 'UNKNOWN_ERROR']),
+  resolveReadiness({ checks = [], highRisk = false, hasSafeFallback = false } = {}) {
+    const normalized = checks.map(item => ({ name: item.name || 'dependency', state: String(item.state || 'UNKNOWN').toUpperCase(), required: item.required !== false, reason: item.reason || '' }));
+    const required = normalized.filter(item => item.required);
+    const blocked = required.filter(item => item.state === 'BLOCKED');
+    const unknown = required.filter(item => item.state === 'UNKNOWN');
+    const degraded = required.filter(item => item.state === 'DEGRADED');
+    const state = blocked.length || (highRisk && unknown.length)
+      ? 'BLOCKED'
+      : unknown.length ? 'UNKNOWN'
+        : degraded.length ? (hasSafeFallback ? 'DEGRADED' : 'BLOCKED')
+          : 'READY';
+    return { state, checks: normalized, reasons: [...blocked, ...unknown, ...degraded].map(item => item.reason || item.name), canStart: state === 'READY' || state === 'DEGRADED' };
+  },
+  classifyApiFailure(error = {}, response = null) {
+    const status = Number(response?.status || error?.httpStatus || error?.statusCode || 0);
+    const code = String(error?.code || '').toUpperCase();
+    const text = String(error?.message || error || '');
+    if (code === 'PERSISTENCE_FAILURE') return code;
+    if (code === 'UNKNOWN_OUTCOME') return code;
+    if (code === 'SCHEMA_MISMATCH') return code;
+    if (code === 'CONNECT_TIMEOUT') return code;
+    if (code === 'READ_TIMEOUT' || error?.name === 'AbortError' || /请求超时|timeout/i.test(text)) return 'READ_TIMEOUT';
+    if (status === 401) return 'AUTH_REQUIRED';
+    if (status === 403) return 'PERMISSION_DENIED';
+    if (status === 429) return 'RATE_LIMITED';
+    if (status >= 400 && status < 500) return 'BUSINESS_VALIDATION_FAIL';
+    if (status >= 500) return 'DEPENDENCY_UNAVAILABLE';
+    if (/dns|enotfound/i.test(`${code} ${text}`)) return 'DNS_FAILURE';
+    if (/tls|certificate|ssl/i.test(`${code} ${text}`)) return 'TLS_FAILURE';
+    if (/network|failed to fetch|load failed|econn|connection/i.test(`${code} ${text}`)) return 'NETWORK_UNAVAILABLE';
+    if (/json|parse|invalid response/i.test(text)) return 'INVALID_RESPONSE';
+    return 'UNKNOWN_ERROR';
+  },
+  canRetryApiFailure(type = '', { safeRead = false, attempt = 0, maxAttempts = 2 } = {}) {
+    return Boolean(safeRead && Number(attempt) < Number(maxAttempts) && ['NETWORK_UNAVAILABLE', 'DNS_FAILURE', 'TLS_FAILURE', 'CONNECT_TIMEOUT', 'READ_TIMEOUT', 'RATE_LIMITED', 'DEPENDENCY_UNAVAILABLE', 'PROVIDER_UNAVAILABLE'].includes(type));
+  },
+  safeResumeDecision(entry = {}) {
+    const task = this.normalizeTask(entry);
+    if (task.lifecycleState === 'COMPLETED') return 'COMPLETED_ALREADY';
+    if (['UNKNOWN', 'VERIFYING', 'RECOVERING'].includes(task.lifecycleState) || task.pendingOperation?.outcome === 'UNKNOWN_OUTCOME') return 'REQUIRES_RECONCILIATION';
+    if (['BLOCKED', 'WAITING_HUMAN'].includes(task.lifecycleState)) return 'REQUIRES_HUMAN';
+    if (task.lifecycleState === 'FAILED') return task.retryable ? 'REQUIRES_RETRY' : 'BLOCKED';
+    return task.lastVerifiedStep ? 'SAFE_TO_RESUME' : 'BLOCKED';
+  },
   normalizeTask(entry = {}) {
     const now = Date.now();
     const status = this.normalizeStatus(entry.status || entry.state);
     const startedAt = Number(entry.startedAt || entry.createdAt || entry.time || now);
     const updatedAt = Number(entry.updatedAt || entry.finishedAt || entry.time || now);
     const errorMessage = entry.errorMessage || entry.error || (['failed', 'timeout', 'interrupted'].includes(status) ? entry.result : '') || '';
+    const lifecycleState = this.taskStates.includes(String(entry.lifecycleState || '').toUpperCase())
+      ? String(entry.lifecycleState).toUpperCase()
+      : ({ success: 'COMPLETED', failed: 'FAILED', timeout: 'SUSPENDED', interrupted: 'SUSPENDED', cancelled: 'ABANDONED', waiting_human: 'WAITING_HUMAN', running: 'RUNNING', pending: 'READY' }[status] || 'DRAFT');
+    const checkpoints = Array.isArray(entry.checkpoints) ? entry.checkpoints.slice(-30) : [];
+    const failureHistory = Array.isArray(entry.failureHistory) ? entry.failureHistory.slice(-30) : [];
     return {
       id: entry.id || uid(),
       schemaVersion: 1,
@@ -316,7 +368,26 @@ const Stability = {
       cancellable: entry.cancellable ?? ['pending', 'running', 'waiting_human'].includes(status),
       retryCount: Number(entry.retryCount || entry.retry_count || 0),
       requestId: entry.requestId || entry.request_id || '',
-      durationMs: Number(entry.durationMs || (updatedAt && startedAt ? Math.max(0, updatedAt - startedAt) : 0))
+      durationMs: Number(entry.durationMs || (updatedAt && startedAt ? Math.max(0, updatedAt - startedAt) : 0)),
+      lifecycleState,
+      owner: entry.owner || '',
+      currentStep: entry.currentStep || '',
+      lastVerifiedStep: entry.lastVerifiedStep || '',
+      inputRefs: entry.inputRefs || {},
+      draftData: entry.draftData || {},
+      approvedData: entry.approvedData || {},
+      completedSteps: Array.isArray(entry.completedSteps) ? entry.completedSteps : [],
+      pendingSteps: Array.isArray(entry.pendingSteps) ? entry.pendingSteps : [],
+      failedStep: entry.failedStep || '',
+      evidenceRefs: Array.isArray(entry.evidenceRefs) ? entry.evidenceRefs : [],
+      operationIds: Array.isArray(entry.operationIds) ? entry.operationIds : [],
+      pendingOperation: entry.pendingOperation || null,
+      recoveryState: entry.recoveryState || '',
+      nextRecommendedAction: entry.nextRecommendedAction || '',
+      checkpoints,
+      failureHistory,
+      inputVersion: Number(entry.inputVersion || 1),
+      persistence: entry.persistence || { state: 'UNVERIFIED', verifiedAt: 0 }
     };
   },
   normalizeError(entry = {}) {
@@ -372,6 +443,14 @@ const Stability = {
 
     const isGitHubPages = context.isGitHubPages ?? (typeof location !== 'undefined' && /(^|\.)github\.io$/i.test(location.hostname || ''));
     if (isGitHubPages && alert.module === 'OCR' && alert.feature === 'AI 纠错建议' && alert.type === 'deepseek-not-configured') return 'EXPECTED_DEGRADED';
+    // Pages intentionally has no default gateway. Preserve this exact prior
+    // settings probe as evidence, while keeping it out of current health.
+    if (isGitHubPages
+      && alert.module === 'settings-test-ai'
+      && alert.feature === 'AI 调用'
+      && alert.type === 'AI错误'
+      && alert.source === 'ai-error'
+      && alert.message === 'HTTPS 后端未连接，已保留本地演示功能。请稍后重试。') return 'EXPECTED_DEGRADED';
 
     // Older scanned-PDF guidance records predate eventKind. Match their complete,
     // persisted producer signature only; other unclassified events fail closed.
@@ -495,6 +574,8 @@ const StartupReliability = {
       const legacyLoginEligible = signature === this.legacyLoginExpirySignature
         && alert?.source === 'system-error'
         && lifecycle === 'active'
+        // A post-release recurrence updates lastAt after this marker and must
+        // re-enter the current Bug Monitor instead of being silently hidden.
         && recurrenceSafe;
       const legacyTimeoutEligible = signature === this.legacyPagesTimeoutSignature
         && alert?.source === 'system-error'
@@ -571,19 +652,47 @@ const APIClient = {
       if (!response.ok) {
         const { raw, json } = await this.safeReadResponse(response);
         const detail = json?.message || json?.detail || raw;
-        throw new Error(detail || `HTTP ${response.status}`);
+        const error = new Error(detail || `HTTP ${response.status}`);
+        error.httpStatus = response.status;
+        error.failureType = Stability.classifyApiFailure(error, response);
+        throw error;
       }
       const { json, raw } = await this.safeReadResponse(response);
+      if (meta.expectedSchema && !this.matchesSchema(json, meta.expectedSchema)) {
+        const error = new Error('API 返回结构与当前契约不兼容，已安全停止该操作。');
+        error.code = 'SCHEMA_MISMATCH';
+        error.failureType = 'SCHEMA_MISMATCH';
+        throw error;
+      }
       return json ?? { ok: true, data: raw };
     } catch (error) {
-      if (error?.name === 'AbortError') throw new Error(`后端请求超时（${timeout}ms），已保留本地演示数据。`);
+      if (error?.name === 'AbortError') {
+        const timeoutError = new Error(`后端请求超时（${timeout}ms），已保留本地演示数据。`);
+        timeoutError.code = 'READ_TIMEOUT';
+        timeoutError.failureType = 'READ_TIMEOUT';
+        throw timeoutError;
+      }
       if (/Failed to fetch|Load failed|NetworkError|fetch/i.test(String(error?.message || error))) {
-        throw new Error('HTTPS 后端未连接，已保留本地演示功能。请稍后重试。');
+        const networkError = new Error('HTTPS 后端未连接，已保留本地演示功能。请稍后重试。');
+        networkError.code = 'NETWORK_UNAVAILABLE';
+        networkError.failureType = 'NETWORK_UNAVAILABLE';
+        throw networkError;
       }
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
     }
+  },
+  matchesSchema(value, schema = {}) {
+    if (!schema || typeof schema !== 'object') return true;
+    if (!value || typeof value !== 'object') return false;
+    return Object.entries(schema).every(([key, expected]) => {
+      const actual = value[key];
+      if (expected === 'array') return Array.isArray(actual);
+      if (expected === 'object') return actual && typeof actual === 'object' && !Array.isArray(actual);
+      if (expected === 'required') return actual !== undefined && actual !== null;
+      return typeof actual === expected;
+    });
   },
   async chat(messages, module = 'ai-chat', extra = {}) {
     const baseUrl = this.resolveGatewayBase();
@@ -940,6 +1049,36 @@ const Store = {
     localStorage.setItem(APP_KEY, JSON.stringify(this.state));
     this.scheduleSync();
     document.dispatchEvent(new CustomEvent('app:saved'));
+    return { ok: true, mode: 'local' };
+  },
+  persistTaskWithReadback(task) {
+    const normalized = Stability.normalizeTask(task);
+    this.state.taskRecords = this.state.taskRecords || [];
+    const index = this.state.taskRecords.findIndex(item => item.id === normalized.id);
+    if (index >= 0) this.state.taskRecords[index] = normalized;
+    else this.state.taskRecords.unshift(normalized);
+    try {
+      this.save();
+      const reloaded = JSON.parse(localStorage.getItem(APP_KEY) || '{}');
+      const stored = (reloaded.taskRecords || []).find(item => item.id === normalized.id);
+      const matches = stored
+        && stored.id === normalized.id
+        && stored.currentStep === normalized.currentStep
+        && stored.lastVerifiedStep === normalized.lastVerifiedStep
+        && Number(stored.inputVersion || 1) === Number(normalized.inputVersion || 1);
+      if (!matches) throw Object.assign(new Error('任务状态写入后校验失败'), { code: 'PERSISTENCE_FAILURE' });
+      normalized.persistence = { state: 'VERIFIED', verifiedAt: Date.now(), mode: 'LOCAL_DEMO_PERSISTENCE' };
+      const verifiedIndex = this.state.taskRecords.findIndex(item => item.id === normalized.id);
+      if (verifiedIndex >= 0) this.state.taskRecords[verifiedIndex] = normalized;
+      localStorage.setItem(APP_KEY, JSON.stringify(this.state));
+      return { ok: true, task: normalized };
+    } catch (error) {
+      const persistenceError = new Error('任务进度未能可靠保存，已阻止继续执行。');
+      persistenceError.code = 'PERSISTENCE_FAILURE';
+      persistenceError.failureType = 'PERSISTENCE_FAILURE';
+      persistenceError.cause = error;
+      throw persistenceError;
+    }
   },
   update(mutator) {
     mutator(this.state);
@@ -1290,10 +1429,7 @@ const Utils = {
     return html.join('').replace(/@@CODE_BLOCK_(\d+)@@/g, (_match, index) => codeBlocks[Number(index)] || '');
   },
   async copy(text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
+    const fallbackCopy = () => {
       const area = document.createElement('textarea');
       area.value = text;
       area.style.position = 'fixed';
@@ -1303,7 +1439,19 @@ const Utils = {
       const ok = document.execCommand('copy');
       area.remove();
       return ok;
+    };
+    // Some browser environments keep the Clipboard permission promise pending
+    // instead of rejecting it. A pending write must not indefinitely delay the
+    // action that follows a confirmed copy (such as a quotation audit entry).
+    if (navigator.clipboard?.writeText) {
+      const copied = await Promise.race([
+        Promise.resolve(navigator.clipboard.writeText(text)).then(() => true).catch(() => false),
+        new Promise(resolve => setTimeout(() => resolve(false), 250))
+      ]);
+      if (copied) return true;
     }
+    if (fallbackCopy()) return true;
+    throw new Error('浏览器拒绝复制到剪贴板，请检查剪贴板权限后重试');
   },
   download(blob, filename) {
     const url = URL.createObjectURL(blob);

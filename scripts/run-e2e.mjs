@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 const root = process.cwd();
 const require = createRequire(import.meta.url);
 const Database = require('better-sqlite3');
+const OCR_TIMEOUT_CONTRACT = require('../ocr-timeout-contract.js');
 const baseUrl = process.env.E2E_BASE_URL || 'http://127.0.0.1:3000';
 const chromePort = Number(process.env.E2E_CHROME_PORT || 9222);
 const environmentOnly = process.argv.includes('--environment-only');
@@ -12,6 +13,12 @@ const materialIssueScenarioB = process.argv.includes('--material-issue-scenario-
 const materialIssueScenarioC = process.argv.includes('--material-issue-scenario-c') || process.env.E2E_MATERIAL_ISSUE_SCENARIO_C === '1';
 const materialIssueScenarioD = process.argv.includes('--material-issue-scenario-d') || process.env.E2E_MATERIAL_ISSUE_SCENARIO_D === '1';
 const materialIssueScenarioE = process.argv.includes('--material-issue-scenario-e') || process.env.E2E_MATERIAL_ISSUE_SCENARIO_E === '1';
+const quotationOnly = process.argv.includes('--quotation-only');
+const rfqOnly = process.argv.includes('--rfq-only') || process.env.E2E_RFQ_ONLY === '1';
+const ocrOnly = process.argv.includes('--ocr-only') || process.env.E2E_OCR_ONLY === '1';
+const ocrCdpMinimal = process.argv.includes('--ocr-cdp-minimal') || process.env.E2E_OCR_CDP_MINIMAL === '1';
+let sharedBrowserConnection = null;
+let sharedBrowserEvidence = null;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -43,12 +50,65 @@ async function chromeVersion() {
 }
 
 async function chromeNewTab(url) {
+  const browser = await getSharedBrowserConnection();
+  const result = await browser.send('Target.createTarget', { url });
+  return { ...result, browserWs: browser.ws, browserSend: browser.send, browserEvidence: sharedBrowserEvidence, browser };
+}
+
+async function getSharedBrowserConnection() {
+  if (sharedBrowserConnection?.ws?.readyState === WebSocket.OPEN) return sharedBrowserConnection;
   const version = await chromeVersion();
   if (!version.webSocketDebuggerUrl) throw new Error('Chrome 未提供浏览器级调试入口');
+  sharedBrowserEvidence = {
+    browserPid: process.env.E2E_CHROME_PID || '',
+    transportKind: 'browser',
+    expectedClose: false,
+    currentStep: 'shared_browser_connect',
+    lifecycleTrace: [],
+    targetEvents: []
+  };
+  sharedBrowserConnection = await cdpConnect(version.webSocketDebuggerUrl, sharedBrowserEvidence, message => {
+    if (!['Target.targetCreated', 'Target.targetDestroyed', 'Target.targetInfoChanged', 'Target.attachedToTarget', 'Target.detachedFromTarget', 'Target.targetCrashed'].includes(message.method)) return;
+    const detail = {
+      timestamp: new Date().toISOString(),
+      method: message.method,
+      targetId: message.params?.targetId || message.params?.targetInfo?.targetId || '',
+      sessionId: message.params?.sessionId || '',
+      targetType: message.params?.targetInfo?.type || '',
+      targetUrl: message.params?.targetInfo?.url || '',
+      status: message.params?.status || '',
+      errorCode: message.params?.errorCode ?? null
+    };
+    sharedBrowserEvidence.targetEvents.push(detail);
+    console.error(`TARGET_LIFECYCLE_EVIDENCE ${JSON.stringify(detail)}`);
+  });
+  sharedBrowserEvidence.browserWs = sharedBrowserConnection.ws;
+  await sharedBrowserConnection.send('Target.setDiscoverTargets', { discover: true });
+  return sharedBrowserConnection;
+}
+
+function closeSharedBrowserConnection() {
+  if (sharedBrowserConnection?.ws?.readyState === WebSocket.OPEN) {
+    sharedBrowserEvidence.expectedClose = true;
+    sharedBrowserConnection.ws.close();
+  }
+}
+
+// The dedicated Chrome profile starts with no clipboard permission.  Granting
+// this browser permission to the local test origin keeps the UI interaction
+// real (the CDP mouse gesture below still triggers the production handler)
+// while avoiding a test-only clipboard mock or a false audit assertion.
+async function grantLocalClipboardPermission() {
+  const version = await chromeVersion();
   const { ws, send } = await cdpConnect(version.webSocketDebuggerUrl);
-  const result = await send('Target.createTarget', { url });
-  ws.close();
-  return result;
+  try {
+    await send('Browser.grantPermissions', {
+      origin: baseUrl,
+      permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+    });
+  } finally {
+    ws.close();
+  }
 }
 
 function pickTab(tabs, targetUrl = '') {
@@ -63,6 +123,25 @@ function pickTab(tabs, targetUrl = '') {
 
 function wsStatus(ws) {
   return ['connecting', 'open', 'closing', 'closed'][ws?.readyState] || 'unknown';
+}
+
+function processAlive(pidValue) {
+  const pid = Number(pidValue);
+  if (!Number.isInteger(pid) || pid < 1) return 'UNKNOWN';
+  try {
+    process.kill(pid, 0);
+    return 'ALIVE';
+  } catch (error) {
+    return error?.code === 'ESRCH' ? 'EXITED' : 'UNKNOWN';
+  }
+}
+
+function evaluateExpressionCategory(expression) {
+  const value = String(expression || '').trim();
+  if (value === '1 + 1') return 'ARITHMETIC_PRECHECK';
+  if (value === 'location.href') return 'LOCATION_READ';
+  if (value.includes('document.readyState')) return 'DOCUMENT_STATE';
+  return 'OTHER';
 }
 
 function traceLifecycle(trace, { step, event, session = null, browserWs = null, details = {} }) {
@@ -89,10 +168,12 @@ async function cdpConnect(wsUrl, sessionEvidence = null, onEvent = null) {
   let id = 0;
   const pending = new Map();
   const events = [];
+  const listeners = new Set();
   ws.onmessage = event => {
     const msg = JSON.parse(event.data);
     if (msg.method) events.push(msg);
     if (msg.method) onEvent?.(msg, ws);
+    if (msg.method) for (const listener of listeners) listener(msg, ws);
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -116,21 +197,52 @@ async function cdpConnect(wsUrl, sessionEvidence = null, onEvent = null) {
         browserWs: sessionEvidence.browserWs,
         details: { close_code: event.code, close_reason: event.reason || '', expected_close: Boolean(sessionEvidence.expectedClose) }
       });
+      console.error(`CDP_DISCONNECT_EVIDENCE ${JSON.stringify({
+        chromePid: process.env.E2E_CHROME_PID || null,
+        chromeProcessState: processAlive(process.env.E2E_CHROME_PID),
+        browserWebSocketState: sessionEvidence.browserWs
+          ? wsStatus(sessionEvidence.browserWs)
+          : (sessionEvidence.browserWebSocketState || 'UNKNOWN'),
+        pageWebSocketState: wsStatus(ws),
+        targetId: sessionEvidence.targetId || null,
+        browserContextId: sessionEvidence.browserContextId || null,
+        pageUrl: sessionEvidence.pageUrl || null,
+        lastCdpMethod: sessionEvidence.lastCdpMethod || null,
+        runtimeEvaluateExpressionCategory: sessionEvidence.runtimeEvaluateExpressionCategory || null,
+        disconnectCode: event.code,
+        disconnectReason: event.reason || '',
+        expectedClose: Boolean(sessionEvidence.expectedClose)
+      })}`);
     }
     const error = new Error('Chrome CDP connection closed before browser acceptance completed');
     for (const { reject } of pending.values()) reject(error);
     pending.clear();
+    for (const listener of listeners) listener({ method: 'Browser.transportClosed', params: { code: event.code, reason: event.reason || '' } }, ws);
   };
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
+  const send = (method, params = {}, sessionId = '') => new Promise((resolve, reject) => {
+    if (sessionEvidence) {
+      sessionEvidence.lastCdpMethod = method;
+      if (method === 'Runtime.evaluate') {
+        sessionEvidence.runtimeEvaluateExpressionCategory = evaluateExpressionCategory(params.expression);
+      }
+    }
     if (ws.readyState !== WebSocket.OPEN) {
       reject(new Error(`Chrome CDP is unavailable during ${method}`));
       return;
     }
     const current = ++id;
     pending.set(current, { resolve, reject });
-    ws.send(JSON.stringify({ id: current, method, params }));
+    ws.send(JSON.stringify({ id: current, method, params, ...(sessionId ? { sessionId } : {}) }));
   });
-  return { ws, send, events };
+  return {
+    ws,
+    send,
+    events,
+    addEventListener(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    }
+  };
 }
 
 async function findTarget(targetId, timeoutMs = 5000) {
@@ -218,24 +330,117 @@ async function closeIsolatedPage(session, reason = 'context_close') {
 }
 
 async function openPage(url) {
-  let tabs = await chromeTabs();
-  let tab = pickTab(tabs, url);
-  if (!tab || String(tab.url || '').startsWith('chrome-extension://')) {
-    const created = await chromeNewTab(url);
-    tabs = await chromeTabs();
-    tab = tabs.find(candidate => candidate.id === created.targetId) || pickTab(tabs, url);
+  // Each test owns a fresh, ordinary page target. Reusing Chrome's launch
+  // tab made navigation races look like product failures when CDP detached.
+  const created = await chromeNewTab('about:blank');
+  const tab = await findTarget(created.targetId);
+  if (!tab?.webSocketDebuggerUrl || /^(chrome|devtools|chrome-extension):/i.test(String(tab.url || ''))) {
+    throw new Error(`未获得可用于 E2E 的 page target：${String(tab?.url || '')}`);
   }
-  const { ws, send, events } = await cdpConnect(tab.webSocketDebuggerUrl);
+  // A flattened session can evaluate a background target, but trusted mouse
+  // input is dispatched only to the active page. Make target ownership
+  // explicit before attaching so a real click cannot silently hit Chrome's
+  // launch tab after a prior scenario closes.
+  await created.browserSend('Target.activateTarget', { targetId: created.targetId });
+  const pageEvidence = {
+    browserPid: process.env.E2E_CHROME_PID || '',
+    browserWebSocketState: 'OPEN_DURING_PAGE_SESSION',
+    browserWs: created.browserWs,
+    browserEvidence: created.browserEvidence,
+    browserContextId: null,
+    targetId: created.targetId,
+    pageUrl: tab.url || 'about:blank',
+    currentStep: 'open_page',
+    expectedClose: false,
+    transportKind: 'page',
+    lifecycleTrace: [],
+    pageEvents: []
+  };
+  const attached = await created.browserSend('Target.attachToTarget', { targetId: created.targetId, flatten: true });
+  const sessionId = attached.sessionId;
+  pageEvidence.sessionId = sessionId;
+  const events = [];
+  const removePageListener = created.browser.addEventListener(message => {
+    if (message.sessionId !== sessionId && message.params?.sessionId !== sessionId) return;
+    if (message.method) events.push(message);
+    if (!['Inspector.detached', 'Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextsCleared', 'Runtime.executionContextCreated'].includes(message.method)) return;
+    const detail = {
+      timestamp: new Date().toISOString(),
+      method: message.method,
+      reason: message.params?.reason || '',
+      frameUrl: message.params?.frame?.url || '',
+      lifecycleName: message.params?.name || '',
+      executionContextId: message.params?.context?.id ?? null
+    };
+    pageEvidence.pageEvents.push(detail);
+  });
+  const send = (method, params = {}) => {
+    pageEvidence.lastCdpMethod = method;
+    if (method === 'Runtime.evaluate') pageEvidence.runtimeEvaluateExpressionCategory = evaluateExpressionCategory(params.expression);
+    return created.browserSend(method, params, sessionId);
+  };
+  let pageReadyState = WebSocket.OPEN;
+  const ws = {
+    get readyState() { return pageReadyState; },
+    close() {
+      if (pageReadyState !== WebSocket.OPEN) return;
+      pageEvidence.expectedClose = true;
+      pageReadyState = WebSocket.CLOSING;
+      removePageListener();
+      created.browserSend('Target.closeTarget', { targetId: created.targetId })
+        .catch(() => {})
+        .finally(() => { pageReadyState = WebSocket.CLOSED; });
+    }
+  };
+  const removeTransportListener = created.browser.addEventListener(message => {
+    if (message.method !== 'Browser.transportClosed') return;
+    pageReadyState = WebSocket.CLOSED;
+    console.error(`PAGE_TARGET_AFTER_DISCONNECT ${JSON.stringify({
+      timestamp: new Date().toISOString(), targetId: created.targetId,
+      targetAfterFailure: 'UNKNOWN_BROWSER_TRANSPORT_CLOSED',
+      chromeProcessState: processAlive(process.env.E2E_CHROME_PID),
+      browserWebSocketState: wsStatus(created.browserWs), pageWebSocketState: 'SESSION_DETACHED',
+      disconnectCode: message.params?.code ?? null, disconnectReason: message.params?.reason || '',
+      pageEvents: pageEvidence.pageEvents.slice(-20),
+      targetEvents: created.browserEvidence.targetEvents.filter(item => item.targetId === created.targetId).slice(-20)
+    })}`);
+    removeTransportListener();
+  });
   await send('Page.enable');
+  await send('Page.bringToFront');
   await send('Runtime.enable');
+  await send('Network.enable');
   await send('Log.enable').catch(() => {});
   await send('Page.navigate', { url });
   await sleep(4000);
-  return { ws, send, events };
+  pageEvidence.pageUrl = url;
+  return { ws, send, events, pageEvidence };
+}
+
+async function recordOcrLifecycleStep(pageEvidence, send, step) {
+  pageEvidence.currentStep = step;
+  const state = JSON.parse(await evalValue(send, `JSON.stringify({
+    href: location.href,
+    readyState: document.readyState,
+    title: document.title
+  })`));
+  const detail = {
+    timestamp: new Date().toISOString(),
+    step,
+    targetId: pageEvidence.targetId,
+    browserContextId: pageEvidence.browserContextId,
+    ...state
+  };
+  console.error(`OCR_PAGE_LIFECYCLE_STEP ${JSON.stringify(detail)}`);
+  return detail;
 }
 
 async function evalValue(send, expression) {
   const result = await send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
+  if (result.exceptionDetails) {
+    const exception = result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Runtime.evaluate failed';
+    throw new Error(`浏览器脚本执行失败：${exception}`);
+  }
   return result.result.value;
 }
 
@@ -310,10 +515,14 @@ async function requestApi(pathname, token, { method = 'GET', body: requestBody }
   return { status: response.status, ok: response.ok, body };
 }
 
-async function waitForNetworkResponse(page, urlPart, timeoutMs = 5000) {
+async function waitForNetworkResponse(page, urlPart, timeoutMs = 5000, method = '') {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const match = [...page.events].reverse().find(event => event.method === 'Network.responseReceived' && event.params?.response?.url?.includes(urlPart));
+    const match = [...page.events].reverse().find(event => {
+      if (event.method !== 'Network.responseReceived' || !event.params?.response?.url?.includes(urlPart)) return false;
+      if (!method) return true;
+      return page.events.some(request => request.method === 'Network.requestWillBeSent' && request.params?.requestId === event.params.requestId && request.params?.request?.method === method);
+    });
     if (match) {
       let responseText = '';
       try {
@@ -1096,14 +1305,18 @@ async function testChat() {
 }
 
 async function testOcr() {
-  const { ws, send } = await openPage(`${baseUrl}/#/ocr`);
-  await setAuth(send);
-  await send('Page.reload');
-  await sleep(3000);
-  const stateBefore = await evalValue(send, `window.App?.temp?.ocr?.status || ''`);
-  const ocrBodyBefore = await evalValue(send, `document.body.innerText || ''`);
-  if (!ocrBodyBefore.includes('OCR识别') || /undefined|null|NaN/i.test(stateBefore)) throw new Error(`OCR 初始状态异常：${stateBefore}`);
-  await evalValue(send, `(() => {
+  const { ws, send, pageEvidence } = await openPage(`${baseUrl}/#/ocr`);
+  const evidence = { entry: 'ocr-page', startedAt: new Date().toISOString(), browserProfile: 'verify-managed-ephemeral', pageTarget: 'dedicated-cdp-target' };
+  try {
+    await recordOcrLifecycleStep(pageEvidence, send, 'OCR_OPEN_START');
+    await setAuth(send);
+    await send('Page.reload');
+    await sleep(3000);
+    await recordOcrLifecycleStep(pageEvidence, send, 'OCR_PAGE_READY');
+    const stateBefore = await evalValue(send, `window.App?.temp?.ocr?.status || ''`);
+    const ocrBodyBefore = await evalValue(send, `document.body.innerText || ''`);
+    if (!ocrBodyBefore.includes('OCR识别') || /undefined|null|NaN/i.test(stateBefore)) throw new Error(`OCR 初始状态异常：${stateBefore}`);
+    await evalValue(send, `(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 800;
     canvas.height = 280;
@@ -1124,14 +1337,15 @@ async function testOcr() {
       input.files = dt.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
-  })()`);
-  await sleep(1200);
-  const uploadState = JSON.parse(await evalValue(send, `JSON.stringify({ name: window.App?.temp?.ocr?.file?.name || '', status: window.App?.temp?.ocr?.status || '' })`));
-  if (uploadState.name !== 'ocr-test.png') throw new Error(`OCR 上传后文件状态异常：${JSON.stringify(uploadState)}`);
+    })()`);
+    await sleep(1200);
+    const uploadState = JSON.parse(await evalValue(send, `JSON.stringify({ name: window.App?.temp?.ocr?.file?.name || '', type: window.App?.temp?.ocr?.file?.type || '', size: window.App?.temp?.ocr?.file?.size || 0, status: window.App?.temp?.ocr?.status || '' })`));
+    evidence.file = uploadState;
+    if (uploadState.name !== 'ocr-test.png') throw new Error(`OCR 上传后文件状态异常：${JSON.stringify(uploadState)}`);
   // A previous document session can contain text from an earlier OCR run.
   // Clear only transient UI results so this test must observe the current
   // upload completing or reaching an explicit failure/timeout state.
-  await evalValue(send, `(() => {
+    await evalValue(send, `(() => {
     const o = window.App?.temp?.ocr;
     if (!o) return false;
     o.providerId = 'auto';
@@ -1140,23 +1354,81 @@ async function testOcr() {
     o.original = '';
     o.status = '等待识别';
     return true;
-  })()`);
-  await evalValue(send, `document.querySelector('[data-action="ocr-run"]').click()`);
-  let runState = { status: '', text: '' };
-  for (let attempt = 0; attempt < 12; attempt += 1) {
-    await sleep(5000);
-    runState = JSON.parse(await evalValue(send, `JSON.stringify({
-      status: window.App?.temp?.ocr?.providerResult?.status || window.App?.temp?.ocr?.status || '',
-      text: window.App?.temp?.ocr?.providerResult?.rawText || window.App?.temp?.ocr?.result || ''
-    })`));
-    if (runState.text.trim() || /failed|error|unavailable|timeout|失败|不可用|超时/i.test(runState.status)) break;
+    })()`);
+    const timeoutMs = OCR_TIMEOUT_CONTRACT.ocr.timeoutMs;
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error(`OCR timeout 契约无效：${timeoutMs}`);
+    evidence.timeoutMs = timeoutMs;
+    evidence.observationBudgetMs = timeoutMs + 10000;
+    await recordOcrLifecycleStep(pageEvidence, send, 'OCR_BEFORE_RUNTIME_EVALUATE');
+    evidence.workerBefore = JSON.parse(await evalValue(send, `JSON.stringify(window.OCRService?.health?.() || {})`));
+    await recordOcrLifecycleStep(pageEvidence, send, 'OCR_AFTER_RUNTIME_EVALUATE');
+    await evalValue(send, `document.querySelector('[data-action="ocr-run"]').click()`);
+    const observed = [];
+    const observationStarted = Date.now();
+    let runState = { status: '', text: '', terminal: false };
+    while (Date.now() - observationStarted <= evidence.observationBudgetMs) {
+      await sleep(1000);
+      runState = JSON.parse(await evalValue(send, `JSON.stringify((() => {
+        const o = window.App?.temp?.ocr || {};
+        const result = o.providerResult || {};
+        const data = window.Store?.state?.ocrData || {};
+        const health = window.OCRService?.health?.() || {};
+        const terminal = ['success','partial_success','failed','timeout','fallback','cancelled'].includes(result.status)
+          || /OCR (失败|超时)|已使用降级模式|演示数据/.test(String(o.status || ''));
+        return {
+          status: result.status || o.status || '', text: result.rawText || o.result || '', terminal,
+          loading: Boolean(o.loading), progress: Number(o.progress || 0), manualConfirmationRequired: Boolean(result.manualConfirmationRequired),
+          fallbackUsed: Boolean(result.fallbackUsed), providerId: result.providerId || o.providerId || '',
+          warnings: result.warnings || [], errors: result.errors || [], health,
+          lastError: data.errors?.[0] || null, lastLog: data.providerLogs?.[0] || null
+        };
+      })())`));
+      observed.push({ elapsedMs: Date.now() - observationStarted, status: runState.status, progress: runState.progress, loading: runState.loading, health: runState.health, error: runState.errors?.[0]?.type || runState.lastError?.errorType || '' });
+      if (runState.terminal) break;
+    }
+    evidence.workerAfter = runState.health || {};
+    evidence.observations = observed.slice(-18);
+    evidence.final = { status: runState.status, providerId: runState.providerId, manualConfirmationRequired: runState.manualConfirmationRequired,
+      fallbackUsed: runState.fallbackUsed, textLength: String(runState.text || '').length, warnings: runState.warnings, errors: runState.errors, lastError: runState.lastError, lastLog: runState.lastLog };
+    const explicitManualState = runState.status === 'partial_success' && runState.manualConfirmationRequired && !runState.fallbackUsed;
+    const explicitFailure = /failed|error|unavailable|timeout|失败|不可用|超时/i.test(runState.status);
+    if (!runState.text.trim() && !explicitManualState && !explicitFailure) throw new Error(`OCR 未在 ${evidence.observationBudgetMs}ms 内进入明确终态：${JSON.stringify(evidence.final)}`);
+    if (/Mock OCR 成功/.test(runState.status) || runState.providerId === 'mock') throw new Error('OCR 真实测试被错误标记为 Mock 成功');
+    console.log(`OCR_E2E_EVIDENCE ${JSON.stringify(evidence)}`);
+    return 'ocr: ok';
+  } finally {
+    ws.close();
   }
-  const statusAfterRun = runState.status;
-  const text = runState.text;
-  if (!text.trim() && !/failed|error|unavailable|timeout|失败|不可用|超时/i.test(statusAfterRun)) throw new Error(`OCR 未返回结果且无明确降级状态：${statusAfterRun}`);
-  if (/Mock OCR 成功/.test(statusAfterRun)) throw new Error('OCR 仍误报 Mock 成功');
-  ws.close();
-  return 'ocr: ok';
+}
+
+async function testOcrCdpMinimal() {
+  const { ws, send, pageEvidence } = await openPage(`${baseUrl}/#/ocr`);
+  try {
+    const steps = [];
+    steps.push(await recordOcrLifecycleStep(pageEvidence, send, 'OCR_OPEN_START'));
+    await setAuth(send);
+    await send('Page.reload');
+    await sleep(1500);
+    steps.push(await recordOcrLifecycleStep(pageEvidence, send, 'OCR_PAGE_READY'));
+    const before = await evalValue(send, '1 + 1');
+    const domBefore = await evalValue(send, `document.body?.innerText?.includes('OCR识别') === true`);
+    await send('Page.reload');
+    await sleep(1500);
+    const after = await evalValue(send, '1 + 1');
+    const domAfter = await evalValue(send, `document.body?.innerText?.includes('OCR识别') === true`);
+    steps.push(await recordOcrLifecycleStep(pageEvidence, send, 'OCR_AFTER_RUNTIME_EVALUATE'));
+    if (before !== 2 || after !== 2 || !domBefore || !domAfter) {
+      throw new Error(`OCR_CDP_MINIMAL_FAILED:${JSON.stringify({ before, after, domBefore, domAfter, steps })}`);
+    }
+    pageEvidence.expectedClose = true;
+    ws.close();
+    return `ocr-cdp-minimal: PASS ${JSON.stringify({ targetId: pageEvidence.targetId, before, after, domBefore, domAfter })}`;
+  } finally {
+    if (ws.readyState === WebSocket.OPEN) {
+      pageEvidence.expectedClose = true;
+      ws.close();
+    }
+  }
 }
 
 async function testAgent() {
@@ -1203,7 +1475,47 @@ async function testQuotation() {
   await send('Page.reload');
   await sleep(3000);
 
-  const click = async selector => evalValue(send, `(() => document.querySelector(${JSON.stringify(selector)})?.click())()`);
+  // Clipboard writes require an actual user activation in Chromium. Dispatch
+  // a CDP pointer gesture rather than invoking HTMLElement.click(), otherwise
+  // the quotation-copy path is not exercising the browser's real permission
+  // behavior.
+  const click = async selector => {
+    if (selector !== '[data-action="quotation-copy"]') {
+      return evalValue(send, `(() => document.querySelector(${JSON.stringify(selector)})?.click())()`);
+    }
+    let box = await evalValue(send, `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); }
+      catch { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' }); }
+      const rect = el.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height, viewport: { width: innerWidth, height: innerHeight }, visible: rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight };
+    })()`);
+    if (!box || box.width <= 0 || box.height <= 0) throw new Error(`报价操作目标不可点击：${selector}`);
+    if (!box.visible) {
+      await send('Input.synthesizeScrollGesture', { x: Math.max(1, Math.floor(box.viewport.width * 0.75)), y: Math.max(1, Math.floor(box.viewport.height * 0.5)), yDistance: -Math.max(1, Math.ceil(box.y - (box.viewport.height / 2))), speed: 800, preventFling: true });
+      await sleep(150);
+      box = await evalValue(send, `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        return { x, y, width: rect.width, height: rect.height, visible: rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight, targetHit: hit?.closest('button') === el };
+      })()`);
+    }
+    const preClickTarget = await evalValue(send, `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const rect = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+      return hit?.closest('button') === el;
+    })()`);
+    if (!box?.visible || !preClickTarget) throw new Error(`报价复制真实点击目标未就绪：${selector}`);
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 });
+  };
   const bodyText = async () => evalValue(send, 'document.body.innerText');
   const getApproval = async () => evalValue(send, `(() => document.querySelector('.panel .status-pill')?.textContent || '')()`);
   const expectNoConsoleErrors = async label => {
@@ -1313,10 +1625,45 @@ async function testQuotation() {
   body = await bodyText();
   if (!body.includes('保存报价草稿')) throw new Error('报价草稿保存未进入审计记录');
 
+  const copyAuditBaseline = await evalValue(send, `(() => {
+    const ws = App.getQuotationWorkspace();
+    const quotationId = String(ws.rfqActiveSavedDraftId || '');
+    const savedDraft = (ws.rfqSavedDrafts || []).find(item => item.id === quotationId) || null;
+    const audits = (ws.rfqAuditTrail || []).filter(item => item.action === '复制报价草稿' && item.quotationId === quotationId);
+    return { quotationId, hasSavedDraft: Boolean(savedDraft), count: audits.length };
+  })()`);
+  if (!copyAuditBaseline.hasSavedDraft || !copyAuditBaseline.quotationId) {
+    throw new Error('报价草稿复制前未获得稳定保存草稿 ID');
+  }
   await click('[data-action="quotation-copy"]');
-  await sleep(1000);
-  body = await bodyText();
-  if (!body.includes('复制报价草稿')) throw new Error('报价草稿复制未进入审计记录');
+  const copyAudits = await waitForValue(
+    () => evalValue(send, `(() => {
+      const trail = App.getQuotationWorkspace().rfqAuditTrail || [];
+      return trail.filter(item => item.action === '复制报价草稿' && item.quotationId === ${JSON.stringify(copyAuditBaseline.quotationId)}).map(item => ({
+        id: item.id,
+        status: item.status,
+        message: item.message,
+        quotationId: item.quotationId || ''
+      }));
+    })()`),
+    items => Array.isArray(items) && items.length === copyAuditBaseline.count + 1,
+    '报价草稿复制审计记录'
+  );
+  const currentCopyAudit = copyAudits.find(item => item.quotationId === copyAuditBaseline.quotationId);
+  if (!currentCopyAudit || currentCopyAudit.message !== '报价草稿已复制到剪贴板') {
+    throw new Error('报价草稿复制审计语义不正确');
+  }
+  const savedDraft = await evalValue(send, `(() => {
+    const ws = App.getQuotationWorkspace();
+    return (ws.rfqSavedDrafts || []).find(item => item.id === ws.rfqActiveSavedDraftId) || null;
+  })()`);
+  if (!savedDraft || savedDraft.id !== copyAuditBaseline.quotationId || currentCopyAudit.quotationId !== savedDraft.id) {
+    throw new Error('报价草稿复制审计未关联当前保存草稿');
+  }
+  // saveQuotationAudit updates state before the async persistence and rerender
+  // finish.  Wait for the rendered audit card instead of treating an immediate
+  // whole-page text snapshot as proof that the UI failed to update.
+  await waitForValue(bodyText, text => text.includes('复制报价草稿'), '报价草稿复制审计界面', 3000);
 
   await evalValue(send, `(() => {
     window.__rfqPrintCalled = false;
@@ -1355,10 +1702,11 @@ async function testQuotation() {
   const mobileLayout = await evalValue(send, `(() => {
     const body = document.body;
     const buttons = [...document.querySelectorAll('button')];
-    const clipped = buttons.filter(btn => {
+    const clipped = buttons.map(btn => {
       const r = btn.getBoundingClientRect();
-      return r.width < 12 || r.height < 12 || r.right > window.innerWidth + 4;
-    }).length;
+      const style = getComputedStyle(btn);
+      return { text: String(btn.textContent || '').trim().slice(0, 60), left: r.left, right: r.right, top: r.top, width: r.width, height: r.height, hidden: btn.hidden, display: style.display, visibility: style.visibility };
+    }).filter(item => item.display !== 'none' && item.visibility !== 'hidden' && !item.hidden && (item.width < 12 || item.height < 12 || item.right > window.innerWidth + 4));
     return JSON.stringify({
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
@@ -1369,7 +1717,7 @@ async function testQuotation() {
   const parsedMobile = JSON.parse(mobileLayout);
   if (!parsedMobile.hasQuotation) throw new Error('手机尺寸下报价页面未显示');
   if (parsedMobile.scrollWidth > parsedMobile.innerWidth + 8) throw new Error('手机尺寸下存在横向溢出');
-  if (parsedMobile.clipped > 0) throw new Error('手机尺寸下存在按钮遮挡或尺寸异常');
+  if (parsedMobile.clipped.length > 0) throw new Error(`手机尺寸下存在按钮遮挡或尺寸异常：${JSON.stringify(parsedMobile.clipped)}`);
   await send('Emulation.clearDeviceMetricsOverride').catch(() => {});
 
   const approvalStatus = await getApproval();
@@ -1382,57 +1730,343 @@ async function testQuotation() {
   return 'quotation: ok';
 }
 
+// Diagnostic only: each verifier invocation owns a fresh SQLite fixture and
+// Chrome profile. Native HTMLElement.click is a control experiment, never
+// quotation-audit acceptance evidence.
+async function testQuotationCopyAudit() {
+  const nativeControl = process.argv.includes('--quotation-copy-native-control');
+  const session = await openIsolatedPage(`${baseUrl}/#/quotation`, 'quotation-copy-diagnosis', {});
+  const { ws, send } = session;
+  const click = selector => evalValue(send, `document.querySelector(${JSON.stringify(selector)})?.click()`);
+  try {
+    await setAuth(send, fixtureCredentials('REQUESTER'));
+    await grantLocalClipboardPermission();
+    await send('Page.reload');
+    await sleep(1000);
+    await click('[data-action="quotation-sample"][data-sample="complete"]');
+    await click('[data-action="quotation-generate"]');
+    await waitForValue(() => evalValue(send, `App.getQuotationWorkspace().rfqDraft || ''`), value => Boolean(value), '报价草稿生成');
+    await click('[data-action="quotation-save"]');
+    const prepared = await waitForValue(() => evalValue(send, `(() => {
+      const workspace = App.getQuotationWorkspace();
+      const saved = (workspace.rfqSavedDrafts || [])[0];
+      return saved?.id ? { quotationId: saved.id, copyAuditCount: (workspace.rfqAuditTrail || []).filter(item => item.action === '复制报价草稿').length, quotationCount: (workspace.rfqSavedDrafts || []).length } : null;
+    })()`), value => Boolean(value?.quotationId), '隔离报价草稿');
+    let scrollEvidence = await evalValue(send, `(async () => {
+      const button = document.querySelector('[data-action="quotation-copy"]');
+      if (!button) return null;
+      const selector = '[data-action="quotation-copy"]';
+      const describeNode = node => node ? { tagName: node.tagName, id: node.id || '', className: String(node.className || '').slice(0, 160) } : null;
+      const rectOf = node => { const rect = node.getBoundingClientRect(); return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }; };
+      const scrollable = node => {
+        const style = getComputedStyle(node);
+        return node.scrollHeight > node.clientHeight && /auto|scroll|overlay/.test(style.overflowY);
+      };
+      const ancestorAudit = () => {
+        const rows = [];
+        for (let node = button.parentElement; node; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          const rect = rectOf(node);
+          const targetRect = rectOf(button);
+          rows.push({ ...describeNode(node), position: style.position, overflowX: style.overflowX, overflowY: style.overflowY, scrollTop: node.scrollTop, scrollLeft: node.scrollLeft, scrollHeight: node.scrollHeight, scrollWidth: node.scrollWidth, clientHeight: node.clientHeight, clientWidth: node.clientWidth, rect, scrollable: scrollable(node), clipsTarget: targetRect.top < rect.top || targetRect.bottom > rect.bottom || targetRect.left < rect.left || targetRect.right > rect.right });
+        }
+        const root = document.scrollingElement;
+        if (root && !rows.some(row => row.tagName === root.tagName && row.id === root.id)) {
+          const style = getComputedStyle(root);
+          rows.push({ ...describeNode(root), position: style.position, overflowX: style.overflowX, overflowY: style.overflowY, scrollTop: root.scrollTop, scrollLeft: root.scrollLeft, scrollHeight: root.scrollHeight, scrollWidth: root.scrollWidth, clientHeight: root.clientHeight, clientWidth: root.clientWidth, rect: rectOf(root), scrollable: scrollable(root), clipsTarget: false, documentScrollingElement: true });
+        }
+        return rows;
+      };
+      const before = { window: { x: scrollX, y: scrollY }, rect: rectOf(button), ancestors: ancestorAudit(), viewport: { width: innerWidth, height: innerHeight } };
+      const oldDocumentScrollBehavior = document.documentElement.style.scrollBehavior;
+      const oldBodyScrollBehavior = document.body?.style.scrollBehavior || '';
+      document.documentElement.style.scrollBehavior = 'auto';
+      if (document.body) document.body.style.scrollBehavior = 'auto';
+      try { button.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); }
+      catch { button.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' }); }
+      // A nested scroller can clip a target even after scrollIntoView. Centre it
+      // within every real scroll container without relying on a stale rect.
+      for (let node = button.parentElement; node; node = node.parentElement) {
+        if (!scrollable(node)) continue;
+        const targetRect = rectOf(button);
+        const containerRect = rectOf(node);
+        const deltaY = ((targetRect.top + targetRect.bottom) / 2) - ((containerRect.top + containerRect.bottom) / 2);
+        const deltaX = ((targetRect.left + targetRect.right) / 2) - ((containerRect.left + containerRect.right) / 2);
+        if (Math.abs(deltaY) > 1) node.scrollTop += deltaY;
+        if (Math.abs(deltaX) > 1) node.scrollLeft += deltaX;
+      }
+      const afterContainer = rectOf(button);
+      const desiredTop = Math.max(0, scrollY + afterContainer.top - ((innerHeight - afterContainer.height) / 2));
+      const desiredLeft = Math.max(0, scrollX + afterContainer.left - ((innerWidth - afterContainer.width) / 2));
+      // Chromium can retain BODY as the effective scroll host while reporting
+      // HTML as document.scrollingElement. Set both documented hosts, then
+      // verify the final geometry instead of assuming window.scrollTo worked.
+      const root = document.scrollingElement;
+      if (root) { root.scrollTop = desiredTop; root.scrollLeft = desiredLeft; }
+      document.documentElement.scrollTop = desiredTop;
+      document.documentElement.scrollLeft = desiredLeft;
+      if (document.body) { document.body.scrollTop = desiredTop; document.body.scrollLeft = desiredLeft; }
+      window.scrollTo({ top: desiredTop, left: desiredLeft, behavior: 'auto' });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const finalRect = rectOf(button);
+      const fullyInside = finalRect.width > 0 && finalRect.height > 0 && finalRect.left >= 0 && finalRect.top >= 0 && finalRect.right <= innerWidth && finalRect.bottom <= innerHeight;
+      const centreInside = ((finalRect.left + finalRect.right) / 2) >= 0 && ((finalRect.left + finalRect.right) / 2) <= innerWidth && ((finalRect.top + finalRect.bottom) / 2) >= 0 && ((finalRect.top + finalRect.bottom) / 2) <= innerHeight;
+      document.documentElement.style.scrollBehavior = oldDocumentScrollBehavior;
+      if (document.body) document.body.style.scrollBehavior = oldBodyScrollBehavior;
+      return { selector, before, requestedWindowScroll: { x: desiredLeft, y: desiredTop }, after: { window: { x: scrollX, y: scrollY }, rootScrollTop: root?.scrollTop ?? null, bodyScrollTop: document.body?.scrollTop ?? null, rect: finalRect, ancestors: ancestorAudit(), viewport: { width: innerWidth, height: innerHeight }, fullyInside, centreInside } };
+    })()`);
+    if (!scrollEvidence) throw new Error('复制报价草稿按钮不存在');
+    if (!scrollEvidence.after.fullyInside || !scrollEvidence.after.centreInside) {
+      // This is the one permitted re-location attempt. It is a scroll-only CDP
+      // gesture on the content area, never a button input or synthetic click.
+      await send('Input.synthesizeScrollGesture', {
+        x: Math.max(1, Math.floor(scrollEvidence.after.viewport.width * 0.75)),
+        y: Math.max(1, Math.floor(scrollEvidence.after.viewport.height * 0.5)),
+        yDistance: -Math.max(1, Math.ceil(scrollEvidence.after.rect.top - ((scrollEvidence.after.viewport.height - scrollEvidence.after.rect.height) / 2))),
+        speed: 800,
+        preventFling: true
+      });
+      await sleep(150);
+      const relocation = await evalValue(send, `(() => {
+        const button = document.querySelector('[data-action="quotation-copy"]');
+        if (!button) return null;
+        const rect = button.getBoundingClientRect();
+        const fullyInside = rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+        const centreInside = ((rect.left + rect.right) / 2) >= 0 && ((rect.left + rect.right) / 2) <= innerWidth && ((rect.top + rect.bottom) / 2) >= 0 && ((rect.top + rect.bottom) / 2) <= innerHeight;
+        const ancestorRects = [];
+        for (let node = button.parentElement; node; node = node.parentElement) {
+          const nodeRect = node.getBoundingClientRect();
+          const style = getComputedStyle(node);
+          ancestorRects.push({ tagName: node.tagName, id: node.id || '', className: String(node.className || '').slice(0, 160), position: style.position, overflowX: style.overflowX, overflowY: style.overflowY, scrollTop: node.scrollTop, scrollLeft: node.scrollLeft, scrollHeight: node.scrollHeight, scrollWidth: node.scrollWidth, clientHeight: node.clientHeight, clientWidth: node.clientWidth, rect: { left: nodeRect.left, top: nodeRect.top, right: nodeRect.right, bottom: nodeRect.bottom, width: nodeRect.width, height: nodeRect.height } });
+        }
+        return { after: { window: { x: scrollX, y: scrollY }, rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }, ancestors: ancestorRects, viewport: { width: innerWidth, height: innerHeight }, fullyInside, centreInside } };
+      })()`);
+      if (relocation) scrollEvidence = { ...scrollEvidence, after: relocation.after, relocation: 'CDP_SCROLL_GESTURE' };
+    }
+    if (!scrollEvidence.after.fullyInside || !scrollEvidence.after.centreInside) {
+      throw new Error(`TEST_HARNESS_SCROLL_FAILURE: ${JSON.stringify(scrollEvidence)}`);
+    }
+    const diagnosis = await evalValue(send, `(async () => {
+      const button = document.querySelector('[data-action="quotation-copy"]');
+      const rect = button.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      const style = getComputedStyle(button);
+      const clipboard = navigator.clipboard;
+      const state = window.__quotationCopyDiagnosis = { events: [], errors: [], handler: { entered: 'UNKNOWN', completed: 'UNKNOWN' }, clipboard: { available: Boolean(clipboard), writeText: Boolean(clipboard?.writeText), fallbackAttempted: 'UNKNOWN', fallbackResult: 'UNKNOWN', primaryResult: 'UNKNOWN', primaryError: 'NONE' } };
+      const describe = node => node ? { tagName: node.tagName, id: node.id || '', className: String(node.className || ''), text: String(node.textContent || '').trim().slice(0, 80) } : null;
+      const observe = (event, scope) => state.events.push({ type: event.type, scope, target: describe(event.target), currentTarget: describe(event.currentTarget), clientX: event.clientX, clientY: event.clientY, button: event.button, buttons: event.buttons, defaultPrevented: event.defaultPrevented, isTrusted: event.isTrusted, timestamp: Date.now() });
+      ['pointerover','pointerenter','pointermove','pointerdown','mousedown','pointerup','mouseup','click'].forEach(type => { button.addEventListener(type, event => observe(event, 'button'), true); document.addEventListener(type, event => observe(event, 'document'), true); });
+      window.addEventListener('error', event => state.errors.push({ type: 'error', message: event.message || '', timestamp: Date.now() }));
+      window.addEventListener('unhandledrejection', event => state.errors.push({ type: 'unhandledrejection', message: String(event.reason?.message || event.reason || ''), timestamp: Date.now() }));
+      const originalWriteText = clipboard?.writeText?.bind(clipboard);
+      const originalExecCommand = document.execCommand?.bind(document);
+      try {
+        if (originalWriteText) clipboard.writeText = value => {
+          state.clipboard.primaryResult = 'PENDING';
+          return Promise.resolve(originalWriteText(value)).then(result => { state.clipboard.primaryResult = 'SUCCESS'; return result; }, error => { state.clipboard.primaryResult = 'ERROR'; state.clipboard.primaryError = error?.name || 'Error'; throw error; });
+        };
+      } catch { state.clipboard.primaryResult = 'UNKNOWN'; }
+      try {
+        if (originalExecCommand) document.execCommand = (...args) => {
+          if (args[0] === 'copy') state.clipboard.fallbackAttempted = 'YES';
+          const result = originalExecCommand(...args);
+          if (args[0] === 'copy') state.clipboard.fallbackResult = result ? 'SUCCESS' : 'FAIL';
+          return result;
+        };
+      } catch { state.clipboard.fallbackAttempted = 'UNKNOWN'; }
+      const originalHandler = App.quotationCopyDraft;
+      App.quotationCopyDraft = async function (...args) {
+        state.handler.entered = 'YES';
+        try { const result = await originalHandler.apply(this, args); state.handler.completed = 'YES'; return result; }
+        catch (error) { state.handler.completed = 'NO'; state.handler.error = String(error?.name || 'Error') + ': ' + String(error?.message || error); throw error; }
+      };
+      state.restore = () => { App.quotationCopyDraft = originalHandler; try { if (originalWriteText) clipboard.writeText = originalWriteText; } catch {} try { if (originalExecCommand) document.execCommand = originalExecCommand; } catch {} };
+      let clipboardPermission = 'UNKNOWN';
+      try { if (navigator.permissions?.query) clipboardPermission = (await navigator.permissions.query({ name: 'clipboard-write' })).state; } catch (error) { clipboardPermission = 'ERROR:' + (error.name || 'unknown'); }
+      return { selector: '[data-action="quotation-copy"]', text: button.textContent.trim(), tagName: button.tagName, id: button.id || '', className: button.className || '', disabled: button.disabled, ariaDisabled: button.getAttribute('aria-disabled'), hidden: button.hidden, offsetWidth: button.offsetWidth, offsetHeight: button.offsetHeight, rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }, x, y, display: style.display, visibility: style.visibility, opacity: style.opacity, pointerEvents: style.pointerEvents, viewport: { width: innerWidth, height: innerHeight }, devicePixelRatio, scroll: { x: scrollX, y: scrollY }, hit: describe(hit), closestMatches: hit?.closest('button') === button, clipboardPermission, clipboard: { secureContext: window.isSecureContext, available: Boolean(clipboard), writeText: Boolean(clipboard?.writeText), commandSupported: document.queryCommandSupported('copy'), execCommand: typeof document.execCommand === 'function' } };
+    })()`);
+    if (!diagnosis.closestMatches || diagnosis.disabled || diagnosis.pointerEvents === 'none') throw new Error(`TEST_HARNESS_TARGETING_FAILURE: ${JSON.stringify({ scrollEvidence, diagnosis })}`);
+    const prePressHit = await evalValue(send, `(() => {
+      const button = document.querySelector('[data-action="quotation-copy"]');
+      const hit = document.elementFromPoint(${JSON.stringify(diagnosis.x)}, ${JSON.stringify(diagnosis.y)});
+      return { hit: hit ? { tagName: hit.tagName, id: hit.id || '', className: String(hit.className || ''), text: String(hit.textContent || '').trim().slice(0, 80) } : null, closestMatches: hit?.closest('button') === button };
+    })()`);
+    if (!prePressHit.closestMatches) throw new Error(`TEST_HARNESS_TARGETING_FAILURE: ${JSON.stringify({ scrollEvidence, diagnosis, prePressHit })}`);
+    if (nativeControl) {
+      await evalValue(send, `HTMLElement.prototype.click.call(document.querySelector('[data-action="quotation-copy"]'))`);
+    } else {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: diagnosis.x, y: diagnosis.y, button: 'none' });
+      await sleep(75);
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: diagnosis.x, y: diagnosis.y, button: 'left', buttons: 1, clickCount: 1 });
+      await sleep(75);
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: diagnosis.x, y: diagnosis.y, button: 'left', buttons: 0, clickCount: 1 });
+    }
+    await sleep(3000);
+    const evidence = await evalValue(send, `(() => {
+      const state = window.__quotationCopyDiagnosis || {};
+      const workspace = App.getQuotationWorkspace();
+      const copies = (workspace.rfqAuditTrail || []).filter(item => item.action === '复制报价草稿');
+      state.restore?.();
+      return { handler: state.handler, events: state.events, errors: state.errors, clipboard: state.clipboard, toast: document.getElementById('toastStack')?.innerText || '', copies, quotationCount: (workspace.rfqSavedDrafts || []).length };
+    })()`);
+    const trustedClick = evidence.events.some(event => event.type === 'click' && event.isTrusted);
+    const clickObserved = evidence.events.some(event => event.type === 'click');
+    const copyCreated = evidence.copies.length === prepared.copyAuditCount + 1;
+    const matchingAuditCount = evidence.copies.filter(item => item.quotationId === prepared.quotationId || item.sourceQuotationId === prepared.quotationId).length;
+    const uiSuccess = evidence.toast.includes('报价草稿已复制');
+    const report = { mode: nativeControl ? 'NATIVE_CONTROL' : 'REAL_CDP', prepared, scrollEvidence, diagnosis, prePressHit, trustedClick, clickObserved, evidence, copyCreated, matchingAuditCount, uiSuccess };
+    if (!nativeControl && trustedClick && evidence.handler.entered === 'YES' && evidence.handler.completed === 'YES' && copyCreated && matchingAuditCount !== 1) {
+      throw new Error(`BUSINESS_FAILURE_AUDIT_MISSING: 成功复制审计缺少当前 quotationId 关联。${JSON.stringify(report)}`);
+    }
+    return `quotation-copy-diagnosis: ${JSON.stringify(report)}`;
+  } finally { await closeIsolatedPage(session, 'quotation_copy_diagnosis_complete'); }
+}
+
+async function rfqContractFailure(send, selector, scenario) {
+  const page = JSON.parse(await evalValue(send, `JSON.stringify({ url: location.href, workspace: Boolean(document.querySelector('[data-manufacturing-workspace]')), fields: [...document.querySelectorAll('[id^="manufacturingRfq"]')].map(el => el.id), text: document.body.innerText.slice(0, 600) })`));
+  throw new Error(`RFQ_E2E_CONTRACT_MISSING: ${JSON.stringify({ selector, scenario, timeoutMs: 15000, page })}`);
+}
+
+async function rfqMouse(send, selector, scenario) {
+  const present = await evalValue(send, `(() => { const el=document.querySelector(${JSON.stringify(selector)}); if(!el) return false; el.scrollIntoView({block:'center',inline:'center'}); return true; })()`);
+  if (!present) await rfqContractFailure(send, selector, scenario);
+  await sleep(200);
+  let box = await evalValue(send, `(() => { const el=document.querySelector(${JSON.stringify(selector)}), r=el.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2, hit=document.elementFromPoint(x,y); return {x,y,width:r.width,height:r.height,viewport:{width:innerWidth,height:innerHeight},visible:r.width>0&&r.height>0&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,hit:hit===el||hit?.closest('button,input,select,textarea')===el}; })()`);
+  if (box && !box.visible && box.width > 0 && box.height > 0) {
+    // Scrolling is test-harness positioning only; field values and actions
+    // continue to use trusted CDP keyboard/mouse events.
+    await evalValue(send, `window.scrollBy(0, ${Math.max(1, Math.ceil(box.y - box.viewport.height / 2))})`);
+    await sleep(200);
+    box = await evalValue(send, `(() => { const el=document.querySelector(${JSON.stringify(selector)}), r=el.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2, hit=document.elementFromPoint(x,y); return {x,y,visible:r.width>0&&r.height>0&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight,hit:hit===el||hit?.closest('button,input,select,textarea')===el}; })()`);
+  }
+  if (!box?.visible || !box.hit) await rfqContractFailure(send, selector, scenario);
+  const prePress = await evalValue(send, `(() => { const el=document.querySelector(${JSON.stringify(selector)}), hit=document.elementFromPoint(${box.x},${box.y}); return hit===el||hit?.closest('button,input,select,textarea')===el; })()`);
+  if (!prePress) throw new Error(`RFQ_E2E_TARGETING_FAILURE: ${JSON.stringify({ selector, scenario, x: box.x, y: box.y })}`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y, button: 'none' });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', buttons: 1, clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', buttons: 0, clickCount: 1 });
+}
+
+async function rfqInput(send, selector, value, scenario) {
+  await rfqMouse(send, selector, scenario);
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'A', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'A', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 });
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
+  await send('Input.insertText', { text: value });
+  if (await evalValue(send, `document.querySelector(${JSON.stringify(selector)})?.value`) !== value) throw new Error(`RFQ_E2E_INPUT_FAILURE: ${JSON.stringify({ selector, scenario, value })}`);
+}
+
 async function testInquiries() {
   const { ws, send, events } = await openPage(`${baseUrl}/#/inquiries`);
-  await setAuth(send);
+  const session = await setAuth(send, {
+    email: process.env.E2E_FIXTURE_REQUESTER_EMAIL, password: process.env.E2E_FIXTURE_REQUESTER_PASSWORD,
+    name: 'fixture-requester', role: '操作员', enterpriseName: 'Material Issue Acceptance Fixture'
+  });
   await send('Page.reload');
-  await sleep(2500);
-  const marker = `E2E询盘-${Date.now()}`;
-  await evalValue(send, `(() => {
-    document.getElementById('inquiryCustomer').value = ${JSON.stringify(marker)};
-    document.getElementById('inquiryProduct').value = '测试产品';
-    document.getElementById('inquiryQuantity').value = '10';
-    document.querySelector('[data-action="inquiry-save"]').click();
-  })()`);
-  await sleep(1800);
+  await waitForValue(() => evalValue(send, `Boolean(document.querySelector('[data-manufacturing-workspace]') && document.querySelector('#manufacturingRfqCustomer') && document.querySelector('[data-action="manufacturing-rfq-save"]'))`), Boolean, 'RFQ page ready');
+  const readiness = await waitForValue(
+    () => evalValue(send, `JSON.stringify({ loaded: App.temp.manufacturing.loaded, loading: App.temp.manufacturing.loading, mode: App.temp.manufacturing.mode, error: App.temp.manufacturing.error })`),
+    value => { const state = JSON.parse(value); return state.loaded === true && state.loading === false; },
+    'RFQ business context ready'
+  );
+  const readyState = JSON.parse(readiness);
+  if (readyState.mode !== 'server') throw new Error(`BACKEND_READINESS_FAILURE: ${JSON.stringify(readyState)}`);
+  const marker = `RFQ-E2E-${Date.now()}`;
+  const customerId = process.env.E2E_FIXTURE_RFQ_CUSTOMER_ID;
+  if (!customerId) throw new Error('RFQ_E2E_FIXTURE_MISSING: customer prerequisite');
+  await rfqMouse(send, '#manufacturingRfqCustomer', 'R2 customer');
+  // Focus does not set a business value; native keyboard events below perform
+  // the actual user-visible selection.
+  await evalValue(send, `document.querySelector('#manufacturingRfqCustomer')?.focus()`);
+  // Native select controls require keyboard input after the trusted pointer
+  // activation; no DOM value assignment is used for this business field.
+  for (const [key, code, value] of [['Home', 'Home', 36], ['ArrowDown', 'ArrowDown', 40]]) {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: value, nativeVirtualKeyCode: value });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: value });
+    await sleep(100);
+  }
+  await send('Input.dispatchKeyEvent', { type: 'char', text: 'C', unmodifiedText: 'C', key: 'c', code: 'KeyC', windowsVirtualKeyCode: 67, nativeVirtualKeyCode: 67 });
+  await sleep(100);
+  const selectedCustomer = await evalValue(send, `document.querySelector('#manufacturingRfqCustomer')?.value`);
+  if (selectedCustomer !== customerId) throw new Error(`RFQ_E2E_INPUT_FAILURE: ${JSON.stringify({ expected: customerId, actual: selectedCustomer, options: JSON.parse(await evalValue(send, "JSON.stringify([...document.querySelector('#manufacturingRfqCustomer').options].map(option => ({value:option.value,text:option.textContent})))")) })}`);
+  for (const [selector, value, scenario] of [
+    // validateRfq currently requires only customer and product name.  The
+    // test deliberately exercises that live product contract instead of
+    // inventing requirements merely because later assessment may flag them.
+    ['#manufacturingRfqProduct', marker, 'R2 product']
+  ]) await rfqInput(send, selector, value, scenario);
+  await evalValue(send, `document.querySelector('[data-action="manufacturing-rfq-save"]')?.scrollIntoView({ block: 'center', inline: 'center' })`);
+  await sleep(200);
+  const preClickState = JSON.parse(await evalValue(send, `JSON.stringify((() => {
+    const state = App.temp.manufacturing;
+    const button = document.querySelector('[data-action="manufacturing-rfq-save"]');
+    const rect = button?.getBoundingClientRect();
+    const x = rect ? rect.left + rect.width / 2 : 0;
+    const y = rect ? rect.top + rect.height / 2 : 0;
+    const hit = document.elementFromPoint(x, y);
+    window.__rfqSubmitEvidence = { clicks: [], installedAt: Date.now() };
+    document.addEventListener('click', event => {
+      const action = event.target?.closest?.('[data-action]')?.dataset?.action || '';
+      if (action === 'manufacturing-rfq-save') window.__rfqSubmitEvidence.clicks.push({ isTrusted: event.isTrusted, action, target: event.target?.tagName || '', timestamp: Date.now() });
+    }, { capture: true, once: true });
+    return {
+      route: App.route,
+      loaded: state.loaded,
+      loading: state.loading,
+      mode: state.mode,
+      error: state.error,
+      syncStatus: Store.syncStatus,
+      auth: AuthClient.isLoggedIn(),
+      customerCount: state.customers.length,
+      projectCount: state.projects.length,
+      button: { exists: Boolean(button), disabled: Boolean(button?.disabled), action: button?.dataset?.action || '', targetHit: hit === button || hit?.closest?.('[data-action]') === button },
+      selectedRfqId: state.selectedRfqId,
+      rfq: state.rfq
+    };
+  })())`));
+  console.error(`RFQ_PRE_CLICK_STATE ${JSON.stringify(preClickState)}`);
+  if (!preClickState.button.targetHit) throw new Error(`TEST_HARNESS_TARGETING_FAILURE: ${JSON.stringify(preClickState)}`);
+  await rfqMouse(send, '[data-action="manufacturing-rfq-save"]', 'R2 submit');
+  let response;
+  try {
+    response = await waitForNetworkResponse({ send, events }, '/api/manufacturing/v1/rfqs', 5000, 'POST');
+  } catch (error) {
+    const postClickState = JSON.parse(await evalValue(send, `JSON.stringify({
+      clicks: window.__rfqSubmitEvidence?.clicks || [],
+      mode: App.temp.manufacturing.mode,
+      error: App.temp.manufacturing.error,
+      toast: document.getElementById('toastStack')?.innerText || '',
+      selectedRfqId: App.temp.manufacturing.selectedRfqId,
+      rfq: App.temp.manufacturing.rfq,
+      buttonDisabled: Boolean(document.querySelector('[data-action="manufacturing-rfq-save"]')?.disabled)
+    })`));
+    const network = events.filter(event => ['Network.requestWillBeSent', 'Network.responseReceived', 'Runtime.exceptionThrown', 'Log.entryAdded'].includes(event.method)).slice(-40);
+    console.error(`RFQ_POST_CLICK_STATE ${JSON.stringify({ postClickState, network })}`);
+    const trusted = postClickState.clicks.some(item => item.isTrusted && item.action === 'manufacturing-rfq-save');
+    if (!trusted) throw new Error(`UI_EVENT_DISPATCH_FAILURE: trusted manufacturing-rfq-save click not observed. ${JSON.stringify(postClickState)}`);
+    if (postClickState.error) throw new Error(`CLIENT_PRECONDITION_BLOCK: ${JSON.stringify(postClickState)}`);
+    throw error;
+  }
+  console.error(`RFQ_SUBMIT_EVIDENCE ${JSON.stringify({ preClickState, click: JSON.parse(await evalValue(send, `JSON.stringify(window.__rfqSubmitEvidence?.clicks || [])`)), postStatus: response.status })}`);
+  const createdId = response.body?.data?.rfq?.id;
+  if (![200, 201].includes(response.status) || !createdId) throw new Error(`RFQ_E2E_CREATE_FAILED: ${JSON.stringify(response)}`);
+  await waitForValue(() => evalValue(send, `document.getElementById('toastStack')?.innerText || ''`), value => value.includes('RFQ 已创建'), 'R3 create success UI', 3000);
+  const readback = await requestApi(`/api/manufacturing/v1/rfqs/${createdId}`, session.token);
+  const record = readback.body?.data?.rfq;
+  if (!readback.ok || record?.id !== createdId || record?.product_name !== marker || record?.customer_id !== customerId) throw new Error(`RFQ_E2E_PERSISTENCE_FAILED: ${JSON.stringify({ status: readback.status, record })}`);
   await send('Page.reload');
-  await sleep(2200);
-  let body = await evalValue(send, 'document.body.innerText');
-  if (!body.includes(marker)) throw new Error('询盘新增后刷新未恢复');
-
-  await evalValue(send, `(() => {
-    const card = [...document.querySelectorAll('.kb-item')].find(item => item.innerText.includes(${JSON.stringify(marker)}));
-    card?.querySelector('[data-action="inquiry-edit"]')?.click();
-  })()`);
-  await sleep(500);
-  await evalValue(send, `(() => {
-    document.getElementById('inquiryProduct').value = '测试产品-已编辑';
-    document.querySelector('[data-action="inquiry-save"]').click();
-  })()`);
-  await sleep(1600);
-  body = await evalValue(send, 'document.body.innerText');
-  if (!body.includes('测试产品-已编辑')) throw new Error('询盘编辑未生效');
-
-  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
-  await sleep(500);
-  const mobile = JSON.parse(await evalValue(send, `JSON.stringify({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth, visible: document.body.innerText.includes('询盘管理') })`));
-  if (!mobile.visible || mobile.scrollWidth > mobile.innerWidth + 8) throw new Error('询盘页手机布局异常');
-  await send('Emulation.clearDeviceMetricsOverride').catch(() => {});
-
-  await evalValue(send, `window.confirm = () => true`);
-  await evalValue(send, `(() => {
-    const card = [...document.querySelectorAll('.kb-item')].find(item => item.innerText.includes(${JSON.stringify(marker)}));
-    card?.querySelector('[data-action="inquiry-delete"]')?.click();
-  })()`);
-  await sleep(1600);
-  await send('Page.reload');
-  await sleep(2200);
-  body = await evalValue(send, 'document.body.innerText');
-  if (body.includes(marker)) throw new Error('询盘删除后刷新仍存在');
+  await waitForValue(() => evalValue(send, 'document.body.innerText'), body => body.includes(marker), 'R5 RFQ refresh');
+  const list = await requestApi(`/api/manufacturing/v1/rfqs?q=${encodeURIComponent(marker)}&pageSize=100`, session.token);
+  const matches = (list.body?.data?.items || []).filter(item => item.product_name === marker);
+  if (!list.ok || matches.length !== 1 || matches[0].id !== createdId) throw new Error(`RFQ_E2E_DUPLICATE_OR_READBACK_FAILED: ${JSON.stringify({ status: list.status, matches })}`);
   const browserErrors = events.filter(event => event.method === 'Runtime.exceptionThrown' || (event.method === 'Log.entryAdded' && event.params?.entry?.level === 'error'));
-  if (browserErrors.length) throw new Error(`询盘页出现浏览器错误：${JSON.stringify(browserErrors.slice(-2))}`);
+  if (browserErrors.length) throw new Error(`RFQ browser errors: ${JSON.stringify(browserErrors.slice(-2))}`);
   ws.close();
-  return 'inquiries-sqlite-crud-mobile: ok';
+  return `rfq-server-contract-r1-r7: ok ${JSON.stringify({ createdId, marker, matchingRecordCount: matches.length, isolatedFixture: Boolean(process.env.E2E_FIXTURE_DB_PATH) })}`;
 }
 
 async function testMonitor() {
@@ -1450,18 +2084,35 @@ async function testMonitor() {
 // browser can navigate to the configured application entry without creating
 // users, changing inventory, or making business assertions.
 async function testEnvironmentEntry() {
-  const { ws, send } = await openPage(baseUrl);
-  const state = JSON.parse(await evalValue(send, `JSON.stringify({
+  const { ws, send, pageEvidence } = await openPage(baseUrl);
+  pageEvidence.currentStep = 'cdp_precheck_before_reload';
+  const arithmeticBeforeReload = await evalValue(send, '1 + 1');
+  const locationBeforeReload = await evalValue(send, 'location.href');
+  if (arithmeticBeforeReload !== 2 || !String(locationBeforeReload).startsWith(baseUrl)) {
+    throw new Error(`CDP_PRECHECK_FAILED:${JSON.stringify({ arithmeticBeforeReload, locationBeforeReload })}`);
+  }
+  const readState = () => evalValue(send, `JSON.stringify({
     readyState: document.readyState,
     title: document.title,
     bodyLength: (document.body?.innerText || '').trim().length,
     url: location.href
-  })`));
+  })`);
+  const initial = JSON.parse(await readState());
+  pageEvidence.currentStep = 'cdp_precheck_reload';
+  await send('Page.reload');
+  await sleep(1000);
+  pageEvidence.currentStep = 'cdp_precheck_after_reload';
+  const arithmeticAfterReload = await evalValue(send, '1 + 1');
+  const locationAfterReload = await evalValue(send, 'location.href');
+  const state = JSON.parse(await readState());
+  pageEvidence.expectedClose = true;
   ws.close();
-  if (state.readyState !== 'complete' || !state.bodyLength || !state.url.startsWith(baseUrl)) {
-    throw new Error(`应用入口未就绪：${JSON.stringify(state)}`);
+  if (arithmeticAfterReload !== 2 || !String(locationAfterReload).startsWith(baseUrl)
+    || initial.readyState !== 'complete' || !initial.bodyLength || !initial.url.startsWith(baseUrl)
+    || state.readyState !== 'complete' || !state.bodyLength || !state.url.startsWith(baseUrl)) {
+    throw new Error(`CDP_PRECHECK_FAILED:${JSON.stringify({ arithmeticBeforeReload, locationBeforeReload, arithmeticAfterReload, locationAfterReload, initial, state })}`);
   }
-  return 'browser-environment-entry: ok';
+  return 'CDP_PRECHECK: PASS (evaluate, location, reload, evaluate)';
 }
 
 async function main() {
@@ -1469,6 +2120,26 @@ async function main() {
   const results = [];
   if (environmentOnly) {
     results.push(await testEnvironmentEntry());
+    console.log(results.join('\n'));
+    return;
+  }
+  if (quotationOnly) {
+    results.push(await testQuotationCopyAudit());
+    console.log(results.join('\n'));
+    return;
+  }
+  if (rfqOnly) {
+    results.push(await testInquiries());
+    console.log(results.join('\n'));
+    return;
+  }
+  if (ocrOnly) {
+    results.push(await testOcr());
+    console.log(results.join('\n'));
+    return;
+  }
+  if (ocrCdpMinimal) {
+    results.push(await testOcrCdpMinimal());
     console.log(results.join('\n'));
     return;
   }
@@ -1506,7 +2177,10 @@ async function main() {
   console.log(results.join('\n'));
 }
 
-main().catch(err => {
+main().then(() => {
+  closeSharedBrowserConnection();
+}).catch(err => {
   console.error(err);
-  process.exit(1);
+  closeSharedBrowserConnection();
+  process.exitCode = 1;
 });

@@ -15,8 +15,18 @@ const chromeCandidates = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
 ];
-const baseUrl = 'http://127.0.0.1:3000';
-const chromePort = 9222;
+// Verification ports are explicit inputs: the defaults preserve the historic
+// contract, while a caller may select a known-free isolated pair.  Do not
+// search for or fall back to another port: ownership must be fail-closed.
+const appPort = Number(process.env.VERIFY_APP_PORT || 3000);
+const chromePort = Number(process.env.VERIFY_CHROME_PORT || 9222);
+if (!Number.isInteger(appPort) || appPort < 1 || appPort > 65535) {
+  throw new Error(`VERIFY_APP_PORT 无效：${process.env.VERIFY_APP_PORT}`);
+}
+if (!Number.isInteger(chromePort) || chromePort < 1 || chromePort > 65535) {
+  throw new Error(`VERIFY_CHROME_PORT 无效：${process.env.VERIFY_CHROME_PORT}`);
+}
+const baseUrl = `http://127.0.0.1:${appPort}`;
 const environmentOnly = process.argv.includes('--environment-only');
 const fixtureMode = process.argv.includes('--material-issue-fixture');
 const materialIssueScenarioA = process.argv.includes('--material-issue-scenario-a');
@@ -24,6 +34,11 @@ const materialIssueScenarioB = process.argv.includes('--material-issue-scenario-
 const materialIssueScenarioC = process.argv.includes('--material-issue-scenario-c');
 const materialIssueScenarioD = process.argv.includes('--material-issue-scenario-d');
 const materialIssueScenarioE = process.argv.includes('--material-issue-scenario-e');
+const quotationOnly = process.argv.includes('--quotation-only');
+const rfqOnly = process.argv.includes('--rfq-only');
+const ocrOnly = process.argv.includes('--ocr-only');
+const ocrCdpMinimal = process.argv.includes('--ocr-cdp-minimal');
+const quotationCopyNativeControl = process.argv.includes('--quotation-copy-native-control');
 const browserOnly = process.argv.includes('--browser-only');
 
 // A child can flush its final log line while the inherited output pipe is
@@ -102,6 +117,96 @@ async function assertPortUnused(port, label) {
   if (await isPortListening(port)) throw new Error(`${label} 端口 ${port} 已有监听进程`);
 }
 
+async function readDevToolsPort(chromeProfile) {
+  try {
+    const file = path.join(chromeProfile, 'DevToolsActivePort');
+    const raw = await fs.readFile(file, 'utf8');
+    const [portLine] = raw.trim().split(/\r?\n/);
+    const port = Number(portLine);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return { port: null, error: 'INVALID_DEVTOOLS_PORT' };
+    }
+    return { port, error: null };
+  } catch (error) {
+    return { port: null, error: error?.code || error?.message || 'DEVTOOLS_PORT_UNREADABLE' };
+  }
+}
+
+async function waitForChromeCdp(chrome, chromeProfile, expectedPort, timeoutMs = 30000) {
+  const startedAt = Date.now();
+  const attempts = [];
+  let lastPortError = null;
+  let lastHttpError = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const elapsedMs = Date.now() - startedAt;
+    if (chrome?.exitCode !== null || chrome?.signalCode) {
+      return {
+        ready: false,
+        classification: 'CHROME_PROCESS_EARLY_EXIT',
+        elapsedMs,
+        attempts,
+        exitCode: chrome?.exitCode ?? null,
+        signalCode: chrome?.signalCode ?? null,
+        lastPortError,
+        lastHttpError
+      };
+    }
+
+    const portState = await readDevToolsPort(chromeProfile);
+    lastPortError = portState.error;
+    if (portState.port && portState.port !== expectedPort) {
+      return {
+        ready: false,
+        classification: 'CHROME_CDP_PORT_MISMATCH',
+        elapsedMs,
+        attempts,
+        expectedPort,
+        publishedPort: portState.port,
+        lastPortError,
+        lastHttpError
+      };
+    }
+    // Chrome writes DevToolsActivePort only for an automatically selected
+    // debugging port. For this verifier the port is an explicit, preflighted
+    // contract, so probe that exact port when the profile file is absent.
+    const candidatePort = portState.port || expectedPort;
+    if (candidatePort) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${candidatePort}/json/version`);
+        if (response.ok) {
+          return {
+            ready: true,
+            chromePort: candidatePort,
+            elapsedMs,
+            attempts,
+            lastPortError,
+            lastHttpError
+          };
+        }
+        lastHttpError = `HTTP_${response.status}`;
+      } catch (error) {
+        lastHttpError = error?.message || 'CDP_HTTP_UNAVAILABLE';
+      }
+    }
+    if (attempts.length < 24) {
+      attempts.push({ elapsedMs, devToolsPort: portState.port, expectedPort, portError: portState.error, httpError: lastHttpError });
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+
+  return {
+    ready: false,
+    classification: lastPortError === 'ENOENT' ? 'CHROME_DEVTOOLS_PORT_NOT_PUBLISHED' : 'CHROME_CDP_UNAVAILABLE',
+    elapsedMs: Date.now() - startedAt,
+    attempts,
+    exitCode: chrome?.exitCode ?? null,
+    signalCode: chrome?.signalCode ?? null,
+    lastPortError,
+    lastHttpError
+  };
+}
+
 function terminateProcessGroup(child, label) {
   if (!child?.pid || child.exitCode !== null || child.signalCode) return;
   try {
@@ -148,14 +253,20 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
   let chromeProfile;
   let serverOutput;
   let chromeOutput;
-  const evidence = { cycle, baseUrl, chromePort, startedAt: new Date().toISOString() };
+  let verifiedChromePort = null;
+  const evidence = { cycle, baseUrl, requestedChromePort: chromePort, startedAt: new Date().toISOString() };
   try {
-    await assertPortUnused(3000, '应用');
+    await assertPortUnused(appPort, '应用');
     await assertPortUnused(chromePort, 'Chrome CDP');
 
     server = spawn(nodeExecutable, ['server.js'], {
       cwd: root,
-      env: runtimeEnv,
+      env: {
+        ...runtimeEnv,
+        PORT: String(appPort),
+        HOST: '127.0.0.1',
+        APP_URL: baseUrl
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false
     });
@@ -163,7 +274,7 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
     server.on('exit', (code, signal) => console.warn(`[verify] server 退出：code=${code} signal=${signal || ''}`));
 
     // Health belongs to the process started above: a preflight port probe
-    // prevents an older process on :3000 from satisfying this check.
+    // prevents an older process on the selected port from satisfying this check.
     await waitFor(`${baseUrl}/api/health`, 30000);
     const health = await fetchJson(`${baseUrl}/api/health`);
     if (!health.ok) throw new Error('/api/health 未返回 ok');
@@ -173,9 +284,26 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
 
     chromeProfile = await fs.mkdtemp(path.join(os.tmpdir(), 'eaos-verify-chrome-'));
     chrome = spawn(chromePath, [
+      // The existing clean-open and reliability browser runners both use
+      // headless=new successfully. Keeping this verifier on the same browser
+      // lifecycle avoids a foreground macOS target being detached while the
+      // E2E child owns its page CDP session.
+      '--headless=new',
       `--remote-debugging-port=${chromePort}`,
       `--user-data-dir=${chromeProfile}`,
-      baseUrl
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-sync',
+      '--disable-extensions',
+      // CDP-created page targets are backgrounded by Chrome. The browser
+      // otherwise throttles the bounded clipboard fallback timer and stalls
+      // a real user action before its audit is evaluated.
+      '--disable-background-timer-throttling',
+      '--disable-breakpad',
+      '--disable-crash-reporter',
+      'about:blank'
     ], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -183,9 +311,15 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
     });
     chromeOutput = recordOutput(chrome, 'chrome');
     chrome.on('exit', (code, signal) => console.warn(`[verify] chrome 退出：code=${code} signal=${signal || ''}`));
-    await waitFor(`http://127.0.0.1:${chromePort}/json/version`, 30000);
+    const cdp = await waitForChromeCdp(chrome, chromeProfile, chromePort, 30000);
+    evidence.cdpStartup = cdp;
+    if (!cdp.ready) {
+      throw new Error(`CDP_STARTUP_FAILED:${cdp.classification}`);
+    }
+    verifiedChromePort = cdp.chromePort;
+    evidence.chromePort = verifiedChromePort;
 
-    runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(environmentOnly ? ['--environment-only'] : []), ...(materialIssueScenarioA ? ['--material-issue-scenario-a'] : []), ...(materialIssueScenarioB ? ['--material-issue-scenario-b'] : []), ...(materialIssueScenarioC ? ['--material-issue-scenario-c'] : []), ...(materialIssueScenarioD ? ['--material-issue-scenario-d'] : []), ...(materialIssueScenarioE ? ['--material-issue-scenario-e'] : [])], {
+    const e2eEnv = {
       env: {
         ...runtimeEnv,
         E2E_BASE_URL: baseUrl,
@@ -196,6 +330,9 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
         E2E_MATERIAL_ISSUE_SCENARIO_C: materialIssueScenarioC ? '1' : '',
         E2E_MATERIAL_ISSUE_SCENARIO_D: materialIssueScenarioD ? '1' : '',
         E2E_MATERIAL_ISSUE_SCENARIO_E: materialIssueScenarioE ? '1' : '',
+        E2E_RFQ_ONLY: rfqOnly ? '1' : '',
+        E2E_OCR_ONLY: ocrOnly ? '1' : '',
+        E2E_OCR_CDP_MINIMAL: ocrCdpMinimal ? '1' : '',
         ...(fixture ? {
           E2E_FIXTURE_REQUESTER_EMAIL: fixture.requester.email,
           E2E_FIXTURE_REQUESTER_PASSWORD: fixture.requester.password,
@@ -204,10 +341,18 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
           E2E_FIXTURE_APPROVER_EMAIL: fixture.approver.email,
           E2E_FIXTURE_APPROVER_PASSWORD: fixture.approver.password,
           E2E_FIXTURE_ENTERPRISE_ID: fixture.enterpriseId,
-          E2E_FIXTURE_DB_PATH: fixture.dbPath
+          E2E_FIXTURE_DB_PATH: fixture.dbPath,
+          E2E_FIXTURE_RFQ_CUSTOMER_ID: fixture.customer?.id || ''
         } : {})
       }
-    });
+    };
+    // The no-side-effect probe verifies the exact CDP lifecycle used below:
+    // open a dedicated target, evaluate, navigate, evaluate again, then close.
+    // A failed probe stops before any business action can be repeated.
+    runChecked(nodeExecutable, ['scripts/run-e2e.mjs', '--environment-only'], e2eEnv);
+    if (!environmentOnly) {
+      runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(quotationOnly ? ['--quotation-only'] : []), ...(rfqOnly ? ['--rfq-only'] : []), ...(ocrOnly ? ['--ocr-only'] : []), ...(ocrCdpMinimal ? ['--ocr-cdp-minimal'] : []), ...(quotationCopyNativeControl ? ['--quotation-copy-native-control'] : []), ...(materialIssueScenarioA ? ['--material-issue-scenario-a'] : []), ...(materialIssueScenarioB ? ['--material-issue-scenario-b'] : []), ...(materialIssueScenarioC ? ['--material-issue-scenario-c'] : []), ...(materialIssueScenarioD ? ['--material-issue-scenario-d'] : []), ...(materialIssueScenarioE ? ['--material-issue-scenario-e'] : [])], e2eEnv);
+    }
     evidence.result = 'READY';
     return evidence;
   } catch (error) {
@@ -226,8 +371,8 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
     evidence.cleanup = {
       chrome: processEvidence(chrome, 'chrome'),
       server: processEvidence(server, 'server'),
-      chromePortReleased: await assertPortReleased(chromePort, 'Chrome CDP 清理后端口'),
-      applicationPortReleased: await assertPortReleased(3000, '应用清理后端口')
+      chromePortReleased: verifiedChromePort ? await assertPortReleased(chromePort, 'Chrome CDP 清理后端口') : true,
+      applicationPortReleased: await assertPortReleased(appPort, '应用清理后端口')
     };
     console.log(`[verify] BROWSER_ENVIRONMENT_CLEANUP ${JSON.stringify(evidence.cleanup)}`);
     if (chromeProfile) await fs.rm(chromeProfile, { recursive: true, force: true }).catch(() => {});
@@ -258,7 +403,12 @@ async function main() {
     return;
   }
 
-  const fixture = fixtureMode || materialIssueScenarioA || materialIssueScenarioB || materialIssueScenarioC || materialIssueScenarioD || materialIssueScenarioE ? await createMaterialIssueFixture() : null;
+  // Quotation click-path diagnosis must not reuse a persisted development
+  // workspace.  It exercises the existing auth/state persistence on a fresh
+  // SQLite fixture, exactly as the material-issue browser scenarios do.
+  // Full E2E creates RFQ data, therefore it also runs on a disposable SQLite
+  // fixture rather than the user's local business database.
+  const fixture = !environmentOnly || fixtureMode || quotationOnly || rfqOnly || ocrOnly || ocrCdpMinimal || materialIssueScenarioA || materialIssueScenarioB || materialIssueScenarioC || materialIssueScenarioD || materialIssueScenarioE ? await createMaterialIssueFixture() : null;
   try {
     const runtimeEnv = fixture ? { ...process.env, DB_PATH: fixture.dbPath, UPLOADS_DIR: path.join(fixture.dir, 'uploads'), LOGS_DIR: path.join(fixture.dir, 'logs'), BACKUPS_DIR: path.join(fixture.dir, 'backups') } : process.env;
     // Fixture readiness is checked twice only for the environment probe.  A
