@@ -398,6 +398,9 @@ const Stability = {
     const type = entry.type || '系统错误';
     const lifecycle = entry.lifecycle || (entry.ignored ? 'ignored' : entry.confirmed ? 'resolved' : entry.fixed ? 'fixed' : 'active');
     const signature = entry.signature || [moduleName, feature, type, message].join('|');
+    const count = Math.max(1, Number(entry.occurrenceCount || entry.count || 1));
+    const firstAt = Number(entry.firstSeenAt || entry.firstAt || entry.time || now);
+    const lastAt = Number(entry.lastSeenAt || entry.lastAt || entry.time || now);
     return {
       id: entry.id || uid(),
       schemaVersion: 1,
@@ -416,11 +419,24 @@ const Stability = {
       // without altering its lifecycle, persistence, or historical evidence.
       eventKind: entry.eventKind || entry.semanticKind || '',
       environment: entry.environment || null,
+      blocking: entry.blocking === true,
+      currentTaskBlocked: entry.currentTaskBlocked === true,
+      impactsCorrectness: entry.impactsCorrectness === true,
+      impactsSecurity: entry.impactsSecurity === true,
+      unknownOutcome: entry.unknownOutcome === true,
+      autoRecovery: entry.autoRecovery === true,
+      recoveryContract: entry.recoveryContract || null,
       lifecycle,
-      status: lifecycle === 'resolved' ? '已验证' : lifecycle === 'fixed' ? '待验证' : lifecycle === 'investigating' ? '处理中' : lifecycle === 'ignored' ? '已忽略' : entry.status || '待确认',
-      count: Math.max(1, Number(entry.count || 1)),
-      firstAt: Number(entry.firstAt || entry.time || now),
-      lastAt: Number(entry.lastAt || entry.time || now),
+      status: String(entry.eventKind || '').toUpperCase() === 'AUTO_RESOLVED_VERIFIED'
+        ? '自动恢复已验证'
+        : lifecycle === 'resolved' ? '已验证' : lifecycle === 'fixed' ? '待验证' : lifecycle === 'investigating' ? '处理中' : lifecycle === 'ignored' ? '已忽略' : entry.status || '待确认',
+      count,
+      occurrenceCount: count,
+      firstAt,
+      firstSeenAt: firstAt,
+      lastAt,
+      lastSeenAt: lastAt,
+      lastEvidence: entry.lastEvidence || entry.evidence || entry.rawError || entry.detail || message,
       time: Number(entry.time || now),
       confirmed: lifecycle === 'resolved',
       confirmedAt: Number(entry.confirmedAt || (lifecycle === 'resolved' ? entry.time || now : 0)),
@@ -428,14 +444,33 @@ const Stability = {
       ignoredAt: Number(entry.ignoredAt || (lifecycle === 'ignored' ? entry.time || now : 0)),
       fixed: ['fixed', 'resolved'].includes(lifecycle),
       fixedAt: Number(entry.fixedAt || (['fixed', 'resolved'].includes(lifecycle) ? entry.time || now : 0)),
-      rawError: entry.rawError || entry.detail || ''
+      rawError: entry.rawError || entry.detail || '',
+      recoveryAction: entry.recoveryAction || '',
+      recoveryAttemptId: entry.recoveryAttemptId || '',
+      recoveryAttemptedAt: Number(entry.recoveryAttemptedAt || 0),
+      recoveryDecision: entry.recoveryDecision || '',
+      recoveryEligibility: entry.recoveryEligibility || null,
+      recoveryState: entry.recoveryState || '',
+      preRecoveryState: entry.preRecoveryState ?? null,
+      postRecoveryState: entry.postRecoveryState ?? null,
+      verificationType: entry.verificationType || '',
+      verificationResult: entry.verificationResult || '',
+      verifiedAt: Number(entry.verifiedAt || 0),
+      resolutionEvidence: entry.resolutionEvidence || null,
+      originalFailureId: entry.originalFailureId || entry.id || '',
+      originalFailureSignature: entry.originalFailureSignature || signature,
+      originalFailureEvidence: entry.originalFailureEvidence || null,
+      recoveryAttempts: Array.isArray(entry.recoveryAttempts) ? entry.recoveryAttempts : [],
+      classificationTrace: Array.isArray(entry.classificationTrace) ? entry.classificationTrace : [],
+      nextAction: entry.nextAction || ''
     };
   },
   bugAlertSemantics(alert = {}, context = {}) {
+    const explicitKind = String(alert.eventKind || alert.semanticKind || '').toUpperCase();
+    if (explicitKind === 'AUTO_RESOLVED_VERIFIED') return explicitKind;
     const lifecycle = alert.lifecycle || (alert.ignored ? 'ignored' : alert.confirmed ? 'resolved' : alert.fixed ? 'fixed' : 'active');
     if (['resolved', 'ignored'].includes(lifecycle)) return 'HISTORICAL_RESOLVED';
 
-    const explicitKind = String(alert.eventKind || alert.semanticKind || '').toUpperCase();
     if (['EXPECTED_DEGRADED', 'GUIDANCE', 'SYNTHETIC_TEST', 'UNKNOWN'].includes(explicitKind)) return explicitKind;
 
     // STEP5 uses a stable persisted signature and fixture marker, not display text.
@@ -460,11 +495,24 @@ const Stability = {
   },
   bugAlertSemanticsModel(alert = {}, context = {}) {
     const classification = this.bugAlertSemantics(alert, context);
+    const severity = String(alert.severity || '').toLowerCase();
+    const explicitlyBlocking = alert.blocking === true
+      || alert.currentTaskBlocked === true
+      || alert.impactsSecurity === true
+      || ['critical', 'blocking'].includes(severity);
+    const unknownNeedsAttention = classification === 'UNKNOWN'
+      && (alert.impactsCorrectness === true || alert.impactsSecurity === true || explicitlyBlocking);
     return {
       classification,
-      isHistorical: classification === 'HISTORICAL_RESOLVED',
+      isHistorical: ['HISTORICAL_RESOLVED', 'AUTO_RESOLVED_VERIFIED'].includes(classification),
       isCurrentPending: ['CURRENT_BUG', 'UNKNOWN'].includes(classification),
-      impactsHealth: ['CURRENT_BUG', 'UNKNOWN'].includes(classification)
+      impactsHealth: ['CURRENT_BUG', 'UNKNOWN'].includes(classification),
+      isGlobalBlocking: classification === 'CURRENT_BUG' ? explicitlyBlocking : unknownNeedsAttention,
+      errorCenterView: ['HISTORICAL_RESOLVED', 'AUTO_RESOLVED_VERIFIED'].includes(classification)
+        ? 'history'
+        : ['EXPECTED_DEGRADED', 'GUIDANCE', 'SYNTHETIC_TEST'].includes(classification)
+          ? 'diagnostic'
+          : 'current'
     };
   },
   normalizeHealthCheck(entry = {}) {
@@ -510,6 +558,137 @@ const Stability = {
         ignored: normalizedErrors.filter(item => item.lifecycle === 'ignored').length
       }
     };
+  }
+};
+
+const SafeRecovery = {
+  blockedActionPattern: /(PAYMENT|PURCHASE|QUOTATION_SEND|INVENTORY|MES|PERMISSION|SECRET|CREDENTIAL|SECURITY_POLICY|APPROVAL|DEVICE|PLC|ROBOT|DELETE|OVERWRITE)/i,
+
+  eligibility(alert = {}, context = {}) {
+    const semantic = Stability.bugAlertSemantics(alert, context);
+    const contract = alert.recoveryContract || {};
+    const reasons = [];
+    if (semantic !== 'CURRENT_BUG') reasons.push(`STATE_${semantic}_NOT_ELIGIBLE`);
+    if (alert.unknownOutcome === true || contract.noUnknownOutcome !== true) reasons.push('UNKNOWN_OUTCOME_NOT_ALLOWED');
+    if (contract.known !== true) reasons.push('ACTION_NOT_KNOWN');
+    if (contract.deterministic !== true) reasons.push('ACTION_NOT_DETERMINISTIC');
+    if (contract.lowRisk !== true) reasons.push('ACTION_NOT_LOW_RISK');
+    if (contract.reversibleOrSafe !== true) reasons.push('ACTION_NOT_REVERSIBLE_OR_SAFE');
+    if (contract.noHighRiskAuthority !== true) reasons.push('HIGH_RISK_AUTHORITY_NOT_EXCLUDED');
+    if (contract.noSecurityBoundaryChange !== true || alert.impactsSecurity === true) reasons.push('SECURITY_BOUNDARY_CHANGE_NOT_ALLOWED');
+    if (this.blockedActionPattern.test(String(contract.actionType || ''))) reasons.push('HIGH_RISK_ACTION_BLOCKED');
+    return {
+      eligible: reasons.length === 0,
+      decision: reasons.length ? 'DENIED' : 'SAFE_TO_AUTO_RECOVER',
+      reasons
+    };
+  },
+
+  async run(alert = {}, hooks = {}, context = {}) {
+    const now = typeof context.now === 'function' ? context.now : Date.now;
+    const attemptedAt = Number(now());
+    const attemptId = `recovery-${uid()}`;
+    const eligibility = this.eligibility(alert, context);
+    const originalEvidence = alert.originalFailureEvidence || {
+      id: alert.id || '',
+      signature: alert.signature || '',
+      eventKind: alert.eventKind || '',
+      message: alert.message || alert.description || '',
+      rawError: alert.rawError || '',
+      firstSeenAt: alert.firstSeenAt || alert.firstAt || alert.time || attemptedAt,
+      lastSeenAt: alert.lastSeenAt || alert.lastAt || alert.time || attemptedAt
+    };
+    const attempt = {
+      recoveryAttemptId: attemptId,
+      recoveryAttemptedAt: attemptedAt,
+      recoveryAction: alert.recoveryContract?.actionType || '',
+      recoveryDecision: eligibility.decision,
+      recoveryEligibility: eligibility,
+      actionResult: 'NOT_RUN',
+      readbackResult: 'NOT_RUN',
+      validationResult: 'NOT_RUN',
+      revalidationResult: 'NOT_RUN'
+    };
+    alert.originalFailureId = alert.originalFailureId || alert.id || '';
+    alert.originalFailureSignature = alert.originalFailureSignature || alert.signature || '';
+    alert.originalFailureEvidence = originalEvidence;
+    alert.recoveryAttemptId = attemptId;
+    alert.recoveryAttemptedAt = attemptedAt;
+    alert.recoveryAction = attempt.recoveryAction;
+    alert.recoveryDecision = eligibility.decision;
+    alert.recoveryEligibility = eligibility;
+    alert.recoveryAttempts = Array.isArray(alert.recoveryAttempts) ? alert.recoveryAttempts : [];
+    if (!eligibility.eligible) {
+      alert.recoveryState = 'RECOVERY_NOT_ELIGIBLE';
+      alert.nextAction = Stability.bugAlertSemantics(alert, context) === 'UNKNOWN'
+        ? '执行 Situation Check，确认事实后再评估。'
+        : '需要人工或开发人员处理。';
+      alert.recoveryAttempts.push(attempt);
+      return { ok: false, alert, attempt, eligibility };
+    }
+
+    alert.recoveryState = 'RECOVERING';
+    alert.status = '系统正在安全恢复';
+    try {
+      alert.preRecoveryState = typeof hooks.readPreState === 'function' ? await hooks.readPreState() : alert.lastEvidence;
+      const actionResult = await hooks.action?.();
+      attempt.actionResult = 'SUCCESS';
+      attempt.actionEvidence = actionResult ?? null;
+      const postRecoveryState = await hooks.readback?.();
+      alert.postRecoveryState = postRecoveryState ?? null;
+      attempt.readbackResult = postRecoveryState == null ? 'FAILED' : 'SUCCESS';
+      if (postRecoveryState == null) throw Object.assign(new Error('Recovery readback returned no state.'), { recoveryStage: 'READBACK' });
+      const validation = await hooks.validate?.(postRecoveryState, actionResult);
+      const validationPassed = validation === true || validation?.valid === true;
+      attempt.validationResult = validationPassed ? 'PASS' : 'FAIL';
+      attempt.validationEvidence = validation ?? null;
+      if (!validationPassed) throw Object.assign(new Error('Recovery validator rejected the readback state.'), { recoveryStage: 'VALIDATION' });
+      const revalidation = await hooks.revalidate?.(postRecoveryState, actionResult);
+      const revalidationPassed = revalidation === true || revalidation?.valid === true;
+      attempt.revalidationResult = revalidationPassed ? 'PASS' : 'FAIL';
+      attempt.revalidationEvidence = revalidation ?? null;
+      if (!revalidationPassed) throw Object.assign(new Error('Recovery revalidation failed.'), { recoveryStage: 'REVALIDATION' });
+
+      const verifiedAt = Number(now());
+      attempt.completedAt = verifiedAt;
+      alert.eventKind = 'AUTO_RESOLVED_VERIFIED';
+      alert.lifecycle = 'resolved';
+      alert.status = '自动恢复已验证';
+      alert.confirmed = true;
+      alert.confirmedAt = verifiedAt;
+      alert.fixed = true;
+      alert.fixedAt = verifiedAt;
+      alert.recoveryState = 'AUTO_RESOLVED_VERIFIED';
+      alert.verificationType = 'ACTION_READBACK_VALIDATION_REVALIDATION';
+      alert.verificationResult = 'PASS';
+      alert.verifiedAt = verifiedAt;
+      alert.resolutionEvidence = {
+        action: attempt.actionEvidence,
+        readback: postRecoveryState,
+        validation: attempt.validationEvidence,
+        revalidation: attempt.revalidationEvidence
+      };
+      alert.nextAction = '';
+      alert.recoveryAttempts.push(attempt);
+      return { ok: true, alert, attempt, eligibility };
+    } catch (error) {
+      attempt.failureStage = error?.recoveryStage || (attempt.actionResult === 'NOT_RUN' ? 'ACTION' : 'ACTION_OR_READBACK');
+      attempt.failureReason = error?.message || String(error);
+      attempt.completedAt = Number(now());
+      alert.eventKind = alert.unknownOutcome === true ? 'UNKNOWN' : 'CURRENT_BUG';
+      alert.lifecycle = 'active';
+      alert.status = alert.eventKind === 'UNKNOWN' ? '结果待核验' : '恢复失败';
+      alert.confirmed = false;
+      alert.fixed = false;
+      alert.recoveryState = 'RECOVERY_FAILED';
+      alert.verificationType = 'ACTION_READBACK_VALIDATION_REVALIDATION';
+      alert.verificationResult = 'FAIL';
+      alert.nextAction = alert.eventKind === 'UNKNOWN'
+        ? '执行 Situation Check，禁止自动重试。'
+        : '保留失败证据并转人工或开发人员处理。';
+      alert.recoveryAttempts.push(attempt);
+      return { ok: false, alert, attempt, eligibility, error };
+    }
   }
 };
 

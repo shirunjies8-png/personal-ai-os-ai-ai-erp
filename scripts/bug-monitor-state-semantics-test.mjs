@@ -43,7 +43,7 @@ assert.equal(current.length, 1, 'only the unresolved current bug enters the curr
 assert.equal(Stability.buildHealthSnapshot({ errors: normalized, bugAlertContext: { isGitHubPages: true } }).errorSummary.active, 1, 'only current pending alerts impact health');
 
 const countFixture = [
-  ...Array.from({ length: 4 }, (_, index) => ({ id: `count-${index}`, module: 'global', feature: 'runtime', type: '系统错误', message: `运行错误 ${index}`, source: 'system-error', lifecycle: 'active' })),
+  ...Array.from({ length: 4 }, (_, index) => ({ id: `count-${index}`, module: 'global', feature: 'runtime', type: '系统错误', message: `运行错误 ${index}`, source: 'system-error', lifecycle: 'active', severity: index === 0 ? 'blocking' : 'medium' })),
   fixture[1], fixture[2], fixture[3], fixture[4]
 ].map(item => Stability.normalizeError(item));
 const countPending = countFixture.filter(item => Stability.bugAlertSemanticsModel(item, { isGitHubPages: true }).isCurrentPending);
@@ -75,8 +75,9 @@ assert.equal(
 
 vm.runInContext(`Store.state = { bugAlerts: ${JSON.stringify(countFixture)} };`, context);
 const appModel = App.getBugMonitorModel();
-assert.equal(appModel.totalPendingCount, 4, 'Bug Monitor total is independent from its three-item preview');
-assert.equal(appModel.previewAlerts.length, 3, 'Bug Monitor preview remains bounded to three records');
+assert.equal(appModel.errorCenterPendingCount, 4, 'Error Center retains all unresolved current records');
+assert.equal(appModel.totalPendingCount, 1, 'global Bug Monitor only counts blocking/current critical records');
+assert.equal(appModel.previewAlerts.length, 1, 'global preview contains only the blocking record');
 
 const detailFixture = {
   id: 'detail-action-1',

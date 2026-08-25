@@ -401,13 +401,13 @@ const App = {
       return;
     }
     const model = this.getBugMonitorModel();
-    if (!model.currentPendingAlerts.length) {
+    if (!model.globalAlerts.length) {
       dock.innerHTML = '';
       dock.hidden = true;
       return;
     }
     dock.hidden = false;
-    dock.innerHTML = `<section class="bug-monitor-card bug-monitor-card-compact"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${model.totalPendingCount} 个待处理问题 · 详情已移至错误中心</small></div><button class="secondary-btn compact" data-action="bug-monitor-open">查看</button></div></section>`;
+    dock.innerHTML = `<section class="bug-monitor-card bug-monitor-card-compact"><div class="bug-monitor-head"><div><strong>Bug 监测</strong><small>${model.globalAlerts.length} 个阻塞或高严重度问题 · 详情已移至错误中心</small></div><button class="secondary-btn compact" data-action="bug-monitor-open">查看</button></div></section>`;
   },
 
   bugAlertSignature(payload = {}) {
@@ -455,14 +455,18 @@ const App = {
         return;
       }
       existing.count = Math.max(1, Number(existing.count || 1)) + Math.max(1, Number(item.count || 1));
+      existing.occurrenceCount = existing.count;
       existing.firstAt = Math.min(existing.firstAt || item.firstAt || item.time, item.firstAt || item.time || existing.firstAt || Date.now());
+      existing.firstSeenAt = existing.firstAt;
       existing.lastAt = Math.max(existing.lastAt || existing.time || 0, item.lastAt || item.time || 0);
+      existing.lastSeenAt = existing.lastAt;
       existing.time = existing.firstAt || existing.time || item.time || Date.now();
       existing.message = existing.message || item.message;
       existing.description = existing.description || item.description;
       existing.suggestion = item.suggestion || existing.suggestion;
       existing.requestId = item.requestId || existing.requestId;
       existing.rawError = item.rawError || existing.rawError;
+      existing.lastEvidence = item.lastEvidence || item.rawError || item.message || existing.lastEvidence;
       const priority = { active: 2, resolved: 1, ignored: 0 };
       const currentPriority = priority[existing.lifecycle || this.bugAlertLifecycle(existing)] ?? 1;
       const nextPriority = priority[item.lifecycle || this.bugAlertLifecycle(item)] ?? 1;
@@ -483,12 +487,25 @@ const App = {
   getBugMonitorModel(alerts = this.getVisibleBugAlerts()) {
     const context = { isGitHubPages: Utils.isGitHubPagesHost() };
     const currentPendingAlerts = alerts.filter(item => Stability.bugAlertSemanticsModel(item, context).isCurrentPending);
+    const globalAlerts = alerts.filter(item => Stability.bugAlertSemanticsModel(item, context).isGlobalBlocking);
     return {
       alerts,
       currentPendingAlerts,
-      previewAlerts: currentPendingAlerts.slice(0, 3),
-      totalPendingCount: currentPendingAlerts.length
+      globalAlerts,
+      previewAlerts: globalAlerts.slice(0, 3),
+      totalPendingCount: globalAlerts.length,
+      errorCenterPendingCount: currentPendingAlerts.length
     };
+  },
+
+  getErrorCenterAlerts(view = this.temp.errorCenterView || 'current', alerts = this.getVisibleBugAlerts()) {
+    const context = { isGitHubPages: Utils.isGitHubPagesHost() };
+    return alerts.filter(item => Stability.bugAlertSemanticsModel(item, context).errorCenterView === view);
+  },
+
+  setErrorCenterView(view) {
+    this.temp.errorCenterView = ['current', 'history', 'diagnostic'].includes(view) ? view : 'current';
+    this.rerender();
   },
 
   normalizeBugAlerts() {
@@ -507,14 +524,18 @@ const App = {
         return;
       }
       existing.count = Math.max(1, Number(existing.count || 1)) + Math.max(1, Number(item.count || 1));
+      existing.occurrenceCount = existing.count;
       existing.firstAt = Math.min(existing.firstAt || item.firstAt || item.time, item.firstAt || item.time || existing.firstAt || Date.now());
+      existing.firstSeenAt = existing.firstAt;
       existing.lastAt = Math.max(existing.lastAt || existing.time || 0, item.lastAt || item.time || 0);
+      existing.lastSeenAt = existing.lastAt;
       existing.time = existing.firstAt || existing.time || item.time || Date.now();
       existing.message = existing.message || item.message;
       existing.description = existing.description || item.description;
       existing.suggestion = item.suggestion || existing.suggestion;
       existing.requestId = item.requestId || existing.requestId;
       existing.rawError = item.rawError || existing.rawError;
+      existing.lastEvidence = item.lastEvidence || item.rawError || item.message || existing.lastEvidence;
       const priority = { active: 2, resolved: 1, ignored: 0 };
       if ((priority[item.lifecycle] ?? 1) > (priority[existing.lifecycle] ?? 1)) {
         existing.lifecycle = item.lifecycle;
@@ -557,13 +578,29 @@ const App = {
     const existing = Store.state.bugAlerts.find(item => item.signature === signature);
     if (existing) {
       existing.count = Math.max(1, Number(existing.count || 1)) + 1;
+      existing.occurrenceCount = existing.count;
       existing.lastAt = record.time;
+      existing.lastSeenAt = record.time;
+      existing.firstSeenAt = existing.firstAt || existing.time || record.time;
       existing.time = existing.firstAt || existing.time || record.time;
       existing.message = record.message || existing.message;
       existing.description = record.description || existing.description;
       existing.suggestion = record.suggestion || existing.suggestion;
       existing.requestId = record.requestId || existing.requestId;
       existing.rawError = record.rawError || existing.rawError;
+      existing.lastEvidence = record.lastEvidence || record.rawError || record.message || existing.lastEvidence;
+      const severityRank = { low: 0, medium: 1, high: 2, critical: 3, blocking: 4 };
+      if ((severityRank[String(record.severity || '').toLowerCase()] ?? 1) > (severityRank[String(existing.severity || '').toLowerCase()] ?? 1)) {
+        existing.severity = record.severity;
+      }
+      existing.blocking = record.blocking || existing.blocking;
+      existing.currentTaskBlocked = record.currentTaskBlocked || existing.currentTaskBlocked;
+      existing.impactsCorrectness = record.impactsCorrectness || existing.impactsCorrectness;
+      existing.impactsSecurity = record.impactsSecurity || existing.impactsSecurity;
+      existing.unknownOutcome = record.unknownOutcome || existing.unknownOutcome;
+      existing.eventKind = record.eventKind || existing.eventKind;
+      existing.autoRecovery = record.autoRecovery || existing.autoRecovery;
+      existing.recoveryContract = record.recoveryContract || existing.recoveryContract;
       if ((existing.lifecycle || this.bugAlertLifecycle(existing)) !== 'ignored') {
         existing.lifecycle = 'active';
         existing.status = '待确认';
@@ -576,6 +613,7 @@ const App = {
       Store.save();
       if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
       else this.renderBugMonitor();
+      this.scheduleKnownSafeRecovery(existing);
       return existing;
     }
     Store.state.bugAlerts.unshift(record);
@@ -587,7 +625,41 @@ const App = {
     Store.save();
     if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
     else this.renderBugMonitor();
+    this.scheduleKnownSafeRecovery(record);
     return record;
+  },
+
+  knownSafeRecoveryHooks(alert = {}) {
+    const contract = alert.recoveryContract || {};
+    if (contract.actionType !== 'REINITIALIZE_KNOWN_LOCAL_UI_STATE' || contract.target !== 'ERROR_CENTER_VIEW') return null;
+    return {
+      readPreState: () => ({ errorCenterView: this.temp.errorCenterView || 'current' }),
+      action: () => {
+        this.temp.errorCenterView = 'current';
+        return { action: contract.actionType, target: contract.target };
+      },
+      readback: () => ({ errorCenterView: this.temp.errorCenterView || 'current' }),
+      validate: state => ({ valid: state?.errorCenterView === 'current', rule: 'ERROR_CENTER_VIEW_IS_CURRENT' }),
+      revalidate: state => ({ valid: state?.errorCenterView === 'current', rule: 'ERROR_CENTER_VIEW_STABLE_AFTER_READBACK' })
+    };
+  },
+
+  scheduleKnownSafeRecovery(alert = {}) {
+    if (alert.autoRecovery !== true || alert.recoveryState === 'RECOVERING') return;
+    const hooks = this.knownSafeRecoveryHooks(alert);
+    if (!hooks) return;
+    Promise.resolve().then(() => this.attemptKnownSafeRecovery(alert, hooks));
+  },
+
+  async attemptKnownSafeRecovery(alert = {}, hooks = this.knownSafeRecoveryHooks(alert)) {
+    if (!hooks) return { ok: false, reason: 'NO_APPROVED_RECOVERY_HANDLER' };
+    const result = await SafeRecovery.run(alert, hooks, { isGitHubPages: Utils.isGitHubPagesHost() });
+    Store.state.bugAlerts = (Store.state.bugAlerts || []).map(item => item.id === alert.id ? this.normalizeBugAlert(alert) : item);
+    this.updateStabilityHealthSnapshot(result.ok ? 'auto-recovery-verified' : 'auto-recovery-failed');
+    Store.save();
+    if (['monitoring', 'systemcheck'].includes(this.route)) this.rerender();
+    else this.renderBugMonitor();
+    return result;
   },
 
   confirmBugAlert(id) {
@@ -740,6 +812,7 @@ const App = {
       suggestion: '检查查看详情、忽略、恢复和确认修复按钮。',
       stack: 'SelfTestStack',
       source: 'self-test',
+      eventKind: 'SYNTHETIC_TEST',
       signature,
       requestId: 'STEP5-SELFTEST-001',
       time: now
@@ -755,6 +828,7 @@ const App = {
       suggestion: '检查查看详情、忽略、恢复和确认修复按钮。',
       stack: 'SelfTestStack',
       source: 'self-test',
+      eventKind: 'SYNTHETIC_TEST',
       signature,
       requestId: 'STEP5-SELFTEST-002',
       time: now + 1
@@ -834,11 +908,19 @@ const App = {
       `首次发生：${Utils.formatDate(item.firstAt || item.time, true)}`,
       `最近发生：${Utils.formatDate(item.lastAt || item.time, true)}`,
       `发生次数：${item.count || 1}`,
+      `语义分类：${Stability.bugAlertSemantics(item, { isGitHubPages: Utils.isGitHubPagesHost() })}`,
       `requestId：${item.requestId || '无'}`,
       `错误说明：${item.description || item.message || '已检测到问题'}`,
       `修复建议：${item.suggestion || '请根据错误信息修复'}`,
       item.detail ? `detail：${item.detail}` : '',
       item.stack ? `stack：${item.stack}` : '',
+      item.recoveryDecision ? `恢复决策：${item.recoveryDecision}` : '',
+      item.recoveryAction ? `恢复动作：${item.recoveryAction}` : '',
+      item.recoveryState ? `恢复状态：${item.recoveryState}` : '',
+      item.verificationResult ? `恢复验证：${item.verificationResult}` : '',
+      item.nextAction ? `下一步：${item.nextAction}` : '',
+      item.resolutionEvidence ? `恢复证据：${JSON.stringify(item.resolutionEvidence)}` : '',
+      item.originalFailureEvidence ? `原始失败证据：${JSON.stringify(item.originalFailureEvidence)}` : '',
       `确认时间：${confirmedAt ? Utils.formatDate(confirmedAt, true) : '无'}`,
       item.rawError ? `Raw Error：${item.rawError}` : '',
       repairRecords.some(entry => entry.id === item.id || entry.bugId === item.id) ? '来源：最近修复' : ''
@@ -1268,6 +1350,7 @@ const App = {
       'bug-restore': () => this.restoreBugAlert(el.dataset.id),
       'bug-detail': () => this.openBugDetail(el.dataset.id),
       'bug-monitor-open': () => this.navigate('monitoring'),
+      'error-center-view': () => this.setErrorCenterView(el.dataset.view),
       'error-center-self-test': () => this.runErrorCenterSelfTest(),
       'mail-generate': () => this.mailGenerate(el),
       'mail-polish': () => this.mailPolish(el),
