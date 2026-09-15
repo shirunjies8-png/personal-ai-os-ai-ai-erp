@@ -1142,6 +1142,7 @@ const Store = {
           sourceFile: { ...(result.sourceFile || {}) },
           storage_status: 'metadata_only',
           rawText: String(result.rawText || ''),
+          engineRawText: String(result.engineRawText || ''),
           result,
           review,
           template_id: '',
@@ -2125,6 +2126,32 @@ const OCRService = {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   },
+  textEvidence(engineRawText = '', normalizedText = engineRawText) {
+    const fingerprint = value => {
+      let hash = 0x811c9dc5;
+      for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+      }
+      return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, '0')}`;
+    };
+    const containsChinese = value => /[\u3400-\u9fff]/.test(value);
+    const raw = String(engineRawText || '');
+    const normalized = String(normalizedText || '');
+    return {
+      engineRawText: raw,
+      normalizedText: normalized,
+      engineRawLength: raw.length,
+      normalizedLength: normalized.length,
+      engineRawHash: fingerprint(raw),
+      normalizedHash: fingerprint(normalized),
+      engineRawContainsChinese: containsChinese(raw),
+      normalizedContainsChinese: containsChinese(normalized),
+      normalizationChanged: raw !== normalized,
+      normalizationRuleVersion: 'OCRService.correct/v1',
+      provenance: { sourceStage: 'ENGINE_RAW_TEXT', targetStage: 'NORMALIZED_TEXT', transformation: 'OCRService.correct', ruleVersion: 'OCRService.correct/v1' }
+    };
+  },
   isLikelyGarbage(value = '') {
     const text = String(value || '').trim();
     if (!text) return true;
@@ -2301,16 +2328,22 @@ const OCRService = {
     }));
     return { template, lines, pairs, fields, fieldRows, quality };
   },
-  async recognize(file, onProgress = () => {}) {
+  async recognizeEvidence(file, onProgress = () => {}) {
     try {
       const worker = await this.getWorker(onProgress);
       const result = await worker.recognize(file);
-      return this.correct(result.data.text || '');
+      // Preserve the engine output before normalization so later review never has to infer it from corrected text.
+      const engineRawText = String(result.data.text || '');
+      const normalizedText = this.correct(engineRawText);
+      return this.textEvidence(engineRawText, normalizedText);
     } catch (error) {
       this.engineState = 'failed';
       this.engineError = String(error?.message || error || '');
       throw error;
     }
+  },
+  async recognize(file, onProgress = () => {}) {
+    return (await this.recognizeEvidence(file, onProgress)).normalizedText;
   }
 };
 

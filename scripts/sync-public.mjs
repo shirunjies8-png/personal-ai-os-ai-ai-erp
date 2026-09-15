@@ -10,6 +10,7 @@ const entries = [
   'config.js',
   'runtime-init.js',
   'skills.js',
+  'ocr-timeout-contract.js',
   'rfq-store.js',
   'rfq-validation.js',
   'rfq-risk.js',

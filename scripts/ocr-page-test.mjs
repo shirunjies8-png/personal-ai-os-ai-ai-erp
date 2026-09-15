@@ -17,7 +17,7 @@ global.Utils = {
   formatBytes(value) { return `${value || 0} B`; },
   formatDate(value) { return String(value || ''); }
 };
-const normalized = OCR.normalizeResult({ rawText: '客户名称：演示客户\n数量：10', confidence: 0.58,
+const normalized = OCR.normalizeResult({ engineRawText: '客户名称：演示客户\n数 量：10', normalizedText: '客户名称：演示客户\n数量：10', confidence: 0.58,
   fields: [{ key: 'customer_name', value: '演示客户', confidence: 0.9 }, { key: 'quantity', value: '10', confidence: 0.58 }],
   providerId: 'mock', providerName: '演示模式', status: 'fallback', fallbackUsed: true, warnings: ['演示数据'] });
 const review = OCR.createReview(normalized);
@@ -32,7 +32,10 @@ const html = UI.ocr();
 assert.match(html, /OCR识别与人工复核/);
 assert.match(html, /Provider 与任务状态/);
 assert.match(html, /原图对照/);
-assert.match(html, /原始识别文本/);
+assert.match(html, /引擎原始识别文本/);
+assert.match(html, /修正后文本（兼容旧版 rawText）/);
+assert.match(html, /数 量：10/);
+assert.match(html, /数量：10/);
 assert.match(html, /结构化复核/);
 assert.match(html, /低置信度/);
 assert.match(html, /演示数据（非真实识别）/);
@@ -78,6 +81,10 @@ assert.match(coreSource, /documentSessions/);
 assert.match(coreSource, /documentTemplates/);
 assert.match(coreSource, /normalizeLegacyResult/);
 assert.match(coreSource, /personal-ai-os-v1-migration-backup/);
+assert.match(coreSource, /async recognizeEvidence\(file, onProgress = \(\) => \{\}\)/);
+assert.match(coreSource, /const engineRawText = String\(result\.data\.text \|\| ''\);/);
+assert.match(coreSource, /const normalizedText = this\.correct\(engineRawText\);/);
+assert.match(coreSource, /return this\.textEvidence\(engineRawText, normalizedText\);/);
 assert.match(coreSource, /withoutKnownTesseractWarnings/);
 assert.match(coreSource, /worker-wrapper\.js/);
 assert.match(coreSource, /workerBlobURL: false/);

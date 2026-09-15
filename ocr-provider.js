@@ -3,7 +3,12 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.OCRArchitecture = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function factory() {
+  const OCR_TIMEOUT_CONTRACT = typeof module !== 'undefined' && module.exports
+    ? require('./ocr-timeout-contract.js')
+    : globalThis.AIOfficeContracts;
+  const DEFAULT_OCR_TIMEOUT_MS = OCR_TIMEOUT_CONTRACT.ocr.timeoutMs;
   const SCHEMA_VERSION = 2;
+  const READINESS_STATES = new Set(['DECLARED', 'RESOLVED', 'READY', 'DEGRADED', 'BLOCKED', 'UNAVAILABLE']);
   const RUN_STATUSES = new Set(['waiting', 'processing', 'success', 'partial_success', 'failed', 'timeout', 'fallback', 'cancelled']);
   const REVIEW_STATUSES = new Set(['pending', 'reviewing', 'approved', 'rejected', 'needs_retry']);
   const KEY_FIELDS = new Set(['customer_name', 'document_no', 'date', 'quantity', 'unit_price', 'total_amount', 'tax_rate', 'delivery_date']);
@@ -98,7 +103,11 @@
   function normalizeResult(raw = {}, context = {}, provider = {}) {
     const startedAt = raw.startedAt || context.startedAt || now();
     const finishedAt = raw.finishedAt || now();
-    const rawText = String(raw.rawText ?? raw.text ?? raw.data?.text ?? '');
+    // `rawText` remains the legacy normalized-text field. New results retain engineRawText separately.
+    const rawText = String(raw.normalizedText ?? raw.rawText ?? raw.text ?? raw.data?.text ?? '');
+    const engineRawAvailable = raw.engineRawText !== undefined && raw.engineRawText !== null;
+    const engineRawText = engineRawAvailable ? String(raw.engineRawText) : '';
+    const normalizedText = String(raw.normalizedText ?? raw.rawText ?? raw.text ?? raw.data?.text ?? '');
     const garbage = detectGarbled(rawText);
     const confidence = clamp(raw.confidence ?? raw.data?.confidence ?? (rawText ? 0.75 : 0));
     const fields = normalizeFields(raw.fields, raw.legacyFields || raw.structured?.fields || raw.fieldsByLabel || {}, confidence, context);
@@ -112,12 +121,27 @@
       requestId: raw.requestId || context.requestId || uid(), providerId: raw.providerId || provider.providerId || '',
       providerName: raw.providerName || provider.providerName || '', providerVersion: raw.providerVersion || provider.version || '',
       mode: raw.mode || context.mode || provider.providerType || '', documentType: raw.documentType || raw.structured?.template || context.documentType || '通用',
-      rawText, rawResponse: String(raw.rawResponse || '').slice(0, 12000),
+      rawText, engineRawText, normalizedText, engineRawAvailable,
+      textEvidence: raw.textEvidence || raw.evidence || {
+        engineRawLength: engineRawText.length, normalizedLength: normalizedText.length,
+        engineRawHash: '', normalizedHash: '', engineRawContainsChinese: /[\u3400-\u9fff]/.test(engineRawText),
+        normalizedContainsChinese: /[\u3400-\u9fff]/.test(normalizedText),
+        normalizationChanged: engineRawAvailable && engineRawText !== normalizedText,
+        normalizationRuleVersion: engineRawAvailable ? 'unknown' : 'legacy-unavailable',
+        provenance: { sourceStage: engineRawAvailable ? 'ENGINE_RAW_TEXT' : 'LEGACY_NORMALIZED_TEXT', targetStage: 'NORMALIZED_TEXT' }
+      },
+      structuredResult: raw.structuredResult || raw.structured || null,
+      structuredSourceStage: raw.structuredSourceStage || 'NORMALIZED_TEXT',
+      aiProcessedResult: raw.aiProcessedResult ?? null,
+      aiProcessingStatus: raw.aiProcessingStatus || 'NOT_USED',
+      rawResponse: String(raw.rawResponse || '').slice(0, 12000),
       paragraphs: raw.paragraphs || rawText.split(/\n{2,}/).map(text => text.trim()).filter(Boolean),
       blocks: Array.isArray(raw.blocks) ? raw.blocks : rawText.split('\n').map((text, index) => ({ id: index + 1, text, confidence })).filter(block => block.text.trim()),
       fields, confidence, warnings, errors, validationSuggestions: [...new Set([...(raw.validationSuggestions || []), ...warnings])],
       status, startedAt, finishedAt, durationMs: Math.max(0, Number(raw.durationMs) || Date.parse(finishedAt) - Date.parse(startedAt) || 0),
       fallbackUsed: Boolean(raw.fallbackUsed), fallbackProviderId: raw.fallbackProviderId || '',
+      routingEvidence: raw.routingEvidence || null,
+      executionMetadata: raw.executionMetadata || null,
       environment: { ...(context.environment || {}), ...(raw.environment || {}) }, sourceFile: { ...(context.sourceFile || {}), ...(raw.sourceFile || {}) }
     };
   }
@@ -135,9 +159,15 @@
   function metadata(input = {}) {
     return { providerId: String(input.providerId || ''), providerName: String(input.providerName || ''), providerType: String(input.providerType || ''),
       version: String(input.version || '1.0'), enabled: input.enabled !== false, available: Boolean(input.available),
-      availabilityReason: String(input.availabilityReason || ''), supportsLocal: Boolean(input.supportsLocal),
+      availabilityReason: String(input.availabilityReason || ''), supportsLocal: Boolean(input.supportsLocal || ['local', 'current', 'mock'].includes(String(input.providerType || ''))),
       supportsCloud: Boolean(input.supportsCloud), supportsTable: Boolean(input.supportsTable),
-      supportsHandwriting: Boolean(input.supportsHandwriting), supportsChinese: input.supportsChinese !== false };
+      supportsHandwriting: Boolean(input.supportsHandwriting), supportsChinese: input.supportsChinese !== false,
+      supportsLayout: Boolean(input.supportsLayout), placement: String(input.placement || (input.supportsCloud ? 'CLOUD' : 'LOCAL')),
+      supportedMimeTypes: Array.isArray(input.supportedMimeTypes) ? [...input.supportedMimeTypes] : ['image/png', 'image/jpeg', 'image/webp'],
+      externalUpload: Boolean(input.externalUpload), engine: String(input.engine || input.providerName || ''),
+      runtime: String(input.runtime || ''), readiness: READINESS_STATES.has(input.readiness) ? input.readiness : (input.available ? 'READY' : 'DECLARED'),
+      dependencies: Array.isArray(input.dependencies) ? [...input.dependencies] : [], failureReason: String(input.failureReason || input.availabilityReason || ''),
+      routingPriority: Number(input.routingPriority || 0) };
   }
 
   class ProviderRegistry {
@@ -150,18 +180,50 @@
     get(id) { return this.providers.get(id) || null; }
     list() { return [...this.providers.values()].map(provider => ({ ...metadata(provider), capabilities: this.getCapabilities(provider.providerId) })); }
     getCapabilities(id) { const provider = this.get(id); return provider ? (provider.getCapabilities?.() || metadata(provider)) : null; }
-    async healthCheck(id) {
+    async healthCheck(id, context = {}) {
       const provider = this.get(id); if (!provider) return { available: false, status: 'not_found', message: 'Provider 不存在' };
-      return provider.healthCheck?.() || { available: provider.enabled && provider.available, status: provider.available ? 'ready' : 'unavailable', message: provider.availabilityReason };
+      return provider.healthCheck?.(context) || { available: provider.enabled && provider.available, status: provider.available ? 'READY' : 'UNAVAILABLE', message: provider.availabilityReason };
     }
-    async run({ providerId = 'auto', file, onProgress = () => {}, allowFallback = true, timeoutMs = 120000, context = {} } = {}) {
+    resolveCandidates(providerId = 'auto', context = {}) {
+      const policy = context.inputPolicy || {};
+      const classification = String(policy.classification || context.classification || 'CONFIDENTIAL').toUpperCase();
+      const placement = String(policy.placement || context.placement || 'LOCAL_ONLY').toUpperCase();
+      const requiresLayout = policy.requiresLayout === true;
+      const requiresChinese = policy.requiresChinese !== false;
+      const allowed = provider => {
+        if (!provider?.enabled) return false;
+        if (placement === 'LOCAL_ONLY' && (provider.externalUpload || provider.supportsCloud || !provider.supportsLocal)) return false;
+        if (classification === 'CONFIDENTIAL' && provider.externalUpload) return false;
+        if (requiresLayout && !provider.supportsLayout && provider.providerId !== 'current' && provider.providerId !== 'mock') return false;
+        if (requiresChinese && !provider.supportsChinese) return false;
+        return true;
+      };
+      const candidates = providerId === 'auto'
+        ? [...this.providers.values()].filter(provider => !['mock', 'cloud', 'vision'].includes(provider.providerId)).filter(allowed)
+          .sort((left, right) => right.routingPriority - left.routingPriority)
+        : [this.get(providerId)].filter(Boolean).filter(allowed);
+      return { candidates, policy: { classification, placement, requiresLayout, requiresChinese, requestedProviderPolicy: providerId } };
+    }
+    async run({ providerId = 'auto', file, onProgress = () => {}, allowFallback = true, timeoutMs = DEFAULT_OCR_TIMEOUT_MS, context = {} } = {}) {
       const requestId = context.requestId || uid(), startedAt = now();
-      const candidates = providerId === 'auto' ? [...this.providers.values()].filter(item => item.providerType === 'current' && item.enabled) : [this.get(providerId)].filter(Boolean);
-      if (!candidates.length) throw ocrError('所选 OCR Provider 不存在', 'provider_unavailable', { providerId });
+      const resolved = this.resolveCandidates(providerId, context);
+      const candidates = resolved.candidates;
+      if (!candidates.length) throw ocrError('没有符合数据策略的 OCR Provider', 'PROVIDER_BLOCKED_BY_POLICY', { providerId, policy: resolved.policy });
       let lastError = null;
-      for (const provider of candidates) {
-        if (!provider.available || !provider.enabled) {
-          lastError = ocrError(provider.availabilityReason || '所选 OCR Provider 暂不可用', 'provider_unavailable', { providerId: provider.providerId });
+      const attempts = [];
+      for (const [candidateIndex, provider] of candidates.entries()) {
+        if (candidateIndex > 0 && !allowFallback) {
+          attempts.push({ providerId: provider.providerId, readiness: 'NOT_ATTEMPTED', result: 'BLOCKED', reason: 'FALLBACK_NOT_ALLOWED' });
+          break;
+        }
+        const health = await this.healthCheck(provider.providerId, context);
+        const available = health.available === true || String(health.status || '').toUpperCase() === 'READY';
+        provider.available = available;
+        provider.readiness = String(health.readiness || health.status || (available ? 'READY' : 'UNAVAILABLE')).toUpperCase();
+        provider.availabilityReason = health.failureReason || health.message || '';
+        if (!available || !provider.enabled) {
+          lastError = ocrError(health.message || provider.availabilityReason || '所选 OCR Provider 暂不可用', 'CAPABILITY_NOT_READY', { providerId: provider.providerId, readiness: health.status || provider.readiness });
+          attempts.push({ providerId: provider.providerId, readiness: String(health.status || provider.readiness || 'UNAVAILABLE').toUpperCase(), result: 'SKIPPED', reason: lastError.message });
           this.onError({ requestId, provider, error: lastError, file, startedAt, fallbackUsed: false });
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: 'failed', error: lastError.message,
@@ -184,30 +246,40 @@
           const result = normalizeResult(raw, { ...context, requestId, startedAt }, provider);
           if (!result.rawText.trim()) throw ocrError('OCR 未返回文字', 'empty_result', { providerId: provider.providerId, result });
           if (result.status === 'failed') throw ocrError(result.errors[0]?.message || 'OCR 识别失败', result.errors[0]?.type || 'invalid_response', { result });
+          attempts.push({ providerId: provider.providerId, readiness: 'READY', result: 'SUCCESS' });
+          result.routingEvidence = {
+            ...resolved.policy, selectedProvider: provider.providerId, actualProvider: provider.providerId,
+            allowFallback,
+            fallbackOccurred: attempts.length > 1, fallbackReason: attempts.length > 1 ? attempts.slice(0, -1).map(item => `${item.providerId}:${item.reason || item.result}`).join('; ') : '',
+            attempts,
+          };
+          result.executionMetadata = raw.executionMetadata || {
+            engine: raw.engine || provider.engine, engineVersion: raw.engineVersion || result.providerVersion,
+            runtime: raw.runtime || provider.runtime, runtimeVersion: raw.runtimeVersion || '',
+            executionProvider: raw.executionProvider || '', latencyMs: raw.latencyMs || result.durationMs,
+            regionCount: raw.regionCount ?? result.blocks.length, inputHash: raw.inputHash || context.sourceFile?.sha256 || '',
+            executionStatus: raw.executionStatus || 'SUCCESS', resultProvenanceHash: raw.resultProvenanceHash || '',
+          };
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: result.status, durationMs: result.durationMs,
-            fallbackUsed: result.fallbackUsed, resultSummary: result.rawText.slice(0, 120) }); return result;
+            fallbackUsed: result.fallbackUsed, textEvidence: {
+              engineRawLength: result.textEvidence?.engineRawLength ?? result.engineRawText.length,
+              normalizedLength: result.textEvidence?.normalizedLength ?? result.normalizedText.length,
+              engineRawHash: result.textEvidence?.engineRawHash || '', normalizedHash: result.textEvidence?.normalizedHash || '',
+              normalizationChanged: Boolean(result.textEvidence?.normalizationChanged)
+            } }); return result;
         } catch (error) {
           lastError = error; this.onError({ requestId, provider, error, file, startedAt, fallbackUsed: false });
+          attempts.push({ providerId: provider.providerId, readiness: 'READY', result: 'FAILED', reason: error.code || error.message });
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: error.code === 'request_timeout' ? 'timeout' : 'failed',
             error: error.message, errorSummary: String(error.message || '').slice(0, 160) });
         }
       }
-      if (allowFallback && providerId === 'auto') {
-        const reason = lastError?.message || '未知原因';
-        const result = normalizeResult({ rawText: '', fields: [], status: 'partial_success', confidence: 0,
-          warnings: [`真实 OCR 未返回可用文字：${reason}`, '未生成演示字段，请根据原图人工确认。'],
-          errors: [{ type: lastError?.code || 'provider_unavailable', message: reason }] },
-        { ...context, requestId, startedAt }, { providerId: 'current', providerName: '当前 OCR（需人工确认）', providerType: 'current', version: '1.0' });
-        result.fallbackUsed = false;
-        result.manualConfirmationRequired = true;
-        this.onLog({ requestId, action: 'manual_confirmation_required', providerId: 'current', providerName: '当前 OCR（需人工确认）',
-          fileName: file?.name || context.sourceFile?.name || '', status: 'partial_success', fallbackUsed: false,
-          durationMs: result.durationMs, error: reason, errorSummary: String(reason).slice(0, 160), resultSummary: '' });
-        return result;
+      if (providerId === 'auto' && (!lastError || lastError.code === 'CAPABILITY_NOT_READY')) {
+        throw ocrError('没有可执行的本地 OCR capability', 'OCR_CAPABILITY_NOT_READY', { providerId, policy: resolved.policy, attempts, lastError: lastError?.code || '' });
       }
-      throw lastError || ocrError('OCR Provider 暂不可用', 'provider_unavailable', { providerId });
+      throw lastError || ocrError('OCR Provider 暂不可用', 'CAPABILITY_NOT_READY', { providerId });
     }
   }
 
@@ -221,9 +293,35 @@
 
   function createCurrentProvider({ recognize, healthCheck, structure } = {}) {
     return { providerId: 'current', providerName: '当前 OCR', providerType: 'current', version: '1.0', enabled: true, available: true,
-      supportsLocal: true, supportsTable: true, supportsChinese: true,
-      async recognize(file, onProgress, context) { const text = await recognize(file, onProgress, context); const structured = structure?.(text); return { rawText: text, structured, confidence: Number(structured?.quality?.score || 75) / 100 }; },
+      engine: 'Tesseract.js', runtime: 'Browser Worker', placement: 'LOCAL', externalUpload: false,
+      readiness: 'READY', routingPriority: 10, supportsLocal: true, supportsTable: true, supportsLayout: true, supportsChinese: true,
+      async recognize(file, onProgress, context) {
+        const recognition = await recognize(file, onProgress, context);
+        const evidence = recognition && typeof recognition === 'object'
+          ? recognition
+          : { engineRawText: String(recognition || ''), normalizedText: String(recognition || '') };
+        const normalizedText = String(evidence.normalizedText ?? evidence.rawText ?? '');
+        const structured = structure?.(normalizedText);
+        return {
+          rawText: normalizedText, engineRawText: String(evidence.engineRawText ?? ''), normalizedText,
+          textEvidence: evidence, structured, structuredResult: structured, structuredSourceStage: 'NORMALIZED_TEXT',
+          aiProcessedResult: null, aiProcessingStatus: 'NOT_USED', confidence: Number(structured?.quality?.score || 75) / 100
+        };
+      },
       async healthCheck() { return healthCheck?.() || { available: true, status: 'ready' }; }, normalizeResult(raw, context) { return normalizeResult(raw, context, this); }, getCapabilities() { return metadata(this); } };
+  }
+
+  function createRapidOcrProvider({ recognize, healthCheck } = {}) {
+    return {
+      providerId: 'rapidocr-local', providerName: 'RapidOCR 本地文档识别', providerType: 'local', version: '3.9.2',
+      engine: 'RapidOCR', runtime: 'Python / ONNX Runtime', placement: 'LOCAL_ONLY', externalUpload: false,
+      supportedMimeTypes: ['image/png', 'image/jpeg', 'image/webp'], supportsLocal: true, supportsTable: true,
+      supportsLayout: true, supportsChinese: true, enabled: true, available: false, readiness: 'DECLARED', routingPriority: 100,
+      dependencies: ['configured Python runtime', 'rapidocr', 'onnxruntime', 'local OCR models', 'CPUExecutionProvider', 'adapter executable'],
+      async recognize(file, onProgress, context) { return recognize(file, onProgress, context); },
+      async healthCheck(context) { return healthCheck?.(context) || { available: false, status: 'UNAVAILABLE', message: 'RapidOCR 本地 runtime 未配置' }; },
+      normalizeResult(raw, context) { return normalizeResult(raw, context, this); }, getCapabilities() { return metadata(this); },
+    };
   }
 
   function createMockProvider() {
@@ -318,7 +416,7 @@
     return redact(input);
   }
 
-  return { SCHEMA_VERSION, FIELD_DEFINITIONS, KEY_FIELDS, ProviderRegistry, createPlaceholderProvider, createCurrentProvider,
+  return { SCHEMA_VERSION, FIELD_DEFINITIONS, KEY_FIELDS, ProviderRegistry, createPlaceholderProvider, createCurrentProvider, createRapidOcrProvider,
     createMockProvider, normalizeResult, normalizeLegacyResult, normalizeFields, detectGarbled, createReview,
     updateReviewField, approveReview, rejectReview, reviewSummary, confirmedPayload, sanitizeDiagnostics, ocrError };
 });

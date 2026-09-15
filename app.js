@@ -3198,8 +3198,55 @@ const App = {
       onError: entry => this.recordOcrProviderError(entry)
     });
     const health = OCRService.health();
+    const rapid = OCRArchitecture.createRapidOcrProvider({
+      healthCheck: async () => {
+        const hostname = String(location.hostname || '').toLowerCase();
+        if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
+          return { available: false, status: 'BLOCKED', message: 'RapidOCR 仅允许通过本机产品服务处理 LOCAL_ONLY 文件' };
+        }
+        try {
+          const response = await APIClient.request('/api/ocr/providers/rapidocr-local/readiness', {}, { timeout: 35000 });
+          return { ...response.data, status: response.data?.readiness || 'UNAVAILABLE' };
+        } catch (error) {
+          return { available: false, status: 'UNAVAILABLE', message: Utils.friendlyErrorMessage(error?.message || error) };
+        }
+      },
+      recognize: async (file, onProgress, context) => {
+        const hostname = String(location.hostname || '').toLowerCase();
+        if (!['127.0.0.1', 'localhost', '::1'].includes(hostname)) {
+          throw Object.assign(new Error('机密图片禁止发送到非本机 OCR 服务'), { code: 'PROVIDER_BLOCKED_BY_POLICY' });
+        }
+        onProgress?.(0.12, 'RapidOCR 输入身份校验');
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const digest = await crypto.subtle.digest('SHA-256', bytes);
+        const inputHash = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+        let binary = '';
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        }
+        onProgress?.(0.2, 'RapidOCR 本地执行');
+        const response = await APIClient.request('/api/ocr/providers/rapidocr-local/recognize', {
+          method: 'POST',
+          body: JSON.stringify({
+            imageBase64: btoa(binary), mimeType: file.type, inputHash,
+            classification: context?.inputPolicy?.classification || 'CONFIDENTIAL',
+            placement: context?.inputPolicy?.placement || 'LOCAL_ONLY',
+          })
+        }, { timeout: Stability.limitFor('ocr').timeoutMs });
+        const data = response.data || {};
+        onProgress?.(0.95, 'RapidOCR 结果验证');
+        const confidences = (data.regions || []).map(region => Number(region.confidence)).filter(Number.isFinite);
+        return {
+          ...data, rawText: data.text || '', engineRawText: data.text || '', normalizedText: data.text || '',
+          blocks: data.regions || [], confidence: confidences.length ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length : 0,
+          providerId: 'rapidocr-local', providerName: 'RapidOCR 本地文档识别', providerVersion: data.engineVersion || '3.9.2',
+          executionMetadata: data,
+        };
+      }
+    });
+    registry.register(rapid);
     const current = OCRArchitecture.createCurrentProvider({
-      recognize: (file, onProgress) => OCRService.recognize(file, onProgress),
+      recognize: (file, onProgress) => OCRService.recognizeEvidence(file, onProgress),
       healthCheck: () => ({ available: Boolean(OCRService.health().hasTesseract), status: OCRService.health().engineState, message: OCRService.health().engineError || '' }),
       structure: text => OCRService.structure(text)
     });
@@ -3214,7 +3261,7 @@ const App = {
     const data = Store.state.ocrData;
     this.temp.ocr.providerId = data.providerConfig.selectedProviderId || 'auto';
     for (const provider of registry.list()) data.providerHealth[provider.providerId] = {
-      available: provider.available, status: provider.available ? (provider.providerType === 'mock' ? 'demo' : 'ready') : 'unconfigured',
+      available: provider.available, status: provider.readiness || (provider.available ? (provider.providerType === 'mock' ? 'demo' : 'READY') : 'DECLARED'),
       message: provider.availabilityReason || '', updatedAt: Date.now()
     };
     Store.save();
@@ -3239,7 +3286,7 @@ const App = {
     o.documentSessionId = selected?.document_session_id || '';
     o.review = review;
     o.result = result.rawText || '';
-    o.original = result.rawText || '';
+    o.original = result.engineRawText || '';
     o.providerId = data.providerConfig?.selectedProviderId || result.providerId || 'auto';
     o.sourceFile = { ...(selected?.sourceFile || result.sourceFile || review.source?.sourceFile || {}) };
     o.mock = result.providerId === 'mock' || Boolean(result.fallbackUsed);
@@ -3259,7 +3306,7 @@ const App = {
     data.activeDocumentSessionId = sessionId;
     Store.save();
     this.temp.ocr = { ...this.temp.ocr, file: null, url: '', documentSessionId: sessionId, providerResult: session.result || null,
-      review: session.review || null, result: session.rawText || '', original: session.rawText || '',
+      review: session.review || null, result: session.rawText || '', original: session.result?.engineRawText || session.engineRawText || '',
       confirmedFields: session.confirmedFields || null, sourceFile: { ...(session.sourceFile || {}) }, status: '已打开已保存文档会话' };
     this.restoreOcrSession();
     this.rerender();
@@ -3396,7 +3443,7 @@ const App = {
     this.touchOcrDocumentSession(sessionId, {
       requestId: result.requestId,
       sourceFile: { ...(result.sourceFile || this.temp.ocr.sourceFile || {}) },
-      storage_status: 'metadata_only', rawText: result.rawText || '', result, review,
+      storage_status: 'metadata_only', rawText: result.rawText || '', engineRawText: result.engineRawText || '', result, review,
       template_id: templateId, recognitionConflict, recognitionHistory
     }, protectedReview ? 'recognition_conflict_created' : 'ocr_result_saved');
     this.updateOcrDailyStats(result);
@@ -3487,7 +3534,13 @@ const App = {
       current.availabilityReason = current.available ? '' : '当前 OCR 引擎未加载';
     }
     for (const provider of registry.list()) {
-      const health = await registry.healthCheck(provider.providerId);
+      const health = await registry.healthCheck(provider.providerId, { inputPolicy: { classification: 'CONFIDENTIAL', placement: 'LOCAL_ONLY', requiresChinese: true, requiresLayout: true } });
+      const liveProvider = registry.get(provider.providerId);
+      if (liveProvider) {
+        liveProvider.available = Boolean(health.available);
+        liveProvider.readiness = String(health.readiness || health.status || (health.available ? 'READY' : 'UNAVAILABLE')).toUpperCase();
+        liveProvider.availabilityReason = health.failureReason || health.message || '';
+      }
       Store.state.ocrData.providerHealth[provider.providerId] = { ...health, updatedAt: Date.now() };
     }
     Store.save();
@@ -3561,7 +3614,8 @@ const App = {
       `复核状态：${review.status}`, `复核人：${review.reviewer || '未批准'}`, `复核时间：${review.reviewedAt || '未批准'}`, '',
       '结构化字段', ...review.fields.map(field => `${field.label}：${field.value || '待补充'} | 置信度 ${Math.round(field.confidence * 100)}% | ${field.status}`), '',
       '人工修改', ...(review.modifications.length ? review.modifications.map(item => `${item.time} ${item.label}：${item.originalValue} -> ${item.newValue}`) : ['无']), '',
-      '警告', ...(result.warnings.length ? result.warnings : ['无']), '', '错误', ...(result.errors.length ? result.errors.map(error => error.message || error.type || String(error)) : ['无']), '', '原始识别文本', result.rawText
+      '警告', ...(result.warnings.length ? result.warnings : ['无']), '', '错误', ...(result.errors.length ? result.errors.map(error => error.message || error.type || String(error)) : ['无']), '',
+      '引擎原始识别文本', result.engineRawText || '（旧记录未保存）', '', '修正后文本（兼容旧版 rawText）', result.normalizedText ?? result.rawText
     ].join('\n');
     Utils.textDownload(content, `OCR复核_${review.requestId}.txt`);
     this.toast('OCR 复核结果已导出');
@@ -5945,13 +5999,13 @@ const App = {
       review: null,
       diagnostics: null,
       reviewZoom: 1,
-      sourceFile: { name: file.name, size: file.size, type: file.type, uploadedAt, dimensions: {} },
+      sourceFile: { name: file.name, size: file.size, type: file.type, uploadedAt, dimensions: {}, classification: 'CONFIDENTIAL', placement: 'LOCAL_ONLY' },
       fieldDrafts: [],
       confirmedFields: JSON.parse(localStorage.getItem('personal-ai-os-ocr-confirmed-fields') || 'null'),
       demoFields
     };
     this.touchOcrDocumentSession(documentSessionId, {
-      requestId: '', sourceFile: { name: file.name, size: file.size, type: file.type, uploadedAt },
+      requestId: '', sourceFile: { name: file.name, size: file.size, type: file.type, uploadedAt, classification: 'CONFIDENTIAL', placement: 'LOCAL_ONLY' },
       storage_status: 'metadata_only', rawText: '', result: null, review: null, template_id: '',
       file_reselect_required_after_reload: true
     }, 'document_loaded');
@@ -6017,8 +6071,9 @@ const App = {
   },
 
   async ocrCopy(btn) {
-    if (!this.temp.ocr.result) throw new Error('暂无识别文字');
-    await this.busy(btn, async () => this.copy(this.temp.ocr.result));
+    const engineRawText = this.temp.ocr.providerResult?.engineRawText || this.temp.ocr.original || '';
+    if (!engineRawText) throw new Error('当前记录未保存引擎原始文本');
+    await this.busy(btn, async () => this.copy(engineRawText));
   },
 
   async recordRuntimeStart(input) {
@@ -6080,17 +6135,17 @@ const App = {
         retryable: false,
         source: 'ocr'
       });
-      const chosen = providerId === 'auto' ? registry.get('current') : registry.get(providerId);
+      const chosen = providerId === 'auto' ? null : registry.get(providerId);
       const trace = await this.recordRuntimeStart({
         component_id: chosen?.providerId === 'mock' ? 'ocr-mock' : 'ocr-current',
         component_type: chosen?.providerId === 'mock' ? 'PROVIDER' : 'LOCAL_RUNTIME',
         task_type: 'ocr_recognition', trigger_source: forceRetry ? 'ocr_retry' : 'ocr_upload', request_id: stabilityTaskId,
         parent_run_id: forceRetry ? String(o.lastRuntimeRunId || '') : '', provider: chosen?.providerName || '',
-        runtime_or_model: chosen?.providerName || 'Tesseract.js', execution_mode: chosen?.providerId === 'mock' ? 'MOCK' : 'LOCAL_RUNTIME',
+        runtime_or_model: chosen?.providerName || 'OCR Resource Router', execution_mode: chosen?.providerId === 'mock' ? 'MOCK' : 'LOCAL_RUNTIME',
         retry_count: retryCount, input_summary: `图片：${String(o.file.name || '未命名').replace(/[\\/]/g, '_')}`
       });
       o.lastRuntimeRunId = trace?.run_id || '';
-      o.status = `处理中（${chosen?.providerName || '自动选择'}）`;
+      o.status = `处理中（${chosen?.providerName || '本地 OCR 自动路由'}）`;
       o.progress = 0.06;
       o.mock = false;
       o.providerResult = null;
@@ -6108,6 +6163,7 @@ const App = {
         allowFallback: providerId === 'auto',
         timeoutMs: Stability.limitFor('ocr').timeoutMs,
         context: { requestId, environment, sourceFile: o.sourceFile, mode: providerId,
+          inputPolicy: { classification: 'CONFIDENTIAL', placement: 'LOCAL_ONLY', requiresChinese: true, requiresLayout: true },
           lowConfidenceThreshold: Store.state.ocrData.providerConfig.lowConfidenceThreshold,
           highRiskThreshold: Store.state.ocrData.providerConfig.highRiskThreshold },
         onProgress: (progress, status) => {
@@ -6129,7 +6185,7 @@ const App = {
         : result.status === 'partial_success' ? '部分成功：疑似乱码或模型兼容异常'
           : result.status === 'success' ? '真实 OCR 成功' : 'OCR 失败';
       o.progress = 1;
-      o.original = o.result;
+      o.original = result.engineRawText || '';
       const quality = OCRService.assessQuality(o.result);
       o.quality = quality;
       const structured = OCRService.structure(o.result);
@@ -6145,8 +6201,11 @@ const App = {
       o.qaQuestion = '';
       o.qaAnswer = '';
       result.fields = OCRArchitecture.normalizeFields(result.fields, structured.fields || {}, result.confidence);
+      result.structuredResult = structured;
+      result.structuredSourceStage = 'NORMALIZED_TEXT';
       result.documentType = structured.template || result.documentType;
       result.sourceFile = { ...o.sourceFile };
+      result.sourceFile.sha256 = result.executionMetadata?.inputHash || '';
       const executionStatus = result.providerId === 'mock' ? 'SUCCESS' : result.status === 'partial_success' ? 'PARTIAL' : result.success ? 'SUCCESS' : 'BLOCKED';
       const verificationStatus = result.providerId === 'mock' || result.status === 'partial_success' || result.fallbackUsed ? 'HUMAN_REVIEW_REQUIRED' : (OCRArchitecture.detectGarbled(result.rawText).garbled ? 'FAILED_VERIFICATION' : 'HUMAN_REVIEW_REQUIRED');
       result.runtimeRunId = trace?.run_id || '';
@@ -6168,7 +6227,7 @@ const App = {
         type: 'OCR识别',
         fileName: o.file.name,
         module: 'ocr',
-        status: result.success ? 'success' : result.status,
+        status: result.status === 'partial_success' ? 'partial_success' : result.success ? 'success' : result.status,
         startedAt,
         updatedAt: Date.now(),
         finishedAt: Date.now(),

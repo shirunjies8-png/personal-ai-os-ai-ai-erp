@@ -19,6 +19,7 @@ const runtimeObservabilityRoutes = require('./runtimeObservabilityRoutes');
 const trustedExecutionRoutes = require('./trustedExecutionRoutes');
 const transactionSafetyRoutes = require('./transactionSafetyRoutes');
 const auditRecoveryRoutes = require('./auditRecoveryRoutes');
+const ocrRoutes = require('./ocrRoutes');
 const { authRequired } = require('../middleware/auth');
 const qualityService = require('../services/aiQualityCheckService');
 const env = require('../config/env');
@@ -50,6 +51,7 @@ router.use('/runtime-observability', runtimeObservabilityRoutes);
 router.use('/trusted-execution', trustedExecutionRoutes);
 router.use('/transaction-safety', transactionSafetyRoutes);
 router.use('/audit-recovery', auditRecoveryRoutes);
+router.use('/ocr', ocrRoutes);
 
 function identityForAi(req) {
   return req.user ? { userId: req.user.id, enterpriseId: req.user.enterprise_id, role: req.user.role } : {};

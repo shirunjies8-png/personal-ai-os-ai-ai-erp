@@ -52,6 +52,8 @@ module.exports = {
   uploadsDir: process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'),
   logsDir: process.env.LOGS_DIR || path.join(process.cwd(), 'logs'),
   backupsDir: process.env.BACKUPS_DIR || path.join(process.cwd(), 'backups'),
+  rapidOcrPythonPath: normalizeEnvText(process.env.RAPIDOCR_PYTHON_PATH),
+  rapidOcrTimeoutMs: numberEnv('RAPIDOCR_TIMEOUT_MS', 120000, { min: 1000, max: 300000 }),
   deepseekBaseUrl: normalizeEnvText(process.env.DEEPSEEK_BASE_URL, 'https://api.deepseek.com'),
   deepseekApiKey: normalizeDeepSeekKey(process.env.DEEPSEEK_API_KEY),
   deepseekModel: normalizeDeepSeekModel(process.env.DEEPSEEK_MODEL),

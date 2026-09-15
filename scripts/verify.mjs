@@ -37,6 +37,8 @@ const materialIssueScenarioE = process.argv.includes('--material-issue-scenario-
 const quotationOnly = process.argv.includes('--quotation-only');
 const rfqOnly = process.argv.includes('--rfq-only');
 const ocrOnly = process.argv.includes('--ocr-only');
+const ocrRuntimeProof = process.argv.includes('--ocr-runtime-proof');
+const rapidOcrProductProof = process.argv.includes('--rapidocr-product-proof');
 const ocrCdpMinimal = process.argv.includes('--ocr-cdp-minimal');
 const quotationCopyNativeControl = process.argv.includes('--quotation-copy-native-control');
 const browserOnly = process.argv.includes('--browser-only');
@@ -332,6 +334,8 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
         E2E_MATERIAL_ISSUE_SCENARIO_E: materialIssueScenarioE ? '1' : '',
         E2E_RFQ_ONLY: rfqOnly ? '1' : '',
         E2E_OCR_ONLY: ocrOnly ? '1' : '',
+        E2E_OCR_RUNTIME_PROOF: ocrRuntimeProof ? '1' : '',
+        E2E_RAPIDOCR_PRODUCT_PROOF: rapidOcrProductProof ? '1' : '',
         E2E_OCR_CDP_MINIMAL: ocrCdpMinimal ? '1' : '',
         ...(fixture ? {
           E2E_FIXTURE_REQUESTER_EMAIL: fixture.requester.email,
@@ -351,7 +355,7 @@ async function runBrowserLifecycle({ chromePath, cycle, runtimeEnv = process.env
     // A failed probe stops before any business action can be repeated.
     runChecked(nodeExecutable, ['scripts/run-e2e.mjs', '--environment-only'], e2eEnv);
     if (!environmentOnly) {
-      runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(quotationOnly ? ['--quotation-only'] : []), ...(rfqOnly ? ['--rfq-only'] : []), ...(ocrOnly ? ['--ocr-only'] : []), ...(ocrCdpMinimal ? ['--ocr-cdp-minimal'] : []), ...(quotationCopyNativeControl ? ['--quotation-copy-native-control'] : []), ...(materialIssueScenarioA ? ['--material-issue-scenario-a'] : []), ...(materialIssueScenarioB ? ['--material-issue-scenario-b'] : []), ...(materialIssueScenarioC ? ['--material-issue-scenario-c'] : []), ...(materialIssueScenarioD ? ['--material-issue-scenario-d'] : []), ...(materialIssueScenarioE ? ['--material-issue-scenario-e'] : [])], e2eEnv);
+      runChecked(nodeExecutable, ['scripts/run-e2e.mjs', ...(quotationOnly ? ['--quotation-only'] : []), ...(rfqOnly ? ['--rfq-only'] : []), ...(ocrOnly ? ['--ocr-only'] : []), ...(ocrRuntimeProof ? ['--ocr-runtime-proof'] : []), ...(rapidOcrProductProof ? ['--rapidocr-product-proof'] : []), ...(ocrCdpMinimal ? ['--ocr-cdp-minimal'] : []), ...(quotationCopyNativeControl ? ['--quotation-copy-native-control'] : []), ...(materialIssueScenarioA ? ['--material-issue-scenario-a'] : []), ...(materialIssueScenarioB ? ['--material-issue-scenario-b'] : []), ...(materialIssueScenarioC ? ['--material-issue-scenario-c'] : []), ...(materialIssueScenarioD ? ['--material-issue-scenario-d'] : []), ...(materialIssueScenarioE ? ['--material-issue-scenario-e'] : [])], e2eEnv);
     }
     evidence.result = 'READY';
     return evidence;

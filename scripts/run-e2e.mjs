@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 const root = process.cwd();
@@ -16,9 +17,12 @@ const materialIssueScenarioE = process.argv.includes('--material-issue-scenario-
 const quotationOnly = process.argv.includes('--quotation-only');
 const rfqOnly = process.argv.includes('--rfq-only') || process.env.E2E_RFQ_ONLY === '1';
 const ocrOnly = process.argv.includes('--ocr-only') || process.env.E2E_OCR_ONLY === '1';
+const ocrRuntimeProof = process.argv.includes('--ocr-runtime-proof') || process.env.E2E_OCR_RUNTIME_PROOF === '1';
+const rapidOcrProductProof = process.argv.includes('--rapidocr-product-proof') || process.env.E2E_RAPIDOCR_PRODUCT_PROOF === '1';
 const ocrCdpMinimal = process.argv.includes('--ocr-cdp-minimal') || process.env.E2E_OCR_CDP_MINIMAL === '1';
 let sharedBrowserConnection = null;
 let sharedBrowserEvidence = null;
+const testRunId = process.env.E2E_TEST_RUN_ID || `e2e-${process.pid}-${Date.now()}`;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -70,6 +74,7 @@ async function getSharedBrowserConnection() {
   const version = await chromeVersion();
   if (!version.webSocketDebuggerUrl) throw new Error('Chrome 未提供浏览器级调试入口');
   sharedBrowserEvidence = {
+    testRunId,
     browserPid: process.env.E2E_CHROME_PID || '',
     transportKind: 'browser',
     expectedClose: false,
@@ -97,10 +102,11 @@ async function getSharedBrowserConnection() {
   return sharedBrowserConnection;
 }
 
-function closeSharedBrowserConnection() {
+async function closeSharedBrowserConnection() {
   if (sharedBrowserConnection?.ws?.readyState === WebSocket.OPEN) {
     sharedBrowserEvidence.expectedClose = true;
     sharedBrowserConnection.ws.close();
+    await sleep(25);
   }
 }
 
@@ -292,6 +298,7 @@ async function openIsolatedPage(url, role, evidence) {
   const target = await browser.send('Target.createTarget', { url: 'about:blank', browserContextId: context.browserContextId });
   const targetInfo = await findTarget(target.targetId);
   const pageEvidence = {
+    testRunId,
     role,
     browserPid: process.env.E2E_CHROME_PID || '',
     browserContextId: context.browserContextId,
@@ -359,6 +366,8 @@ async function openPage(url) {
     browserEvidence: created.browserEvidence,
     browserContextId: null,
     targetId: created.targetId,
+    targetState: 'OPEN',
+    sessionState: 'ATTACHED',
     pageUrl: tab.url || 'about:blank',
     currentStep: 'open_page',
     expectedClose: false,
@@ -377,6 +386,7 @@ async function openPage(url) {
       pageEvidence.sessionState = 'DETACHED';
       pageEvidence.detachReason = message.params?.reason || '';
     }
+    if (message.method === 'Target.targetDestroyed' && (message.params?.targetId || '') === created.targetId) pageEvidence.targetState = 'CLOSED';
     if (!['Target.detachedFromTarget', 'Inspector.detached', 'Page.frameNavigated', 'Page.lifecycleEvent', 'Runtime.executionContextsCleared', 'Runtime.executionContextCreated'].includes(message.method)) return;
     const detail = {
       timestamp: new Date().toISOString(),
@@ -388,23 +398,46 @@ async function openPage(url) {
     };
     pageEvidence.pageEvents.push(detail);
   });
-  const send = (method, params = {}) => {
+  let pageReadyState = WebSocket.OPEN;
+  const assertRuntimeEvaluateReady = async () => {
+    if (created.browserWs?.readyState !== WebSocket.OPEN || pageReadyState !== WebSocket.OPEN
+      || pageEvidence.targetState !== 'OPEN' || pageEvidence.sessionState !== 'ATTACHED') {
+      throw Object.assign(new Error('HARNESS_SESSION_INVALID'), { code: 'HARNESS_SESSION_INVALID' });
+    }
+    const current = await findTarget(created.targetId, 1000).catch(() => null);
+    if (!current?.webSocketDebuggerUrl) {
+      pageEvidence.targetState = 'MISSING';
+      throw Object.assign(new Error('HARNESS_SESSION_INVALID'), { code: 'HARNESS_SESSION_INVALID' });
+    }
+  };
+  const send = async (method, params = {}) => {
     pageEvidence.lastCdpMethod = method;
-    if (method === 'Runtime.evaluate') pageEvidence.runtimeEvaluateExpressionCategory = evaluateExpressionCategory(params.expression);
+    if (method === 'Runtime.evaluate') {
+      pageEvidence.runtimeEvaluateExpressionCategory = evaluateExpressionCategory(params.expression);
+      await assertRuntimeEvaluateReady();
+    }
     return created.browserSend(method, params, sessionId);
   };
-  let pageReadyState = WebSocket.OPEN;
-  const ws = {
-    get readyState() { return pageReadyState; },
-    close() {
+  let closePromise = null;
+  const close = async () => {
+    if (closePromise) return closePromise;
+    closePromise = (async () => {
       if (pageReadyState !== WebSocket.OPEN) return;
       pageEvidence.expectedClose = true;
+      pageEvidence.targetState = 'CLOSING';
       pageReadyState = WebSocket.CLOSING;
+      try { await created.browserSend('Target.closeTarget', { targetId: created.targetId }); } catch {}
+      pageEvidence.targetState = 'CLOSED';
+      pageEvidence.sessionState = 'DETACHED';
       removePageListener();
-      created.browserSend('Target.closeTarget', { targetId: created.targetId })
-        .catch(() => {})
-        .finally(() => { pageReadyState = WebSocket.CLOSED; });
-    }
+      removeTransportListener();
+      pageReadyState = WebSocket.CLOSED;
+    })();
+    return closePromise;
+  };
+  const ws = {
+    get readyState() { return pageReadyState; },
+    close() { void close(); }
   };
   const removeTransportListener = created.browser.addEventListener(message => {
     if (message.method !== 'Browser.transportClosed') return;
@@ -428,7 +461,7 @@ async function openPage(url) {
   await send('Page.navigate', { url });
   await sleep(4000);
   pageEvidence.pageUrl = url;
-  return { ws, send, events, pageEvidence };
+  return { ws, send, close, events, pageEvidence };
 }
 
 async function recordOcrLifecycleStep(pageEvidence, send, step) {
@@ -1393,9 +1426,18 @@ async function testChat() {
   return 'ai-chat: ok';
 }
 
-async function testOcr() {
-  const { ws, send, pageEvidence } = await openPage(`${baseUrl}/#/ocr`);
-  const evidence = { entry: 'ocr-page', startedAt: new Date().toISOString(), browserProfile: 'verify-managed-ephemeral', pageTarget: 'dedicated-cdp-target' };
+async function testOcr({ requireCompleteEvidence = false, rapidProductProof = false } = {}) {
+  const { ws, send, pageEvidence, events } = await openPage(`${baseUrl}/#/ocr`);
+  let recoveredPage = null;
+  let readbackSend = send;
+  const fixture = rapidProductProof
+    ? { artifactId: 'user-provided-original-1ac6f729', expectedHash: process.env.E2E_RAPIDOCR_INPUT_SHA256, path: process.env.E2E_RAPIDOCR_INPUT_PATH,
+      expectedAnchors: ['发货单', 'FH-20240627-001', '120', '产品名称', '数量', '单价', '金额', '合计金额'] }
+    : { artifactId: 'public-songti-ocr-runtime-fixture-v1', expectedFields: { quantity: '125', unitPrice: '18.60', amount: '2325.00', documentId: 'PO-20260820-001' } };
+  const evidence = {
+    entry: 'ocr-page', testRunId, startedAt: new Date().toISOString(), browserProfile: 'verify-managed-ephemeral',
+    pageTarget: 'dedicated-cdp-target', fixture, stateModel: { browser: 'UNKNOWN', cdp: 'UNKNOWN', target: 'UNKNOWN', session: 'UNKNOWN', page: 'UNKNOWN', ocrResource: 'UNKNOWN', ocrWorker: 'UNKNOWN', ocrTask: 'WAITING', ocrResult: 'WAITING', ui: 'UNKNOWN' }
+  };
   let monitor = null;
   try {
     await recordOcrLifecycleStep(pageEvidence, send, 'OCR_OPEN_START');
@@ -1406,7 +1448,17 @@ async function testOcr() {
     const stateBefore = await evalValue(send, `window.App?.temp?.ocr?.status || ''`);
     const ocrBodyBefore = await evalValue(send, `document.body.innerText || ''`);
     if (!ocrBodyBefore.includes('OCR识别') || /undefined|null|NaN/i.test(stateBefore)) throw new Error(`OCR 初始状态异常：${stateBefore}`);
-    await evalValue(send, `(() => {
+    if (rapidProductProof) {
+      if (!fixture.path || !fixture.expectedHash) throw new Error('INPUT_ARTIFACT_IDENTITY_GATE:BLOCKED');
+      const bytes = await fs.readFile(fixture.path);
+      const actualHash = createHash('sha256').update(bytes).digest('hex');
+      if (actualHash !== fixture.expectedHash) throw new Error(`INPUT_ARTIFACT_IDENTITY_GATE:BLOCKED:${actualHash}`);
+      const document = await send('DOM.getDocument', { depth: -1, pierce: true });
+      const input = await send('DOM.querySelector', { nodeId: document.root.nodeId, selector: 'input[data-input="ocr-file"]' });
+      if (!input.nodeId) throw new Error('PRODUCT_READBACK_FAILED:OCR_INPUT_NOT_FOUND');
+      await send('DOM.setFileInputFiles', { nodeId: input.nodeId, files: [fixture.path] });
+      await evalValue(send, `document.querySelector('input[data-input="ocr-file"]').dispatchEvent(new Event('change',{bubbles:true}))`);
+    } else await evalValue(send, `(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 800;
     canvas.height = 280;
@@ -1414,13 +1466,14 @@ async function testOcr() {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0,0,800,280);
     ctx.fillStyle = '#000';
-    ctx.font = '36px sans-serif';
-    ctx.fillText('发货单 SO-2026-015', 30, 60);
-    ctx.fillText('客户 常州新能源科技有限公司', 30, 110);
-    ctx.fillText('发货数量 760', 30, 160);
-    ctx.fillText('总金额 9710.00', 30, 210);
+    ctx.font = '36px "Songti SC", serif';
+    ctx.fillText('采购订单 PO-20260820-001', 30, 55);
+    ctx.fillText('物料名称 不锈钢板', 30, 105);
+    ctx.fillText('数量 125', 30, 155);
+    ctx.fillText('单价 18.60', 30, 205);
+    ctx.fillText('金额 2325.00', 30, 255);
     canvas.toBlob(blob => {
-      const file = new File([blob], 'ocr-test.png', { type: 'image/png' });
+      const file = new File([blob], 'public-songti-ocr-runtime-fixture.png', { type: 'image/png' });
       const dt = new DataTransfer();
       dt.items.add(file);
       const input = document.querySelector('input[data-input="ocr-file"]');
@@ -1431,7 +1484,8 @@ async function testOcr() {
     await sleep(1200);
     const uploadState = JSON.parse(await evalValue(send, `JSON.stringify({ name: window.App?.temp?.ocr?.file?.name || '', type: window.App?.temp?.ocr?.file?.type || '', size: window.App?.temp?.ocr?.file?.size || 0, status: window.App?.temp?.ocr?.status || '' })`));
     evidence.file = uploadState;
-    if (uploadState.name !== 'ocr-test.png') throw new Error(`OCR 上传后文件状态异常：${JSON.stringify(uploadState)}`);
+    const expectedFileName = rapidProductProof ? fixture.path.split('/').at(-1) : 'public-songti-ocr-runtime-fixture.png';
+    if (uploadState.name !== expectedFileName) throw new Error(`OCR 上传后文件状态异常：${JSON.stringify(uploadState)}`);
   // A previous document session can contain text from an earlier OCR run.
   // Clear only transient UI results so this test must observe the current
   // upload completing or reaching an explicit failure/timeout state.
@@ -1448,9 +1502,15 @@ async function testOcr() {
     const timeoutMs = OCR_TIMEOUT_CONTRACT.ocr.timeoutMs;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error(`OCR timeout 契约无效：${timeoutMs}`);
     evidence.timeoutMs = timeoutMs;
-    evidence.observationBudgetMs = timeoutMs + 10000;
+    // Product recognition remains governed by its 120s contract. The dedicated
+    // proof adds a shorter, explicit *initialization* boundary so a worker that
+    // never leaves loading produces evidence and cleanup rather than an orphaned
+    // harness process. It does not change product behavior or retry OCR.
+    evidence.timeoutContract = { ocrInitTimeoutMs: requireCompleteEvidence ? 30000 : timeoutMs, ocrRecognitionTimeoutMs: timeoutMs, ocrUiSettleTimeoutMs: 3000 };
+    evidence.observationBudgetMs = requireCompleteEvidence ? evidence.timeoutContract.ocrInitTimeoutMs + 5000 : timeoutMs + 10000;
     await recordOcrLifecycleStep(pageEvidence, send, 'OCR_BEFORE_RUNTIME_EVALUATE');
     evidence.workerBefore = JSON.parse(await evalValue(send, `JSON.stringify(window.OCRService?.health?.() || {})`));
+    evidence.stateModel = { ...evidence.stateModel, browser: processAlive(process.env.E2E_CHROME_PID), cdp: wsStatus(pageEvidence.browserWs), target: pageEvidence.targetId ? 'OPEN' : 'UNKNOWN', session: pageEvidence.sessionId ? 'ATTACHED' : 'UNKNOWN', page: 'READY', ocrResource: evidence.workerBefore.hasTesseract ? 'AVAILABLE' : 'UNAVAILABLE', ocrWorker: evidence.workerBefore.engineState || 'IDLE', ui: 'READY' };
     await recordOcrLifecycleStep(pageEvidence, send, 'OCR_AFTER_RUNTIME_EVALUATE');
     monitor = await startOcrLongRunMonitor(pageEvidence);
     await evalValue(send, `document.querySelector('[data-action="ocr-run"]').click()`);
@@ -1468,7 +1528,7 @@ async function testOcr() {
         continue;
       }
       try {
-        runState = JSON.parse(await boundedCdpCall(() => evalValue(send, `JSON.stringify((() => {
+        runState = JSON.parse(await boundedCdpCall(() => evalValue(readbackSend, `JSON.stringify((() => {
         const o = window.App?.temp?.ocr || {};
         const result = o.providerResult || {};
         const data = window.Store?.state?.ocrData || {};
@@ -1477,8 +1537,13 @@ async function testOcr() {
           || /OCR (失败|超时)|已使用降级模式|演示数据/.test(String(o.status || ''));
         return {
           status: result.status || o.status || '', text: result.rawText || o.result || '', terminal,
+          ocrRunId: result.requestId || '', engineRawLength: String(result.engineRawText || '').length,
+          normalizedLength: String(result.normalizedText ?? result.rawText ?? '').length,
+          engineRawHash: result.textEvidence?.engineRawHash || '', normalizedHash: result.textEvidence?.normalizedHash || '',
+          structuredSourceStage: result.structuredSourceStage || '', structuredPresent: Boolean(result.structuredResult || result.fields?.length),
           loading: Boolean(o.loading), progress: Number(o.progress || 0), manualConfirmationRequired: Boolean(result.manualConfirmationRequired),
           fallbackUsed: Boolean(result.fallbackUsed), providerId: result.providerId || o.providerId || '',
+          routingEvidence: result.routingEvidence || null, executionMetadata: result.executionMetadata || null,
           warnings: result.warnings || [], errors: result.errors || [], health,
           lastError: data.errors?.[0] || null, lastLog: data.providerLogs?.[0] || null
         };
@@ -1486,19 +1551,99 @@ async function testOcr() {
       } catch (error) {
         observed.push({ elapsedMs: Date.now() - observationStarted, status: 'CDP_STATE_UNAVAILABLE', cdpError: error.code || error.message });
         evidence.cdpStateReadError = error.code || error.message;
+        if (rapidProductProof && !recoveredPage) {
+          try {
+            const currentTarget = await findTarget(pageEvidence.targetId, 3000);
+            if (!currentTarget?.webSocketDebuggerUrl) throw new Error('TARGET_NOT_AVAILABLE');
+            recoveredPage = await cdpConnect(currentTarget.webSocketDebuggerUrl, { ...pageEvidence, transportKind: 'rapidocr-readback-recovery' });
+            await recoveredPage.send('Runtime.enable');
+            await recoveredPage.send('Network.enable');
+            readbackSend = recoveredPage.send;
+            evidence.observationChannelRecovery = { status: 'RECONNECTED', targetId: pageEvidence.targetId, at: new Date().toISOString() };
+            evidence.cdpStateReadError = '';
+            cdpStateReadBlocked = false;
+            continue;
+          } catch (reconnectError) {
+            evidence.observationChannelRecovery = { status: 'FAILED', error: reconnectError.code || reconnectError.message, at: new Date().toISOString() };
+          }
+        }
         cdpStateReadBlocked = true;
         continue;
       }
-      observed.push({ elapsedMs: Date.now() - observationStarted, status: runState.status, progress: runState.progress, loading: runState.loading, health: runState.health, error: runState.errors?.[0]?.type || runState.lastError?.errorType || '' });
+      observed.push({ elapsedMs: Date.now() - observationStarted, status: runState.status, progress: runState.progress, loading: runState.loading, health: runState.health, ocrRunId: runState.ocrRunId, engineRawLength: runState.engineRawLength, normalizedLength: runState.normalizedLength, error: runState.errors?.[0]?.type || runState.lastError?.errorType || '' });
+      if (requireCompleteEvidence && !runState.engineRawLength && runState.health?.engineState === 'loading'
+        && Date.now() - observationStarted >= evidence.timeoutContract.ocrInitTimeoutMs) {
+        evidence.initializationBoundaryReached = true;
+        break;
+      }
       if (runState.terminal) break;
     }
-    const arithmeticBeforeReload = await boundedCdpCall(() => evalValue(send, '1 + 1'), 5000, 'post-OCR Runtime.evaluate');
-    await boundedCdpCall(() => send('Page.reload'), 5000, 'post-OCR Page.reload');
-    await sleep(1500);
-    const arithmeticAfterReload = await boundedCdpCall(() => evalValue(send, '1 + 1'), 5000, 'post-reload Runtime.evaluate');
-    evidence.postOcrCdp = { arithmeticBeforeReload, reload: 'completed', arithmeticAfterReload };
-    if (arithmeticBeforeReload !== 2 || arithmeticAfterReload !== 2) {
-      throw new Error(`OCR_POST_RUN_CDP_QUALIFICATION_FAILED:${JSON.stringify(evidence.postOcrCdp)}`);
+    // Read the UI, product state and task record from the same completed OCR
+    // run. Reloading first can race the asynchronous server-state hydration
+    // and replace fresh local evidence with an older snapshot; that tests a
+    // different persistence concern and made a valid product run look empty.
+    const readUiEvidence = async () => JSON.parse(await boundedCdpCall(() => evalValue(readbackSend, `JSON.stringify((() => {
+      const body = document.body?.innerText || '';
+      const result = window.App?.temp?.ocr?.providerResult || {};
+      const resultText = String(result.normalizedText ?? result.rawText ?? '');
+      const structure = result.structuredResult || window.OCRService?.structure?.(resultText) || {};
+      const fields = structure.fields || {};
+      const textPanel = [...document.querySelectorAll('section.panel')].find(section =>
+        [...section.querySelectorAll('h3')].some(heading => heading.textContent?.trim() === '引擎原始识别文本'));
+      const textareas = [...(textPanel?.querySelectorAll('textarea') || [])];
+      const engineRawUiText = String(textareas[0]?.value || '');
+      const normalizedUiText = String(textareas[1]?.value || '');
+      const taskRecord = (window.Store?.state?.taskRecords || []).find(item => item.requestId === result.requestId || item.id === result.requestId) || null;
+      return {
+        engineRawLabel: body.includes('引擎原始识别文本'), normalizedLabel: body.includes('修正后文本（兼容旧版 rawText）'),
+        routingLabel: body.includes('本地 OCR 路由证据'), actualProviderVisible: body.includes('rapidocr-local'),
+        partialStatusVisible: body.includes('部分成功：疑似乱码或模型兼容异常'),
+        successStatusVisible: body.includes('真实 OCR 成功'),
+        providerResultStatus: String(result.status || ''), storeResultStatus: String(window.Store?.state?.ocrResult?.status || ''),
+        taskRecordStatus: String(taskRecord?.status || ''),
+        engineRawLength: String(result.engineRawText || '').length, normalizedLength: resultText.length,
+        engineRawUiLength: engineRawUiText.length, normalizedUiLength: normalizedUiText.length,
+        structuredPresent: Boolean(result.structuredResult || result.fields?.length),
+        structuredUiPresent: Boolean(document.querySelector('.ocr-review-field')),
+        criticalFields: { quantity: String(fields['数量'] || ''), unitPrice: String(fields['单价'] || ''), amount: String(fields['金额'] || ''), documentId: String(fields['单据编号'] || '') },
+        anchorMatches: ${JSON.stringify(rapidProductProof ? fixture.expectedAnchors : [])}.reduce((state, anchor) => ({...state,[anchor]:normalizedUiText.includes(anchor)}), {})
+      };
+    })())`), 5000, 'OCR UI Runtime.evaluate'));
+    let uiReadback;
+    if (requireCompleteEvidence) {
+      uiReadback = await waitForValue(
+        readUiEvidence,
+        value => value.engineRawUiLength > 0 && value.normalizedUiLength > 0 && value.structuredUiPresent,
+        'OCR UI current-run readback',
+        evidence.timeoutContract.ocrUiSettleTimeoutMs
+      );
+    } else {
+      uiReadback = await readUiEvidence();
+    }
+    const responseEvidence = [...events, ...(recoveredPage?.events || [])]
+      .filter(event => event.method === 'Network.responseReceived' && /\/api\/ocr\/providers\/rapidocr-local\/(readiness|recognize)/.test(String(event.params?.response?.url || '')))
+      .map(event => ({ url: event.params.response.url, status: event.params.response.status, mimeType: event.params.response.mimeType || '' }));
+    evidence.apiEvidence = {
+      readiness: responseEvidence.find(item => item.url.endsWith('/readiness')) || null,
+      recognize: responseEvidence.find(item => item.url.endsWith('/recognize')) || null
+    };
+    const arithmeticBeforeReadback = await boundedCdpCall(() => evalValue(readbackSend, '1 + 1'), 5000, 'post-OCR Runtime.evaluate');
+    if (rapidProductProof) {
+      // The product proof ends at the current-run browser readback. A reload is
+      // intentionally not inserted between recognition and evidence capture.
+      const arithmeticAfterReadback = await boundedCdpCall(() => evalValue(readbackSend, '1 + 1'), 5000, 'post-readback Runtime.evaluate');
+      evidence.postOcrCdp = { arithmeticBeforeReadback, reload: 'NOT_PART_OF_CURRENT_RUN_PROOF', arithmeticAfterReadback };
+      if (arithmeticBeforeReadback !== 2 || arithmeticAfterReadback !== 2) {
+        throw new Error(`OCR_POST_RUN_CDP_QUALIFICATION_FAILED:${JSON.stringify(evidence.postOcrCdp)}`);
+      }
+    } else {
+      await boundedCdpCall(() => readbackSend('Page.reload'), 5000, 'post-OCR Page.reload');
+      await sleep(1500);
+      const arithmeticAfterReload = await boundedCdpCall(() => evalValue(readbackSend, '1 + 1'), 5000, 'post-reload Runtime.evaluate');
+      evidence.postOcrCdp = { arithmeticBeforeReadback, reload: 'completed', arithmeticAfterReload };
+      if (arithmeticBeforeReadback !== 2 || arithmeticAfterReload !== 2) {
+        throw new Error(`OCR_POST_RUN_CDP_QUALIFICATION_FAILED:${JSON.stringify(evidence.postOcrCdp)}`);
+      }
     }
     await monitor.stop();
     evidence.infrastructureHealth = monitor.evidence.samples;
@@ -1506,13 +1651,52 @@ async function testOcr() {
     monitor = null;
     evidence.workerAfter = runState.health || {};
     evidence.observations = observed.slice(-18);
-    evidence.final = { status: runState.status, providerId: runState.providerId, manualConfirmationRequired: runState.manualConfirmationRequired,
-      fallbackUsed: runState.fallbackUsed, textLength: String(runState.text || '').length, warnings: runState.warnings, errors: runState.errors, lastError: runState.lastError, lastLog: runState.lastLog };
-    const explicitManualState = runState.status === 'partial_success' && runState.manualConfirmationRequired && !runState.fallbackUsed;
+    evidence.final = { status: runState.status, ocrRunId: runState.ocrRunId, providerId: runState.providerId, manualConfirmationRequired: runState.manualConfirmationRequired,
+      fallbackUsed: runState.fallbackUsed, textLength: String(runState.text || '').length, engineRawLength: runState.engineRawLength, normalizedLength: runState.normalizedLength,
+      engineRawHash: runState.engineRawHash, normalizedHash: runState.normalizedHash, structuredSourceStage: runState.structuredSourceStage, structuredPresent: runState.structuredPresent,
+      warnings: runState.warnings, errors: runState.errors, lastError: runState.lastError, lastLog: runState.lastLog, uiReadback };
+    const explicitPartialState = runState.status === 'partial_success' && !runState.fallbackUsed;
     const explicitFailure = /failed|error|unavailable|timeout|失败|不可用|超时/i.test(runState.status);
     if (evidence.cdpStateReadError) throw new Error(`OCR_CDP_STATE_READ_UNAVAILABLE:${JSON.stringify(evidence)}`);
-    if (!runState.text.trim() && !explicitManualState && !explicitFailure) throw new Error(`OCR 未在 ${evidence.observationBudgetMs}ms 内进入明确终态：${JSON.stringify(evidence.final)}`);
+    if (!runState.text.trim() && !explicitPartialState && !explicitFailure) throw new Error(`OCR 未在 ${evidence.observationBudgetMs}ms 内进入明确终态：${JSON.stringify(evidence.final)}`);
     if (/Mock OCR 成功/.test(runState.status) || runState.providerId === 'mock') throw new Error('OCR 真实测试被错误标记为 Mock 成功');
+    evidence.stateModel = { ...evidence.stateModel, browser: processAlive(process.env.E2E_CHROME_PID), cdp: wsStatus(pageEvidence.browserWs), target: 'OPEN', session: 'ATTACHED', page: 'READY', ocrResource: 'AVAILABLE', ocrWorker: runState.health?.engineState || 'UNKNOWN', ocrTask: runState.loading ? 'RUNNING' : runState.status || 'UNKNOWN', ocrResult: runState.status || 'UNKNOWN', ui: uiReadback.engineRawLabel && uiReadback.normalizedLabel ? 'READY' : 'LABEL_MISSING' };
+    const critical = uiReadback.criticalFields;
+    const criticalFieldsMatch = rapidProductProof
+      ? Object.values(uiReadback.anchorMatches).every(Boolean)
+      : critical.quantity === fixture.expectedFields.quantity && critical.unitPrice === fixture.expectedFields.unitPrice
+        && critical.amount === fixture.expectedFields.amount && critical.documentId === fixture.expectedFields.documentId;
+    evidence.completeProof = {
+      engineRawReadback: uiReadback.engineRawUiLength > 0 && uiReadback.engineRawLength === uiReadback.engineRawUiLength,
+      normalizedReadback: uiReadback.normalizedUiLength > 0 && uiReadback.normalizedLength === uiReadback.normalizedUiLength,
+      structuredReadback: Boolean(uiReadback.structuredPresent) && uiReadback.structuredUiPresent && runState.structuredSourceStage === 'NORMALIZED_TEXT',
+      uiReadback: uiReadback.engineRawLabel && uiReadback.normalizedLabel && (!rapidProductProof || (uiReadback.routingLabel && uiReadback.actualProviderVisible)),
+      criticalFieldsMatch,
+      apiReadback: !rapidProductProof || (
+        evidence.apiEvidence.readiness?.status === 200
+        && evidence.apiEvidence.recognize?.status === 200
+      ),
+      partialSuccessPropagation: runState.status !== 'partial_success' || (
+        uiReadback.providerResultStatus === 'partial_success'
+        && uiReadback.storeResultStatus === 'partial_success'
+        && uiReadback.taskRecordStatus === 'partial_success'
+        && uiReadback.partialStatusVisible
+        && !uiReadback.successStatusVisible
+      )
+    };
+    if (rapidProductProof) {
+      evidence.productProvider = runState.routingEvidence?.actualProvider || runState.providerId;
+      evidence.inputHash = runState.executionMetadata?.inputHash || '';
+      evidence.resultProvenanceHash = runState.executionMetadata?.resultProvenanceHash || '';
+      if (evidence.productProvider !== 'rapidocr-local') throw new Error(`PRODUCT_READBACK_FAILED:ACTUAL_PROVIDER_${evidence.productProvider || 'NONE'}`);
+      if (evidence.inputHash !== fixture.expectedHash) throw new Error('RESULT_VERIFICATION_FAILED:INPUT_HASH_READBACK');
+    }
+    if (requireCompleteEvidence && !Object.values(evidence.completeProof).every(Boolean)) {
+      const failureClass = !runState.engineRawLength && /loading|initializing/i.test(String(runState.health?.engineState || runState.status || ''))
+        ? 'OCR_BROWSER_WORKER_INITIALIZATION_FAILURE'
+        : 'OCR_BROWSER_PRODUCT_PATH_FAILURE';
+      throw new Error(`${failureClass}:${JSON.stringify({ final: evidence.final, completeProof: evidence.completeProof, stateModel: evidence.stateModel })}`);
+    }
     console.log(`OCR_E2E_EVIDENCE ${JSON.stringify(evidence)}`);
     return 'ocr: ok';
   } finally {
@@ -1521,6 +1705,7 @@ async function testOcr() {
       evidence.infrastructureHealth = monitor.evidence.samples;
       evidence.infrastructureEvents = monitor.evidence.targetEvents;
     }
+    try { recoveredPage?.ws?.close(); } catch {}
     ws.close();
   }
 }
@@ -2262,6 +2447,16 @@ async function main() {
     console.log(results.join('\n'));
     return;
   }
+  if (ocrRuntimeProof) {
+    results.push(await testOcr({ requireCompleteEvidence: true }));
+    console.log(results.join('\n'));
+    return;
+  }
+  if (rapidOcrProductProof) {
+    results.push(await testOcr({ requireCompleteEvidence: true, rapidProductProof: true }));
+    console.log(results.join('\n'));
+    return;
+  }
   if (ocrCdpMinimal) {
     results.push(await testOcrCdpMinimal());
     console.log(results.join('\n'));
@@ -2301,10 +2496,10 @@ async function main() {
   console.log(results.join('\n'));
 }
 
-main().then(() => {
-  closeSharedBrowserConnection();
-}).catch(err => {
+main().then(async () => {
+  await closeSharedBrowserConnection();
+}).catch(async err => {
   console.error(err);
-  closeSharedBrowserConnection();
+  await closeSharedBrowserConnection();
   process.exitCode = 1;
 });
