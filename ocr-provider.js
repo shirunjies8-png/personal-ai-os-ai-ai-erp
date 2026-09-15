@@ -6,9 +6,12 @@
   const OCR_TIMEOUT_CONTRACT = typeof module !== 'undefined' && module.exports
     ? require('./ocr-timeout-contract.js')
     : globalThis.AIOfficeContracts;
+  const RealityCore = typeof module !== 'undefined' && module.exports
+    ? require('./realityos-core.js')
+    : globalThis.RealityOSCore;
   const DEFAULT_OCR_TIMEOUT_MS = OCR_TIMEOUT_CONTRACT.ocr.timeoutMs;
   const SCHEMA_VERSION = 2;
-  const READINESS_STATES = new Set(['DECLARED', 'RESOLVED', 'READY', 'DEGRADED', 'BLOCKED', 'UNAVAILABLE']);
+  const READINESS_STATES = new Set(RealityCore.READINESS_STATES);
   const RUN_STATUSES = new Set(['waiting', 'processing', 'success', 'partial_success', 'failed', 'timeout', 'fallback', 'cancelled']);
   const REVIEW_STATUSES = new Set(['pending', 'reviewing', 'approved', 'rejected', 'needs_retry']);
   const KEY_FIELDS = new Set(['customer_name', 'document_no', 'date', 'quantity', 'unit_price', 'total_amount', 'tax_rate', 'delivery_date']);
@@ -162,10 +165,10 @@
       availabilityReason: String(input.availabilityReason || ''), supportsLocal: Boolean(input.supportsLocal || ['local', 'current', 'mock'].includes(String(input.providerType || ''))),
       supportsCloud: Boolean(input.supportsCloud), supportsTable: Boolean(input.supportsTable),
       supportsHandwriting: Boolean(input.supportsHandwriting), supportsChinese: input.supportsChinese !== false,
-      supportsLayout: Boolean(input.supportsLayout), placement: String(input.placement || (input.supportsCloud ? 'CLOUD' : 'LOCAL')),
+      supportsLayout: Boolean(input.supportsLayout), placement: RealityCore.normalizePlacement(input.placement || (input.supportsCloud ? 'EXTERNAL' : 'LOCAL_ONLY')),
       supportedMimeTypes: Array.isArray(input.supportedMimeTypes) ? [...input.supportedMimeTypes] : ['image/png', 'image/jpeg', 'image/webp'],
       externalUpload: Boolean(input.externalUpload), engine: String(input.engine || input.providerName || ''),
-      runtime: String(input.runtime || ''), readiness: READINESS_STATES.has(input.readiness) ? input.readiness : (input.available ? 'READY' : 'DECLARED'),
+      runtime: String(input.runtime || ''), readiness: RealityCore.normalizeReadiness(input.readiness, input.available ? 'READY' : 'DECLARED'),
       dependencies: Array.isArray(input.dependencies) ? [...input.dependencies] : [], failureReason: String(input.failureReason || input.availabilityReason || ''),
       routingPriority: Number(input.routingPriority || 0) };
   }
@@ -187,11 +190,18 @@
     resolveCandidates(providerId = 'auto', context = {}) {
       const policy = context.inputPolicy || {};
       const classification = String(policy.classification || context.classification || 'CONFIDENTIAL').toUpperCase();
-      const placement = String(policy.placement || context.placement || 'LOCAL_ONLY').toUpperCase();
+      const placement = RealityCore.normalizePlacement(policy.placement || context.placement || 'LOCAL_ONLY');
       const requiresLayout = policy.requiresLayout === true;
       const requiresChinese = policy.requiresChinese !== false;
+      const corePolicy = RealityCore.createDataPolicy({ classification, requiredPlacement: placement, allowedPlacements: [placement] });
       const allowed = provider => {
         if (!provider?.enabled) return false;
+        const policyResult = RealityCore.evaluateDataPolicy(corePolicy, {
+          actualPlacement: provider.placement,
+          externalUpload: provider.externalUpload || provider.supportsCloud,
+          externalAI: provider.supportsCloud,
+        });
+        if (policyResult.status === 'BLOCKED') return false;
         if (placement === 'LOCAL_ONLY' && (provider.externalUpload || provider.supportsCloud || !provider.supportsLocal)) return false;
         if (classification === 'CONFIDENTIAL' && provider.externalUpload) return false;
         if (requiresLayout && !provider.supportsLayout && provider.providerId !== 'current' && provider.providerId !== 'mock') return false;
@@ -202,7 +212,7 @@
         ? [...this.providers.values()].filter(provider => !['mock', 'cloud', 'vision'].includes(provider.providerId)).filter(allowed)
           .sort((left, right) => right.routingPriority - left.routingPriority)
         : [this.get(providerId)].filter(Boolean).filter(allowed);
-      return { candidates, policy: { classification, placement, requiresLayout, requiresChinese, requestedProviderPolicy: providerId } };
+      return { candidates, policy: { classification, placement, requiresLayout, requiresChinese, requestedProviderPolicy: providerId, corePolicy } };
     }
     async run({ providerId = 'auto', file, onProgress = () => {}, allowFallback = true, timeoutMs = DEFAULT_OCR_TIMEOUT_MS, context = {} } = {}) {
       const requestId = context.requestId || uid(), startedAt = now();
@@ -221,9 +231,26 @@
         provider.available = available;
         provider.readiness = String(health.readiness || health.status || (available ? 'READY' : 'UNAVAILABLE')).toUpperCase();
         provider.availabilityReason = health.failureReason || health.message || '';
+        const preflight = RealityCore.preflight({
+          capability: {
+            capabilityId: 'document.ocr',
+            name: 'Document OCR',
+            category: 'document-processing',
+            providerIds: [provider.providerId],
+            dataPolicy: resolved.policy.corePolicy,
+            dependencies: provider.dependencies || [],
+            readiness: provider.readiness,
+          },
+          providerReadiness: provider.readiness,
+          executionContext: {
+            actualPlacement: provider.placement,
+            externalUpload: provider.externalUpload || provider.supportsCloud,
+            externalAI: provider.supportsCloud,
+          },
+        });
         if (!available || !provider.enabled) {
           lastError = ocrError(health.message || provider.availabilityReason || '所选 OCR Provider 暂不可用', 'CAPABILITY_NOT_READY', { providerId: provider.providerId, readiness: health.status || provider.readiness });
-          attempts.push({ providerId: provider.providerId, readiness: String(health.status || provider.readiness || 'UNAVAILABLE').toUpperCase(), result: 'SKIPPED', reason: lastError.message });
+          attempts.push({ providerId: provider.providerId, readiness: String(health.status || provider.readiness || 'UNAVAILABLE').toUpperCase(), preflightStatus: preflight.status, result: 'SKIPPED', reason: lastError.message });
           this.onError({ requestId, provider, error: lastError, file, startedAt, fallbackUsed: false });
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: 'failed', error: lastError.message,
@@ -246,19 +273,57 @@
           const result = normalizeResult(raw, { ...context, requestId, startedAt }, provider);
           if (!result.rawText.trim()) throw ocrError('OCR 未返回文字', 'empty_result', { providerId: provider.providerId, result });
           if (result.status === 'failed') throw ocrError(result.errors[0]?.message || 'OCR 识别失败', result.errors[0]?.type || 'invalid_response', { result });
-          attempts.push({ providerId: provider.providerId, readiness: 'READY', result: 'SUCCESS' });
+          attempts.push({ providerId: provider.providerId, readiness: 'READY', preflightStatus: preflight.status, result: 'SUCCESS' });
+          const executionProvenance = RealityCore.createExecutionProvenance({
+            executionId: requestId,
+            capabilityId: 'document.ocr',
+            requestedProvider: providerId,
+            actualProvider: provider.providerId,
+            providerVersion: result.providerVersion,
+            runtimeIdentity: {
+              engine: raw.engine || provider.engine,
+              engineVersion: raw.engineVersion || result.providerVersion,
+              runtime: raw.runtime || provider.runtime,
+              runtimeVersion: raw.runtimeVersion || '',
+              executionProvider: raw.executionProvider || '',
+            },
+            executionPlacement: resolved.policy.placement,
+            inputIdentity: { sha256: raw.inputHash || context.sourceFile?.sha256 || '' },
+            outputIdentity: { sha256: raw.resultProvenanceHash || '' },
+            fallbackUsed: attempts.length > 1,
+            startedAt,
+            finishedAt: result.finishedAt,
+            status: result.status,
+            runtimeMetadata: raw.executionMetadata || {},
+          });
+          const expectedActual = RealityCore.compareExpectedActual({
+            requestedProvider: providerId === 'auto' ? provider.providerId : providerId,
+            requestedPlacement: resolved.policy.placement,
+            expectedRuntime: raw.runtime || provider.runtime,
+            fallbackExpected: false,
+          }, {
+            actualProvider: provider.providerId,
+            actualPlacement: resolved.policy.placement,
+            actualRuntime: raw.runtime || provider.runtime,
+            fallbackUsed: attempts.length > 1,
+          });
           result.routingEvidence = {
             ...resolved.policy, selectedProvider: provider.providerId, actualProvider: provider.providerId,
             allowFallback,
             fallbackOccurred: attempts.length > 1, fallbackReason: attempts.length > 1 ? attempts.slice(0, -1).map(item => `${item.providerId}:${item.reason || item.result}`).join('; ') : '',
             attempts,
+            preflightStatus: preflight.status,
+            policyResult: preflight.policyResult,
+            expectedActual,
           };
+          result.executionProvenance = executionProvenance;
           result.executionMetadata = raw.executionMetadata || {
             engine: raw.engine || provider.engine, engineVersion: raw.engineVersion || result.providerVersion,
             runtime: raw.runtime || provider.runtime, runtimeVersion: raw.runtimeVersion || '',
             executionProvider: raw.executionProvider || '', latencyMs: raw.latencyMs || result.durationMs,
             regionCount: raw.regionCount ?? result.blocks.length, inputHash: raw.inputHash || context.sourceFile?.sha256 || '',
             executionStatus: raw.executionStatus || 'SUCCESS', resultProvenanceHash: raw.resultProvenanceHash || '',
+            executionProvenance,
           };
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: result.status, durationMs: result.durationMs,
@@ -270,7 +335,7 @@
             } }); return result;
         } catch (error) {
           lastError = error; this.onError({ requestId, provider, error, file, startedAt, fallbackUsed: false });
-          attempts.push({ providerId: provider.providerId, readiness: 'READY', result: 'FAILED', reason: error.code || error.message });
+          attempts.push({ providerId: provider.providerId, readiness: 'READY', preflightStatus: preflight.status, result: 'FAILED', reason: error.code || error.message });
           this.onLog({ requestId, action: 'recognize', providerId: provider.providerId, providerName: provider.providerName,
             fileName: file?.name || context.sourceFile?.name || '', status: error.code === 'request_timeout' ? 'timeout' : 'failed',
             error: error.message, errorSummary: String(error.message || '').slice(0, 160) });
@@ -418,5 +483,5 @@
 
   return { SCHEMA_VERSION, FIELD_DEFINITIONS, KEY_FIELDS, ProviderRegistry, createPlaceholderProvider, createCurrentProvider, createRapidOcrProvider,
     createMockProvider, normalizeResult, normalizeLegacyResult, normalizeFields, detectGarbled, createReview,
-    updateReviewField, approveReview, rejectReview, reviewSummary, confirmedPayload, sanitizeDiagnostics, ocrError };
+    updateReviewField, approveReview, rejectReview, reviewSummary, confirmedPayload, sanitizeDiagnostics, ocrError, RealityCore };
 });

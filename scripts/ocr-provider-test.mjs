@@ -90,7 +90,13 @@ const routed = await routedRegistry.run({
 assert.equal(routed.providerId, 'rapidocr-local');
 assert.equal(routed.routingEvidence.actualProvider, 'rapidocr-local');
 assert.equal(routed.routingEvidence.fallbackOccurred, false);
+assert.equal(routed.routingEvidence.preflightStatus, 'READY');
+assert.equal(routed.routingEvidence.policyResult.status, 'READY');
+assert.equal(routed.routingEvidence.expectedActual.status, 'MATCH');
 assert.equal(routed.executionMetadata.executionProvider, 'CPUExecutionProvider');
+assert.equal(routed.executionProvenance.capabilityId, 'document.ocr');
+assert.equal(routed.executionProvenance.actualProvider, 'rapidocr-local');
+assert.equal(routed.executionProvenance.executionPlacement, 'LOCAL_ONLY');
 assert.equal(routedRegistry.getCapabilities('rapidocr-local').externalUpload, false);
 assert.equal(routedRegistry.getCapabilities('rapidocr-local').placement, 'LOCAL_ONLY');
 

@@ -6,17 +6,33 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const env = require('../config/env');
+const RealityCore = require('../realityos-core');
 
 const PROVIDER_ID = 'rapidocr-local';
+const CAPABILITY_ID = 'document.ocr';
 const SUPPORTED_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const ADAPTER_PATH = path.join(__dirname, 'rapidocr_adapter.py');
+const DATA_POLICY = RealityCore.createDataPolicy({
+  classification: 'CONFIDENTIAL',
+  requiredPlacement: 'LOCAL_ONLY',
+  allowedPlacements: ['LOCAL_ONLY'],
+});
 
 function serviceError(message, code, status = 400, detail = {}) {
   return Object.assign(new Error(message), { code, status, detail });
 }
 
 function providerContract(readiness = 'DECLARED', failureReason = '') {
-  return {
+  const dependencies = [
+    RealityCore.createDependency({ dependencyId: 'configured Python runtime', type: 'runtime', required: true, status: readiness }),
+    RealityCore.createDependency({ dependencyId: 'rapidocr', type: 'package', required: true, status: readiness }),
+    RealityCore.createDependency({ dependencyId: 'onnxruntime', type: 'package', required: true, status: readiness }),
+    RealityCore.createDependency({ dependencyId: 'local OCR models', type: 'model', required: true, status: readiness }),
+    RealityCore.createDependency({ dependencyId: 'CPUExecutionProvider', type: 'runtime', required: true, status: readiness }),
+    RealityCore.createDependency({ dependencyId: 'adapter executable', type: 'filesystem', required: true, status: readiness }),
+  ];
+  const contract = {
+    capabilityId: CAPABILITY_ID,
     providerId: PROVIDER_ID,
     providerName: 'RapidOCR 本地文档识别',
     providerType: 'local',
@@ -28,8 +44,20 @@ function providerContract(readiness = 'DECLARED', failureReason = '') {
     supportsChinese: true,
     externalUpload: false,
     readiness,
-    dependencies: ['configured Python runtime', 'rapidocr', 'onnxruntime', 'local OCR models', 'CPUExecutionProvider', 'adapter executable'],
+    dependencies: dependencies.map(item => item.dependencyId),
+    dependencyEvidence: dependencies,
+    dataPolicy: DATA_POLICY,
     failureReason,
+  };
+  return {
+    ...contract,
+    capabilityHealth: RealityCore.projectCapabilityHealth({
+      capabilityId: CAPABILITY_ID,
+      readiness,
+      provider: { providerId: PROVIDER_ID, failureReason },
+      dependencies,
+      failureReason,
+    }),
   };
 }
 
@@ -118,7 +146,12 @@ function runAdapter(python, args, options) {
 }
 
 async function recognize({ buffer, mimeType, inputHash, classification, placement }) {
-  if (classification !== 'CONFIDENTIAL' || placement !== 'LOCAL_ONLY') {
+  const policyResult = RealityCore.evaluateDataPolicy(DATA_POLICY, {
+    actualPlacement: placement,
+    externalUpload: false,
+    externalAI: false,
+  });
+  if (classification !== 'CONFIDENTIAL' || policyResult.status === 'BLOCKED') {
     throw serviceError('RapidOCR 产品路径要求 CONFIDENTIAL + LOCAL_ONLY', 'PROVIDER_BLOCKED_BY_POLICY', 403);
   }
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) throw serviceError('OCR 输入为空', 'INPUT_IDENTITY_BLOCKED', 400);
@@ -141,6 +174,32 @@ async function recognize({ buffer, mimeType, inputHash, classification, placemen
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     if (payload.inputHash !== computedHash) throw serviceError('Adapter 输入身份回读不一致', 'RESULT_VERIFICATION_FAILED', 502);
+    const executionProvenance = RealityCore.createExecutionProvenance({
+      executionId: payload.resultProvenanceHash || computedHash,
+      capabilityId: CAPABILITY_ID,
+      requestedProvider: PROVIDER_ID,
+      actualProvider: PROVIDER_ID,
+      providerVersion: payload.engineVersion,
+      runtimeIdentity: {
+        engine: payload.engine,
+        engineVersion: payload.engineVersion,
+        runtime: 'Python / ONNX Runtime',
+        runtimeVersion: payload.runtimeVersion,
+        executionProvider: payload.executionProvider,
+      },
+      executionPlacement: 'LOCAL_ONLY',
+      inputIdentity: { sha256: computedHash, mimeType },
+      outputIdentity: { sha256: payload.resultProvenanceHash || '' },
+      fallbackUsed: false,
+      startedAt: payload.startedAt || '',
+      finishedAt: payload.finishedAt || '',
+      status: payload.status,
+      runtimeMetadata: {
+        regionCount: payload.regionCount,
+        latencyMs: payload.latencyMs,
+        externalUpload: false,
+      },
+    });
     return {
       ...payload,
       inputHash: computedHash,
@@ -149,6 +208,20 @@ async function recognize({ buffer, mimeType, inputHash, classification, placemen
       placement,
       executionStatus: 'SUCCESS',
       externalUpload: false,
+      dataPolicy: DATA_POLICY,
+      policyResult,
+      executionProvenance,
+      expectedActual: RealityCore.compareExpectedActual({
+        requestedProvider: PROVIDER_ID,
+        requestedPlacement: 'LOCAL_ONLY',
+        expectedRuntime: 'Python / ONNX Runtime',
+        fallbackExpected: false,
+      }, {
+        actualProvider: PROVIDER_ID,
+        actualPlacement: 'LOCAL_ONLY',
+        actualRuntime: 'Python / ONNX Runtime',
+        fallbackUsed: false,
+      }),
     };
   } finally {
     await fsp.rm(tempDir, { recursive: true, force: true });

@@ -30,6 +30,11 @@ assert.equal(result.provider, 'rapidocr-local');
 assert.equal(result.executionProvider, 'CPUExecutionProvider');
 assert.equal(result.regionCount, 87);
 assert.equal(result.externalUpload, false);
+assert.equal(result.policyResult.status, 'READY');
+assert.equal(result.executionProvenance.capabilityId, 'document.ocr');
+assert.equal(result.executionProvenance.actualProvider, 'rapidocr-local');
+assert.equal(result.executionProvenance.executionPlacement, 'LOCAL_ONLY');
+assert.equal(result.expectedActual.status, 'MATCH');
 assert.ok(Object.values(anchorEvidence).every(Boolean));
 
 console.log(JSON.stringify({

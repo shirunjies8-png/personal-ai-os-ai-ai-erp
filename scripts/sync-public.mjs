@@ -11,6 +11,7 @@ const entries = [
   'runtime-init.js',
   'skills.js',
   'ocr-timeout-contract.js',
+  'realityos-core.js',
   'rfq-store.js',
   'rfq-validation.js',
   'rfq-risk.js',
