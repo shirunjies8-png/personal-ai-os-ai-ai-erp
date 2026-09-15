@@ -4,16 +4,17 @@
 
 # 当前状态
 
-- 基线：`main` @ `fcb7c91f6deaf738d043f358072c9bc2c747720b`；Verified OCR Commit 已创建，尚未 Push 或 Deploy。
+- 基线：`main` @ `ea6cd9e63e89c397a62763c18befd3260b848099`；RealityOS Core v1 Verified Commit 已创建，尚未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
 - 最新 staged snapshot 已重新通过同一保密输入的 `npm run test:ocr:rapid` 与 `npm run verify -- --rapidocr-product-proof`；结果仍保持 `LOCAL_ONLY`、外部上传 `0`、staged patch SHA-256 未变化。真实用户 OCR 乱码问题仍未关闭。
 - RapidOCR Local / On-Prem Deployment Design complete；Deployment Acceptance Contract complete；Implementation not started；Push/Deploy not performed。
-- RealityOS Core Consolidation v1 已在本地实现：新增通用 Core 合约，并将 OCR/RapidOCR 迁移到 Capability Registry、Dependency Contract、Readiness、Preflight、Provider Router、Data Policy、Execution Provenance、Expected/Actual 与 Capability Health；Commit/Push/Deploy 均未执行。
+- RealityOS Core Consolidation v1 已完成并创建 Verified Commit：`ea6cd9e63e89c397a62763c18befd3260b848099`；新增通用 Core 合约，并将 OCR/RapidOCR 迁移到 Capability Registry、Dependency Contract、Readiness、Preflight、Provider Router、Data Policy、Execution Provenance、Expected/Actual 与 Capability Health；Push/Deploy 均未执行。
 - Core v1 clean-room 验证已通过：`npm run check`、`npm run test:unit`、`npm run build`、`node scripts/realityos-core-test.mjs`、`node scripts/ocr-provider-test.mjs`、`npm run test:ocr:rapid` 均在只 overlay Core v1 changeset 的 `/tmp` snapshot 中通过。
 - 最新 Browser Core product proof 已通过：浏览器加载 `realityos-core.js`，OCR UI 通过 RapidOCR 本地 API 进入 `rapidocr-local`，`/readiness` 与 `/recognize` 返回 200，input SHA-256 匹配，87 regions，关键锚点命中，`partial_success` 被保留，cleanup 释放 3212/9323；Commit/Push/Deploy 均未执行。
+- Effect Governance Contract v1 已在本地实现并通过 deterministic contract tests：Resource + Verb + Target + Purpose + Effect Class、Effect Authority、Expected Effect ↔ Actual Effect、Canonical Effect、Alternate Path Authority、Capability Semantic Divergence 与 fail-closed 均已验证；生产 Effect Reality Closure 尚未验证，Commit/Push/Deploy 均未执行。
 
 # 关键决策
 
@@ -25,7 +26,8 @@
 
 # 待办
 
-- NOW：人工审核 RealityOS Core v1 staged patch 和 `REALITYOS_CORE_V1_PATCH_SHA256`；确认 Generic Core 只包含已验证范围且无历史污染后创建独立 Core v1 commit；Push=NO，Deploy=NO。
+- NOW：精确隔离并审核 Effect Governance Contract v1 changeset；确认仅包含 Effect Contract/Core 集成/测试/文档/project.md 相关修改且无历史污染后，创建独立 Effect Governance v1 commit；Push=NO，Deploy=NO。
+- RESERVED：Effect Reality Closure Demo、Resume Authority、Human Control、Independent Evidence、Improvement Governance、Model Supply Chain、Writing Capability Pack。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
 
 # 风险
@@ -36,7 +38,8 @@
 - 当前 OCR 证明是本地受控运行结果，不构成生产部署、长期运维或真实用户乱码修复的证据。
 - public GitHub Pages 仍不包含本地 Python RapidOCR runtime，无法独立代表完整产品 OCR 运行环境。
 - Browser proof 在非提升沙箱下曾因 server 后台生命周期受限而阻塞；提升权限确认同一 server `/api/health` 正常 200。最新 clean-room Browser proof 已通过，但 Chrome 仍输出 macOS display / Crashpad 环境警告，需继续记录为环境噪声而非产品失败。
+- Effect Governance v1 当前为 `CONTRACT_ONLY` 验证级别，不代表真实外部 mutation 或生产 Effect Closure 已完成。
 
 # 下一步
 
-人工审核 RealityOS Core v1 staged patch 和 `REALITYOS_CORE_V1_PATCH_SHA256`；确认 Generic Core 只包含已验证范围且无历史污染后创建独立 Core v1 commit；Push=NO，Deploy=NO。
+精确隔离并审核 Effect Governance Contract v1 changeset；确认仅包含 Effect Contract/Core 集成/测试/文档/project.md 相关修改且无历史污染后，创建独立 Effect Governance v1 commit；Push=NO，Deploy=NO。

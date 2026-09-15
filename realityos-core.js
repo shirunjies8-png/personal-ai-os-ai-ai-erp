@@ -7,6 +7,10 @@
   const DEPENDENCY_TYPES = Object.freeze(['runtime', 'package', 'credential', 'service', 'network', 'filesystem', 'device', 'model']);
   const CLASSIFICATIONS = Object.freeze(['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'SENSITIVE', 'UNKNOWN']);
   const PLACEMENTS = Object.freeze(['LOCAL_ONLY', 'ON_PREMISE', 'CONTROLLED_SERVER', 'EXTERNAL', 'UNKNOWN']);
+  const EFFECT_CLASSES = Object.freeze(['OBSERVATION', 'LOCAL_TRANSFORM', 'PERSISTENT_LOCAL_MUTATION', 'PERSISTENT_EXTERNAL_MUTATION', 'COMMUNICATION', 'CODE_EXECUTION', 'FINANCIAL_EFFECT', 'PHYSICAL_EFFECT', 'UNKNOWN']);
+  const EFFECT_VERBS = Object.freeze(['READ', 'CREATE', 'UPDATE', 'DELETE', 'SEND', 'UPLOAD', 'EXECUTE', 'MOVE', 'APPROVE', 'POST', 'UNKNOWN']);
+  const AUTHORITY_DECISIONS = Object.freeze(['ALLOW', 'DENY', 'REQUIRE_APPROVAL', 'UNKNOWN']);
+  const EFFECT_COMPARISON_STATUSES = Object.freeze(['MATCH', 'DIVERGED', 'UNKNOWN']);
 
   const now = () => new Date().toISOString();
   const asUpper = (value, fallback = 'UNKNOWN') => String(value || fallback).trim().toUpperCase();
@@ -14,6 +18,7 @@
   const known = (set, value, fallback) => set.includes(value) ? value : fallback;
   const readyLike = value => asUpper(value) === 'READY';
   const blockedLike = value => ['BLOCKED', 'UNAVAILABLE'].includes(asUpper(value));
+  const isHighRiskEffectClass = value => ['PERSISTENT_EXTERNAL_MUTATION', 'COMMUNICATION', 'CODE_EXECUTION', 'FINANCIAL_EFFECT', 'PHYSICAL_EFFECT'].includes(asUpper(value));
   const normalizePlacement = (value, fallback = 'UNKNOWN') => {
     const placement = asUpper(value, fallback);
     return known(PLACEMENTS, placement === 'LOCAL' ? 'LOCAL_ONLY' : placement, fallback);
@@ -291,11 +296,165 @@
     };
   }
 
+  function normalizeEffectClass(value, fallback = 'UNKNOWN') {
+    return known(EFFECT_CLASSES, asUpper(value, fallback), fallback);
+  }
+
+  function normalizeVerb(value, fallback = 'UNKNOWN') {
+    return known(EFFECT_VERBS, asUpper(value, fallback), fallback);
+  }
+
+  function createEffectRequest(input = {}) {
+    const resource = String(input.resource || '');
+    const verb = normalizeVerb(input.verb);
+    const target = String(input.target || '');
+    const purpose = String(input.purpose || '');
+    const effectClass = normalizeEffectClass(input.effectClass);
+    const canonicalEffect = String(input.canonicalEffect || [resource, verb, purpose].filter(Boolean).join(':') || 'UNKNOWN_EFFECT');
+    return {
+      effectId: String(input.effectId || `${canonicalEffect}:${target || 'scope'}`),
+      resource,
+      verb,
+      target,
+      purpose,
+      effectClass,
+      canonicalEffect,
+      persistence: String(input.persistence || (effectClass.startsWith('PERSISTENT_') ? 'PERSISTENT' : 'NON_PERSISTENT')),
+      reversibility: String(input.reversibility || 'UNKNOWN'),
+      externalMutation: Boolean(input.externalMutation || ['PERSISTENT_EXTERNAL_MUTATION', 'COMMUNICATION', 'FINANCIAL_EFFECT', 'PHYSICAL_EFFECT'].includes(effectClass)),
+      requiresAuthority: input.requiresAuthority !== false,
+      metadata: input.metadata || {},
+    };
+  }
+
+  function createExpectedEffect(input = {}) {
+    const request = createEffectRequest(input);
+    return {
+      resource: request.resource,
+      verb: request.verb,
+      target: request.target,
+      purpose: request.purpose,
+      effectClass: request.effectClass,
+      canonicalEffect: request.canonicalEffect,
+      evidenceRefs: asArray(input.evidenceRefs),
+    };
+  }
+
+  function createActualEffect(input = {}) {
+    return {
+      observedResource: String(input.observedResource || input.resource || ''),
+      observedVerb: normalizeVerb(input.observedVerb || input.verb),
+      observedTarget: String(input.observedTarget || input.target || ''),
+      observedEffectClass: normalizeEffectClass(input.observedEffectClass || input.effectClass),
+      canonicalEffect: String(input.canonicalEffect || ''),
+      evidence: input.evidence || null,
+      evidenceRefs: asArray(input.evidenceRefs),
+    };
+  }
+
+  function compareExpectedActualEffect(expectedInput = {}, actualInput = {}) {
+    const expected = createExpectedEffect(expectedInput);
+    const actual = createActualEffect(actualInput);
+    const checks = [
+      ['resource', expected.resource, actual.observedResource],
+      ['verb', expected.verb, actual.observedVerb],
+      ['target', expected.target, actual.observedTarget],
+      ['effectClass', expected.effectClass, actual.observedEffectClass],
+      ['canonicalEffect', expected.canonicalEffect, actual.canonicalEffect],
+    ].map(([field, expectedValue, actualValue]) => ({
+      field,
+      expected: expectedValue,
+      actual: actualValue,
+      match: expectedValue === undefined || expectedValue === '' || expectedValue === actualValue,
+    }));
+    if (checks.some(item => !item.actual || item.actual === 'UNKNOWN')) return { status: 'UNKNOWN', expected, actual, checks };
+    return { status: checks.every(item => item.match) ? 'MATCH' : 'DIVERGED', expected, actual, checks };
+  }
+
+  function matchesAuthorityRule(rule = {}, effect = {}) {
+    return ['canonicalEffect', 'resource', 'verb', 'target', 'purpose', 'effectClass'].every(field => {
+      const ruleValue = rule[field];
+      return ruleValue == null || ruleValue === '*' || String(ruleValue) === String(effect[field]);
+    });
+  }
+
+  function evaluateEffectAuthority(input = {}) {
+    const effectRequest = createEffectRequest(input.effectRequest || input);
+    const context = input.authorityContext || input.context || {};
+    const rules = asArray(context.rules || input.rules);
+    const matchedRule = rules.find(rule => matchesAuthorityRule(rule, effectRequest));
+    const decision = matchedRule?.decision || (effectRequest.requiresAuthority === false ? 'ALLOW' : isHighRiskEffectClass(effectRequest.effectClass) ? 'REQUIRE_APPROVAL' : 'UNKNOWN');
+    const normalizedDecision = known(AUTHORITY_DECISIONS, asUpper(decision), 'UNKNOWN');
+    return {
+      decision: normalizedDecision,
+      reason: String(matchedRule?.reason || (matchedRule ? 'MATCHED_AUTHORITY_RULE' : normalizedDecision === 'REQUIRE_APPROVAL' ? 'HIGH_RISK_EFFECT_AUTHORITY_UNKNOWN' : normalizedDecision === 'ALLOW' ? 'AUTHORITY_NOT_REQUIRED' : 'NO_MATCHING_AUTHORITY_RULE')),
+      policy: String(matchedRule?.policy || context.policy || ''),
+      ruleRef: String(matchedRule?.ruleRef || matchedRule?.id || ''),
+      evaluatedAt: input.evaluatedAt || now(),
+      principal: context.principal || input.principal || null,
+      representedPrincipal: context.representedPrincipal || input.representedPrincipal || null,
+      evidence: input.evidence || matchedRule?.evidence || null,
+      effectRequest,
+    };
+  }
+
+  function detectCapabilitySemanticDivergence(input = {}) {
+    const expectedEffect = createExpectedEffect(input.expectedEffect || {});
+    const actualEffect = createActualEffect(input.actualEffect || {});
+    const comparison = compareExpectedActualEffect(expectedEffect, actualEffect);
+    const divergences = [];
+    if (comparison.status === 'DIVERGED') divergences.push('CAPABILITY_SEMANTIC_DIVERGENCE');
+    if (expectedEffect.effectClass === 'OBSERVATION' && isHighRiskEffectClass(actualEffect.observedEffectClass)) divergences.push('EFFECT_AUTHORITY_DIVERGENCE');
+    return {
+      status: divergences.length ? 'DIVERGED' : comparison.status,
+      divergenceTypes: divergences,
+      comparison,
+    };
+  }
+
+  function validateEffect(input = {}) {
+    const effectRequest = createEffectRequest(input.effectRequest || input);
+    const authorityDecision = evaluateEffectAuthority({
+      effectRequest,
+      authorityContext: input.authorityContext || {},
+      evidence: input.authorityEvidence || null,
+    });
+    const expectedEffect = createExpectedEffect(input.expectedEffect || effectRequest);
+    const actualEffect = input.actualEffect ? createActualEffect(input.actualEffect) : null;
+    const comparison = actualEffect ? compareExpectedActualEffect(expectedEffect, actualEffect) : { status: 'UNKNOWN', expected: expectedEffect, actual: null, checks: [] };
+    const classification = {
+      effectClass: effectRequest.effectClass,
+      highRisk: isHighRiskEffectClass(effectRequest.effectClass),
+      externalMutation: effectRequest.externalMutation,
+    };
+    const blockingReasons = [];
+    if (authorityDecision.decision === 'DENY') blockingReasons.push('EFFECT_AUTHORITY_DENIED');
+    if (authorityDecision.decision === 'REQUIRE_APPROVAL') blockingReasons.push('EFFECT_REQUIRES_APPROVAL');
+    if (authorityDecision.decision === 'UNKNOWN' && classification.highRisk) blockingReasons.push('HIGH_RISK_EFFECT_AUTHORITY_UNKNOWN');
+    if (comparison.status === 'DIVERGED') blockingReasons.push('EXPECTED_ACTUAL_EFFECT_DIVERGED');
+    return {
+      status: blockingReasons.length ? 'BLOCKED' : authorityDecision.decision === 'ALLOW' ? 'ALLOWED' : 'UNKNOWN',
+      effectRequest,
+      effectClassification: classification,
+      authorityDecision,
+      expectedEffect,
+      actualEffect,
+      comparison,
+      evidenceRefs: asArray(input.evidenceRefs),
+      policyVersion: String(input.policyVersion || ''),
+      blockingReasons,
+    };
+  }
+
   return {
     READINESS_STATES,
     DEPENDENCY_TYPES,
     CLASSIFICATIONS,
     PLACEMENTS,
+    EFFECT_CLASSES,
+    EFFECT_VERBS,
+    AUTHORITY_DECISIONS,
+    EFFECT_COMPARISON_STATUSES,
     normalizePlacement,
     normalizeReadiness,
     createDependency,
@@ -311,5 +470,14 @@
     createExecutionProvenance,
     compareExpectedActual,
     projectCapabilityHealth,
+    normalizeEffectClass,
+    normalizeVerb,
+    createEffectRequest,
+    createExpectedEffect,
+    createActualEffect,
+    compareExpectedActualEffect,
+    evaluateEffectAuthority,
+    detectCapabilitySemanticDivergence,
+    validateEffect,
   };
 });
