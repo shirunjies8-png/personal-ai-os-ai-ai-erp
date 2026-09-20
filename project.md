@@ -4,11 +4,11 @@
 
 # 当前状态
 
-- 基线：`main` @ `e31e3a3e8cb18eec4e41047ce4b8c1ccbfb3f086`；W0→W1 项目状态转换已创建独立 Commit，尚未 Push 或 Deploy。
+- 基线：`main` @ `93f160176585c86bff15a77402729cee4dc5001b`；W1 Kernel 已创建独立本地 Commit，尚未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - FRAMEWORK_FIRST 已冻结；当前开发顺序为 W0 Architecture Governance → W1 Kernel Completion → W2 Platform Completion → W3 Evolution + Domain → Framework Freeze → Product Capability Validation Program。
 - RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
-- W1 Universal Kernel 候选为 `REFERENCE_ONLY / FINAL_COMMIT_APPROVAL_PENDING`：六项 corrective fixes 已完成，原有 12 项及新增六组反例、授权撤销/绑定变更回归通过；W0/Core/Effect/Trusted Execution/Audit Recovery、check/unit/build/diff 检查通过。尚未提交、未持久化集成、未接入产品路径，不代表生产 Kernel 完成。
+- W1 Reference Kernel = COMPLETE；corrective safety gates = COMPLETE；已提交 `93f160176585c86bff15a77402729cee4dc5001b`，原有 12 项及新增六组反例、授权撤销/绑定变更回归通过；提交前再次通过 W0/W1、check/unit 与 staged diff 检查。Production Integration = NOT COMPLETE；仍为 REFERENCE_ONLY，未持久化集成、未接入产品路径，W2 = NOT_STARTED。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -34,8 +34,8 @@
 
 # 待办
 
-- NOW：W1 corrective fixes completed; final commit approval pending。四文件候选未暂存、未提交；下一轮按 HEAD + 四文件 SHA-256 审核独立 Commit Gate；Push=NO、Deploy=NO、W2 未开始。
-- RESERVED：W1 Kernel Completion、W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
+- NOW：W1 独立提交完成；执行 W1 Exit Review / W2 Entry Gate。此提交后状态更新保持 UNSTAGED，不 amend 或再次提交；Push=NO、Deploy=NO、W2 未开始。
+- RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
 
@@ -55,4 +55,4 @@
 
 # 下一步
 
-W1 Final Commit Review：核对 HEAD 与四文件 SHA-256，精确审核 corrective changeset，取得批准后创建独立 W1 Kernel commit；随后才进入 W1 Exit Review / W2 Entry Gate。UI 行数不是 Git gate。
+W1 Exit Review / W2 Entry Gate：以 `93f160176585c86bff15a77402729cee4dc5001b` 核对 W1 reference 完成项和持久化、身份集成、Delegation、Human Control 等剩余缺口，定义 W2 准入清单；未批准前不开始 W2 实现。
