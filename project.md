@@ -4,13 +4,13 @@
 
 # 当前状态
 
-- 基线：`main` @ `b81e052051aa608b60181b19ef5311a8647d5491`；W2.0 Contract & Compatibility Baseline 已提交；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
+- 基线：`main` @ `8bc8b8ce81faf803386e3d096a8ab3f27b59302a`；W2.0 pure contract runtime 已提交；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - FRAMEWORK_FIRST 已冻结；当前开发顺序为 W0 Architecture Governance → W1 Kernel Completion → W2 Platform Completion → W3 Evolution + Domain → Framework Freeze → Product Capability Validation Program。
 - RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
 - W1 Reference Kernel = COMPLETE；corrective safety gates = COMPLETE；已提交 `93f160176585c86bff15a77402729cee4dc5001b`，原有 12 项及新增六组反例、授权撤销/绑定变更回归通过；提交前再次通过 W0/W1、check/unit 与 staged diff 检查。Production Integration = NOT COMPLETE；仍为 REFERENCE_ONLY，未持久化集成、未接入产品路径，W2 Implementation = NOT_STARTED。
 - W1 Exit Review = PASS（REFERENCE_KERNEL_VERIFIED）；W2 规划准入 = PASS / READY。`docs/architecture/realityos-w2-entry-plan.md` 已作为独立架构基线提交；W0/W1 validator 与 diff 检查通过；真实 Effect 接入门禁尚未满足。
-- W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS；Commit `b81e052051aa608b60181b19ef5311a8647d5491`。首个纯合约切片已开始为未暂存候选：仅包含 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约；当前持久化、数据库、产品接入、真实 Effect 恢复均未开始。
+- W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS；Commit `b81e052051aa608b60181b19ef5311a8647d5491`。首个纯合约切片已提交：Commit `8bc8b8ce81faf803386e3d096a8ab3f27b59302a`；范围仅为 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约。Persistence = NOT_STARTED / NOT_COMPLETE；Product Migration = NOT_STARTED；TypeSafe/Jev = RESERVED / NOT_INTEGRATED。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -38,8 +38,8 @@
 
 # 待办
 
-- NOW：完成 W2.0 首个纯合约切片的 Final Review 候选验证；保持实现候选未暂存、不提交。
-- NEXT：对 W2.0 纯合约切片进行独立 Final Review，确认 exact changeset SHA-256、W0/W1/W2 回归、check/unit/build/diff 结果后再决定是否批准提交。
+- NOW：W2.0 pure contract runtime 已完成本地提交；保持 Push/Deploy = NO，并保留当前 post-commit project.md 更新为未暂存状态。
+- NEXT：执行 TypeSafe/Jev Integration Audit 或 W2.1 Execution Durability planning（二选一需单独授权）；不得自动启动产品迁移或持久化实现。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -62,4 +62,4 @@
 
 # 下一步
 
-完成 W2.0 纯合约切片候选的验证报告，输出候选 SHA-256、精确文件清单与门禁结果，等待 Final Review；不得实现持久化、数据库迁移或产品接入。
+等待明确授权后执行 TypeSafe/Jev Integration Audit 或 W2.1 Execution Durability planning；不得自动启动产品迁移、持久化实现、Push 或 Deploy。
