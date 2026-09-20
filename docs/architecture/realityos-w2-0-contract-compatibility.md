@@ -1,10 +1,10 @@
 # RealityOS W2.0 Contract & Compatibility Review
 
-Status: **CONTRACT BASELINE — runtime implementation not started**. The first pure-contract slice is conditionally approved only after this architecture baseline is committed.
+Status: **CONTRACT BASELINE + PURE CONTRACT SLICE CANDIDATE**. The architecture baseline has been committed. The current changeset starts the approved pure-contract slice only; durable storage, product migration and real effect replay remain not implemented.
 
 Authority: root `project.md` → W0 Governance / 21 Module Registry → W1 Kernel semantics → committed W2 Entry Plan. W2 remains **Platform Completion**; durability/integration is its priority, not a replacement for Organization, Knowledge/Context, Model, Workflow, Human Control or Audit. This document adds no owner, runtime, product capability, database schema or deployed service.
 
-Baseline: W1 `93f160176585c86bff15a77402729cee4dc5001b`; W2 Entry Architecture `21a75835989c08044b6447a6e7b5de5dfec9f6ee` (parent `aeca08d9842d5b8de895eb243a159ebcbd51ccd4`). All interfaces/fields below explicitly identified as proposed are **not implemented at this baseline**. The W2 Entry Architecture is committed; this document is the separate W2.0 Contract & Compatibility Baseline candidate.
+Baseline: W1 `93f160176585c86bff15a77402729cee4dc5001b`; W2 Entry Architecture `21a75835989c08044b6447a6e7b5de5dfec9f6ee` (parent `aeca08d9842d5b8de895eb243a159ebcbd51ccd4`); W2.0 Contract Baseline `b81e052051aa608b60181b19ef5311a8647d5491`. Interfaces/fields below are implemented only where explicitly mapped in section 16. The current implementation candidate is contract-only and does not create a persistent runtime.
 
 ## 1. W2_0_REALITY_AUDIT
 
@@ -247,4 +247,42 @@ Approved exact changeset; pure modules contain no effects/storage/provider calls
 
 W2.1 must separately choose storage transaction/CAS and multi-store reconciliation mechanism, evidence integrity/retention policy, authority/lease revocation source, context freshness rules, operation-key retention, and canonical owner-backed ID resolvers. Existing runtime/recovery tables are candidates, not proof they can hold the full envelope without changes. No SQL schema proposal is executed or approved here.
 
-Architecture/contract review complete; `W2_IMPLEMENTATION_STARTED = NO` at this baseline, Product Migration/Validation = NO, Source-of-Truth drift = NONE, new parallel architecture = NONE. NEXT: commit only this contract baseline and `project.md`, then execute the conditionally approved pure slice in §14. Implementation changes require a separate Final Review and must remain unstaged/uncommitted. Push and Deploy = NO.
+Architecture/contract review complete; the W2.0 pure contract slice is implemented as an unstaged candidate in `services/realityosKernelDurabilityContract.js` and `scripts/realityos-w2-contract-test.mjs`. Product Migration/Validation = NO, Source-of-Truth drift = NONE, new parallel architecture = NONE. Implementation changes require a separate Final Review and must remain unstaged/uncommitted. Push and Deploy = NO.
+
+## 16. W2_0_CONTRACT_RUNTIME_SLICE_CANDIDATE
+
+Implementation status: **CONTRACT_RUNTIME_SLICE_VERIFIED when tests pass**. This section records the current candidate only; it is not a durable store, product adapter, schema migration or real crash-recovery proof.
+
+| Contract concept | Candidate implementation | Boundary |
+|---|---|---|
+| Canonical envelope compatibility | `services/realityosKernelDurabilityContract.js:validateEnvelope`, `extendCanonicalEnvelope` | Extends the existing W1 envelope with `durability`; no second factory and no mutation of the input envelope |
+| Schema/version contract | `SCHEMA_VERSION = 1`; invalid, missing or unknown durability fields fail closed | Unversioned W1 envelope remains reference data and cannot be durable-resumed |
+| Stable identifiers | Durability refs for run, attempt, transition, effect operation, idempotency, evidence, recovery and human control | Shape and binding contract only; IDs are caller-supplied, not minted or persisted |
+| Durable field classification | `classifyDurableField` returns `MUST_PERSIST`, `MAY_RECONSTRUCT`, `EPHEMERAL_ONLY` or `UNKNOWN` | Classification does not prove storage durability |
+| Resume admission | `decideResume` emits ordered decisions with `executionAllowed: false` for every branch | It is an admission recommendation; it never dispatches effects |
+| UNKNOWN / effect uncertainty | `UNKNOWN` and untrusted dispatch markers route to `READBACK_FIRST` | Unknown never converts to success, failure or retry |
+| Reauthorization | Write admission requires current authorization, lease, scope and binding freshness | Historical authority evidence cannot authorize resumed execution |
+| Idempotency boundary | `compareOperationIdentity` detects same operation and same-key/different-intent conflicts | Duplicate identity does not verify a real effect |
+| Adapter interfaces | `validateAdapter` checks Evidence, Recovery, Human and Durable Store shapes | Shape-only; `durabilityVerified` is always false |
+| Evidence/Human contracts | `validateEvidenceReceipt`, `validateHumanDecision` require owner/scope/audit fields | No UI, persistence, crypto verification or authenticated human workflow implemented |
+
+Candidate test evidence: `scripts/realityos-w2-contract-test.mjs` covers reference-vs-durable envelopes, version and unknown-field failures, safety-critical durable classification, readback-first for UNKNOWN, verify-first, fresh reauthorization, retry boundaries, human gates, idempotency conflicts, adapter shapes, Evidence owner scope, bounded Human decisions and the nine crash/resume boundaries as pure decision vectors. W0/W1 regressions remain required for final review.
+
+### Final review classification
+
+| Invariant | Current classification | Evidence boundary |
+|---|---|---|
+| DURABILITY_DOES_NOT_CHANGE_W1_SEMANTICS | RUNTIME/PURE_CONTRACT_VERIFIED | W0/W1 regressions remain green; W2 module does not import into W1 runtime |
+| ONE_CANONICAL_KERNEL_ENVELOPE | RUNTIME/PURE_CONTRACT_VERIFIED | `extendCanonicalEnvelope` clones and extends the W1 envelope; no second production factory |
+| STATE_VERSION_IS_EXPLICIT | RUNTIME/PURE_CONTRACT_VERIFIED | schema version 1 is required; unsupported version fails closed |
+| EFFECT_UNKNOWN_NEVER_BLIND_RETRIES | RUNTIME/PURE_CONTRACT_VERIFIED | UNKNOWN and untrusted dispatch route to `READBACK_FIRST`, never execution |
+| RESUME_WRITE_REQUIRES_REAUTHORIZATION | RUNTIME/PURE_CONTRACT_VERIFIED | current identity, authority, lease, binding and preflight freshness are required for write admission |
+| HISTORICAL_AUTHORITY_DECISION_IS_IMMUTABLE_EVIDENCE | RUNTIME/PURE_CONTRACT_VERIFIED | old authority/preflight never grants resumed write; final boundary recheck remains required |
+| EVIDENCE_OWNER_REMAINS_EVIDENCE_RUNTIME | RUNTIME/PURE_CONTRACT_VERIFIED + STATIC_GOVERNANCE_VERIFIED | Evidence receipt owner must be `13-evidence-runtime`; registry owner remains unchanged |
+| RECOVERY_STATE_IS_DURABLE | NOT_YET_VERIFIED | recovery refs and adapter shape are defined, but no durable store or restart proof exists |
+| IDEMPOTENCY_DOES_NOT_REPLACE_READBACK | RUNTIME/PURE_CONTRACT_VERIFIED | same operation identity never verifies effect; UNKNOWN still requires readback |
+| HUMAN_DECISION_IS_AUDITABLE | RUNTIME/PURE_CONTRACT_VERIFIED | human decision shape requires actor, scope, rationale, expiry and evidence ref; no UI/persistence implemented |
+| LEGACY_PATH_CANNOT_CLAIM_KERNEL_GOVERNANCE | STATIC_GOVERNANCE_VERIFIED | document/provenance boundary only; no product migration started |
+| MIGRATED_PATH_CANNOT_BYPASS_KERNEL_GATE | NOT_YET_VERIFIED | requires future product migration and negative integration tests |
+
+Pure contract verification is not persistence verification. Crash survival, CAS, evidence durability, recovery durability, product migration and production kernel readiness remain future W2.1+ gates.
