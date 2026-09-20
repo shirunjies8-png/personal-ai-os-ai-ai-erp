@@ -10,7 +10,7 @@
 - RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
 - W1 Reference Kernel = COMPLETE；corrective safety gates = COMPLETE；已提交 `93f160176585c86bff15a77402729cee4dc5001b`，原有 12 项及新增六组反例、授权撤销/绑定变更回归通过；提交前再次通过 W0/W1、check/unit 与 staged diff 检查。Production Integration = NOT COMPLETE；仍为 REFERENCE_ONLY，未持久化集成、未接入产品路径，W2 Implementation = NOT_STARTED。
 - W1 Exit Review = PASS（REFERENCE_KERNEL_VERIFIED）；W2 规划准入 = PASS / READY。`docs/architecture/realityos-w2-entry-plan.md` 已作为独立架构基线提交；W0/W1 validator 与 diff 检查通过；真实 Effect 接入门禁尚未满足。
-- W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS；Commit `b81e052051aa608b60181b19ef5311a8647d5491`。首个纯合约切片已提交：Commit `8bc8b8ce81faf803386e3d096a8ab3f27b59302a`；范围仅为 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约。Persistence = NOT_STARTED / NOT_COMPLETE；Product Migration = NOT_STARTED；TypeSafe/Jev = RESERVED / NOT_INTEGRATED。
+- W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS；Commit `b81e052051aa608b60181b19ef5311a8647d5491`。首个纯合约切片已提交：Commit `8bc8b8ce81faf803386e3d096a8ab3f27b59302a`；范围仅为 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约。W2.1 execution durability candidate 已完成本地实现验证，final review pending；Product Migration = NOT_STARTED；TypeSafe/Jev = RESERVED / NOT_INTEGRATED。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -38,8 +38,8 @@
 
 # 待办
 
-- NOW：W2.0 pure contract runtime 已完成本地提交；保持 Push/Deploy = NO，并保留当前 post-commit project.md 更新为未暂存状态。
-- NEXT：执行 TypeSafe/Jev Integration Audit 或 W2.1 Execution Durability planning（二选一需单独授权）；不得自动启动产品迁移或持久化实现。
+- NOW：W2.1 execution durability candidate 已验证；保持 Commit/Push/Deploy = NO，等待 W2.1 Final Implementation Review。
+- NEXT：执行 W2.1 Final Implementation Review，逐文件审核 `services/realityosKernelDurableStore.js`、`scripts/realityos-w2-1-durability-test.mjs` 与 `project.md`；不得自动启动产品迁移、W2.2、Push 或 Deploy。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -50,7 +50,7 @@
 - W1 六项已确认缺口已有自动反例回归保护；当前 adapter 是可信参考边界，不能将 shape/binding 检查解释为生产身份认证、持久化证明或对抗恶意 adapter 的隔离。
 - W1 reference Evidence Runtime 为内存实现；持久化 Evidence、Runtime Run/Attempt 和 Audit Recovery Worker 的统一 adapter 接入尚未完成。
 - W2 真实 Effect hard gates 未满足：持久化 envelope/evidence/recovery、幂等与 crash reconciliation、生产身份绑定、Authority Lease 撤销及 Resume Re-authorization、Human Control 必须先验证。W2.0 已定义 Effect/Reality 协议初始化边界，但尚无运行时实现，不能靠注册表静态校验推断无运行时死锁。
-- W2.1 仍需另审存储原子性/CAS、跨存储证据交接、授权撤销来源及幂等键保留政策；现有 runtime/recovery 表不等于已具备 durable Kernel，当前 W2.0 纯合约切片不能关闭这些风险。
+- W2.1 候选已验证真实 SQLite round-trip、进程级重载、CAS 并发保护、write-before-effect 与 UNKNOWN 保留；仍需 Final Implementation Review 后才能提交，且尚未完成 W2.2 Evidence / Verification / Recovery durability。
 - Target/Current 混淆风险高；`TARGET_W1_KERNEL_LOOP` 不等于当前已实现闭环。
 - 概念重复风险仍存在；后续新增 GEO、Payment、Knowledge、WorkBuddy、Self-Improvement 等内容必须先映射到唯一 Owner。
 - RapidOCR runtime 已恢复，但依赖位于用户本机缓存；其他机器或生产环境仍需按 lock 重建同等私有 runtime。
@@ -62,4 +62,4 @@
 
 # 下一步
 
-等待明确授权后执行 TypeSafe/Jev Integration Audit 或 W2.1 Execution Durability planning；不得自动启动产品迁移、持久化实现、Push 或 Deploy。
+等待明确授权后执行 W2.1 Final Implementation Review；不得自动启动产品迁移、W2.2、Push 或 Deploy。
