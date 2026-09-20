@@ -4,10 +4,10 @@
 
 # 当前状态
 
-- 基线：`main` @ `51fe38706e81bc14bcddc0c65d2fe0fa070a5683`；Effect Governance Contract v1 Verified Commit 已创建，尚未 Push 或 Deploy。
+- 基线：`main` @ `67f88378cedd31d21db6942115cdd296a98f7836`；RealityOS Architecture Governance Baseline W0 已创建独立 Commit，尚未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - FRAMEWORK_FIRST 已冻结；当前开发顺序为 W0 Architecture Governance → W1 Kernel Completion → W2 Platform Completion → W3 Evolution + Domain → Framework Freeze → Product Capability Validation Program。
-- RealityOS Architecture Governance Baseline W0 已在本地建立：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit/Push/Deploy 均未执行。
+- RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -31,7 +31,7 @@
 
 # 待办
 
-- NOW：精确隔离并审核 RealityOS Architecture Governance Baseline W0 changeset；确认 21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Product Validation Backlog 与 project.md 无历史污染后，创建独立 W0 Governance commit；Push=NO，Deploy=NO。完成后进入 W1 Kernel Completion，不返回 OCR 等具体产品验证。
+- NOW：执行 W1 Kernel Completion 的第一个可验证任务：对 Identity、Work、Authority、Agent/Executor、Tool/Capability、Execution、Effect、Reality、Evidence、Verification、Recovery 的当前实现做证据映射，定义一个不依赖具体产品路径的最小 W1 Kernel 端到端合约与验收门禁；不进入 OCR/PDF/Excel/PPT 等产品验证。
 - RESERVED：W1 Kernel Completion、W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -51,4 +51,4 @@
 
 # 下一步
 
-精确隔离并审核 RealityOS Architecture Governance Baseline W0 changeset；确认 21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Product Validation Backlog 与 project.md 无历史污染后，创建独立 W0 Governance commit；Push=NO，Deploy=NO。完成后进入 W1 Kernel Completion，不返回 OCR 等具体产品验证。
+对 W1 Kernel 所有模块的真实实现与缺口做证据映射，然后定义并验证第一个通用最小闭环：Work → Identity → Authority → Executor → Capability → Preflight → Execution → Effect → Reality Readback → Evidence → Verification → Outcome / Recovery；不引入具体产品验证。
