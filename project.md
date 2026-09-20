@@ -4,12 +4,13 @@
 
 # 当前状态
 
-- 基线：`main` @ `aeca08d9842d5b8de895eb243a159ebcbd51ccd4`；仅新增 W1 完成状态 commit；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
+- 基线：`main` @ `21a75835989c08044b6447a6e7b5de5dfec9f6ee`；W2 Entry Architecture Baseline 已提交；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - FRAMEWORK_FIRST 已冻结；当前开发顺序为 W0 Architecture Governance → W1 Kernel Completion → W2 Platform Completion → W3 Evolution + Domain → Framework Freeze → Product Capability Validation Program。
 - RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
-- W1 Reference Kernel = COMPLETE；corrective safety gates = COMPLETE；已提交 `93f160176585c86bff15a77402729cee4dc5001b`，原有 12 项及新增六组反例、授权撤销/绑定变更回归通过；提交前再次通过 W0/W1、check/unit 与 staged diff 检查。Production Integration = NOT COMPLETE；仍为 REFERENCE_ONLY，未持久化集成、未接入产品路径，W2 = NOT_STARTED。
-- W1 Exit Review = PASS（REFERENCE_KERNEL_VERIFIED）；W2 规划准入 = PASS / READY，Implementation = NOT_STARTED。`docs/architecture/realityos-w2-entry-plan.md` 已形成 20 项缺口、hard gates、迁移分级、Crash/Resume 矩阵及退出标准，保持未暂存待审；真实 Effect 接入门禁尚未满足。
+- W1 Reference Kernel = COMPLETE；corrective safety gates = COMPLETE；已提交 `93f160176585c86bff15a77402729cee4dc5001b`，原有 12 项及新增六组反例、授权撤销/绑定变更回归通过；提交前再次通过 W0/W1、check/unit 与 staged diff 检查。Production Integration = NOT COMPLETE；仍为 REFERENCE_ONLY，未持久化集成、未接入产品路径，W2 Implementation = NOT_STARTED。
+- W1 Exit Review = PASS（REFERENCE_KERNEL_VERIFIED）；W2 规划准入 = PASS / READY。`docs/architecture/realityos-w2-entry-plan.md` 已作为独立架构基线提交；W0/W1 validator 与 diff 检查通过；真实 Effect 接入门禁尚未满足。
+- W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS。首个纯合约切片已获条件批准，但必须先提交此合约架构基线；当前 Implementation = NOT_STARTED。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -29,6 +30,7 @@
 - Evidence Runtime 是 Provenance / Lineage 的唯一 Source of Truth；Authority、Human Control、Execution、Reality、Evidence、Audit 必须分离。
 - W1 Kernel 只是跨 Owner 的编排与 enforcement point；不成为第二套 Identity、Authority、Execution、Effect、Evidence、Verification 或 Recovery Source of Truth。
 - W2 正式名称仍为 W0 的 Platform Completion；Integration & Durability 仅为优先主线，不遗漏 Organization、Knowledge/Context、Model、Workflow、Human Control、Audit。规划准入不等于真实 Effect 接入批准。
+- W2.0 只扩展既有 canonical Kernel envelope；持久化不得改变 W1 语义。历史授权仅作不可变 Evidence，恢复写操作必须重新授权；工作租约不代替 Authority Lease，UNKNOWN 不自动重放；合约测试不等于持久化 Reality Proof。
 - 执行失败只有在独立 Reality 读回证明 `NOT_OCCURRED`、显式 `retry_safe`、有效 Recovery Evidence、Recovery 决策为 `RETRY`、attempt budget 未耗尽且重新通过 Authority/Lease/Capability/Preflight 时才允许重试；执行前再次核验授权时效及绑定，未确认 Effect 不自动重放。
 - 任何提交必须从混合工作区中按清单精确隔离；不得全量暂存，也不得把 `anime-pocket-agent/` 纳入操作范围。
 - 产品 OCR 成功状态必须保留 engine raw、normalized、structured 与 UI readback 的可追溯证据；不以页面打开或 HTTP 200 替代终态验证。
@@ -36,7 +38,8 @@
 
 # 待办
 
-- NOW：审核 W2 Entry Plan，并批准首个 W2.0 合约/兼容性切片；本轮新文档和状态更新保持 UNSTAGED，无 W2 实现、无产品验证、无 Push/Deploy。
+- NOW：精确提交 W2.0 合约文档和项目状态两文件；其余历史改动不得混入。
+- NEXT：基线提交成功后执行已批准的 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约测试；不写数据库、不接产品、不执行 Effect，实现候选保持未暂存待 Final Review。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -46,7 +49,8 @@
 - 混合工作区使误暂存风险较高；任何 mixed file 均需逐 hunk 审核。
 - W1 六项已确认缺口已有自动反例回归保护；当前 adapter 是可信参考边界，不能将 shape/binding 检查解释为生产身份认证、持久化证明或对抗恶意 adapter 的隔离。
 - W1 reference Evidence Runtime 为内存实现；持久化 Evidence、Runtime Run/Attempt 和 Audit Recovery Worker 的统一 adapter 接入尚未完成。
-- W2 真实 Effect hard gates 未满足：持久化 envelope/evidence/recovery、幂等与 crash reconciliation、生产身份绑定、Authority Lease 撤销及 Resume Re-authorization、Human Control 必须先验证。现有 Recovery 工作租约不等于 Authority Lease；Effect/Reality 互相依赖需在 W2.0 明确协议初始化，不能靠注册表静态校验推断无运行时死锁。
+- W2 真实 Effect hard gates 未满足：持久化 envelope/evidence/recovery、幂等与 crash reconciliation、生产身份绑定、Authority Lease 撤销及 Resume Re-authorization、Human Control 必须先验证。W2.0 已定义 Effect/Reality 协议初始化边界，但尚无运行时实现，不能靠注册表静态校验推断无运行时死锁。
+- W2.1 仍需另审存储原子性/CAS、跨存储证据交接、授权撤销来源及幂等键保留政策；现有 runtime/recovery 表不等于已具备 durable Kernel，首个合约切片不能关闭这些风险。
 - Target/Current 混淆风险高；`TARGET_W1_KERNEL_LOOP` 不等于当前已实现闭环。
 - 概念重复风险仍存在；后续新增 GEO、Payment、Knowledge、WorkBuddy、Self-Improvement 等内容必须先映射到唯一 Owner。
 - RapidOCR runtime 已恢复，但依赖位于用户本机缓存；其他机器或生产环境仍需按 lock 重建同等私有 runtime。
@@ -58,4 +62,4 @@
 
 # 下一步
 
-审核 `docs/architecture/realityos-w2-entry-plan.md`；批准后执行 W2.0：逐字段映射 runtime_* / audit_recovery_* 与 Kernel envelope，定义版本化 adapter、崩溃/不确定性/幂等测试向量及增量迁移/回滚提案，不执行产品 dispatch 或 Schema 迁移。
+先完成 W2.0 Contract Baseline 独立提交，再按 `docs/architecture/realityos-w2-0-contract-compatibility.md` 第 14 节执行已批准的纯合约切片及回归检查；不得实现持久化或产品接入，实现完成后输出候选 SHA-256 等待 Final Review。
