@@ -4,7 +4,7 @@
 
 # 当前状态
 
-- 基线：`main` @ `211e009b410c15988a797765d837fb9879ba36a4`；W2.1 post-state 已记录；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
+- 基线：`main` @ `4ffc7585184fd788f5d6393c0f9332b815d35a67`；W2.2 Entry Review post-state 已记录；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - FRAMEWORK_FIRST 已冻结；当前开发顺序为 W0 Architecture Governance → W1 Kernel Completion → W2 Platform Completion → W3 Evolution + Domain → Framework Freeze → Product Capability Validation Program。
 - RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
@@ -12,6 +12,7 @@
 - W1 Exit Review = PASS（REFERENCE_KERNEL_VERIFIED）；W2 规划准入 = PASS / READY。`docs/architecture/realityos-w2-entry-plan.md` 已作为独立架构基线提交；W0/W1 validator 与 diff 检查通过；真实 Effect 接入门禁尚未满足。
 - W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS；Commit `b81e052051aa608b60181b19ef5311a8647d5491`。首个纯合约切片已提交：Commit `8bc8b8ce81faf803386e3d096a8ab3f27b59302a`；范围仅为 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约。W2.1 execution durability foundation 已提交：Commit `02424922f3bbfc6c42892b0fe36d981b1620cf05`；Evidence durability = NOT_COMPLETE；Recovery durability = NOT_COMPLETE；Product Migration = NOT_STARTED；TypeSafe/Jev = RESERVED / NOT_INTEGRATED。
 - W2.2 Evidence / Verification / Recovery Durability Entry Review 已完成：Evidence Runtime owner = `13-evidence-runtime`，Verification Runtime owner = `14-verification-runtime`，Recovery Runtime owner = `15-recovery-runtime`；现有 `runtime_*`、`audit_recovery_*`、`realityos_kernel_*` 为复用候选和局部实现，不等于统一 durability 闭环；首个 W2.2 slice 等待人工批准。
+- W2.2.1 owner-backed Evidence / Verification / Recovery durable linkage candidate 已实现并通过验证；新增 owner-scoped linkage service 与独立 SQLite/process-restart 测试；Final Implementation Review = PENDING；本轮未提交、未 Push、未 Deploy。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -39,8 +40,8 @@
 
 # 待办
 
-- NOW：W2.2 Evidence / Verification / Recovery Durability Entry Review 已完成；保持 Push/Deploy = NO，Production Ready = NO，Enterprise Pilot Ready = NO。
-- NEXT：审批 W2.2 first durability slice；不得自动启动 W2.2 实现、产品迁移、Push 或 Deploy。
+- NOW：W2.2.1 durable linkage candidate verified；Final Implementation Review = PENDING；保持 Push/Deploy = NO，Production Ready = NO，Enterprise Pilot Ready = NO。
+- NEXT：执行 W2.2.1 Final Implementation Review；不得自动提交、产品迁移、Push 或 Deploy。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -51,7 +52,7 @@
 - W1 六项已确认缺口已有自动反例回归保护；当前 adapter 是可信参考边界，不能将 shape/binding 检查解释为生产身份认证、持久化证明或对抗恶意 adapter 的隔离。
 - W1 reference Evidence Runtime 为内存实现；持久化 Evidence、Runtime Run/Attempt 和 Audit Recovery Worker 的统一 adapter 接入尚未完成。
 - W2 真实 Effect hard gates 未满足：持久化 envelope/evidence/recovery、幂等与 crash reconciliation、生产身份绑定、Authority Lease 撤销及 Resume Re-authorization、Human Control 必须先验证。W2.0 已定义 Effect/Reality 协议初始化边界，但尚无运行时实现，不能靠注册表静态校验推断无运行时死锁。
-- W2.1 已验证真实 SQLite round-trip、进程级重载、CAS 并发保护、write-before-effect 与 UNKNOWN 保留；W2.2 Entry Review 已确认 Evidence / Verification / Recovery durability 仍缺统一 owner-backed durable records、restart read model 和 recovery case linkage，不能声明生产就绪或企业试点就绪。
+- W2.1 已验证真实 SQLite round-trip、进程级重载、CAS 并发保护、write-before-effect 与 UNKNOWN 保留；W2.2.1 candidate 已验证 owner-backed durable linkage，但尚未完成 Final Implementation Review、production schema migration lifecycle、产品迁移、Human Control durability 或运维能力，不能声明生产就绪或企业试点就绪。
 - Target/Current 混淆风险高；`TARGET_W1_KERNEL_LOOP` 不等于当前已实现闭环。
 - 概念重复风险仍存在；后续新增 GEO、Payment、Knowledge、WorkBuddy、Self-Improvement 等内容必须先映射到唯一 Owner。
 - RapidOCR runtime 已恢复，但依赖位于用户本机缓存；其他机器或生产环境仍需按 lock 重建同等私有 runtime。
@@ -63,4 +64,4 @@
 
 # 下一步
 
-等待明确授权后执行 W2.2 first durability slice；不得自动启动产品迁移、Push 或 Deploy。
+等待明确授权后执行 W2.2.1 Final Implementation Review；不得自动提交、产品迁移、Push 或 Deploy。
