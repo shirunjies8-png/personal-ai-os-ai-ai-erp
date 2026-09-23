@@ -4,7 +4,7 @@
 
 # 当前状态
 
-- 基线：`main` @ `92c31640fe223e6fd2b5a04fa4fcc58b2a0b9ed0`；W2.2.1 durable linkage 已提交；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
+- 基线：`main` @ `0da9bbe9262ccb8088e05cb3a184ec3655d338d0`；W2.2.1 post-state 已作为独立 `project.md` 状态提交；正式 W1 Kernel Commit 保持 `93f160176585c86bff15a77402729cee4dc5001b`，未 Push 或 Deploy。
 - 工作区为混合未提交状态；仓库证据优先于本文档，`anime-pocket-agent/` 保持未触碰。
 - FRAMEWORK_FIRST 已冻结；当前开发顺序为 W0 Architecture Governance → W1 Kernel Completion → W2 Platform Completion → W3 Evolution + Domain → Framework Freeze → Product Capability Validation Program。
 - RealityOS Architecture Governance Baseline W0 已在本地建立并提交：21 Module Registry、Canonical Vocabulary、Source-of-Truth Map、Dependency Graph、CURRENT Status Matrix、Current Minimum Closed Loop、Target W1 Kernel Loop 与 Product Validation Backlog 均已定义并通过 validator；Commit `67f88378cedd31d21db6942115cdd296a98f7836`，Push/Deploy 均未执行。
@@ -13,6 +13,7 @@
 - W2.0 Contract & Compatibility Baseline final audit = PASS；已完成唯一 Envelope、版本/持久化/崩溃/幂等/UNKNOWN/Resume 重授权及 adapter 合约设计，12 项为 DESIGN INVARIANTS；Commit `b81e052051aa608b60181b19ef5311a8647d5491`。首个纯合约切片已提交：Commit `8bc8b8ce81faf803386e3d096a8ab3f27b59302a`；范围仅为 canonical durable-extension 校验、纯 Resume Decision 与 adapter interface 合约。W2.1 execution durability foundation 已提交：Commit `02424922f3bbfc6c42892b0fe36d981b1620cf05`；Evidence durability = NOT_COMPLETE；Recovery durability = NOT_COMPLETE；Product Migration = NOT_STARTED；TypeSafe/Jev = RESERVED / NOT_INTEGRATED。
 - W2.2 Evidence / Verification / Recovery Durability Entry Review 已完成：Evidence Runtime owner = `13-evidence-runtime`，Verification Runtime owner = `14-verification-runtime`，Recovery Runtime owner = `15-recovery-runtime`；现有 `runtime_*`、`audit_recovery_*`、`realityos_kernel_*` 为复用候选和局部实现，不等于统一 durability 闭环；首个 W2.2 slice 等待人工批准。
 - W2.2.1 owner-backed Evidence / Verification / Recovery durable linkage 已完成并提交：Commit `92c31640fe223e6fd2b5a04fa4fcc58b2a0b9ed0`；Recovery retry execution = NOT_COMPLETE；Enterprise Identity/Organization = NOT_COMPLETE；Human Control durability/runtime = NOT_COMPLETE；TypeSafe/Jev = NEXT_CANDIDATE / NOT_INTEGRATED；Production Ready = NO；Enterprise Pilot Ready = NO。
+- TypeSafe/Jev Provider Integration Entry Review 已完成：Jev 仅定位为 Probabilistic Semantic Classifier / Structured Inference Provider，最小后续切片为 Effect Classification Provider Adapter；Jev = NOT_INTEGRATED；Product Migration = NO；W2.3 = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -40,8 +41,8 @@
 
 # 待办
 
-- NOW：W2.2.1 durable linkage 已本地提交；保持 Push/Deploy = NO，Production Ready = NO，Enterprise Pilot Ready = NO。
-- NEXT：执行 TypeSafe/Jev Provider Integration Entry Review；不得自动开始 implementation、产品迁移、Push 或 Deploy。
+- NOW：TypeSafe/Jev Provider Integration Entry Review 已完成；保持 Push/Deploy = NO，Jev = NOT_INTEGRATED，Product Migration = NO，Production Ready = NO，Enterprise Pilot Ready = NO。
+- NEXT：等待批准 Jev Effect Classification Provider minimum slice；不得自动开始 implementation、产品迁移、Push 或 Deploy。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -61,7 +62,8 @@
 - public GitHub Pages 仍不包含本地 Python RapidOCR runtime，无法独立代表完整产品 OCR 运行环境。
 - Browser proof 在非提升沙箱下曾因 server 后台生命周期受限而阻塞；提升权限确认同一 server `/api/health` 正常 200。最新 clean-room Browser proof 已通过，但 Chrome 仍输出 macOS display / Crashpad 环境警告，需继续记录为环境噪声而非产品失败。
 - Effect Governance v1 当前为 `CONTRACT_ONLY` 验证级别，不代表真实外部 mutation 或生产 Effect Closure 已完成。
+- Jev/TypeSafe 仍未集成；未来接入必须保持模型输出只是 Evidence，不能替代 Authority、Effect Runtime、Security/Data Egress Policy、Verification 或 Human Control。
 
 # 下一步
 
-等待明确授权后执行 TypeSafe/Jev Provider Integration Entry Review；不得自动开始 implementation、产品迁移、Push 或 Deploy。
+等待明确批准后执行 Jev Effect Classification Provider minimum slice；不得自动开始 implementation、产品迁移、Push 或 Deploy。
