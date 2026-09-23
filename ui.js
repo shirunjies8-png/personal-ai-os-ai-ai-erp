@@ -154,6 +154,7 @@ const MODULES = [
   { id: 'taskcenter', name: '任务中心', icon: 'bot', group: '系统中心' },
   { id: 'downloadcenter', name: '下载中心', icon: 'download', group: '系统中心' },
   { id: 'aihistory', name: 'AI调用历史', icon: 'history', group: '系统中心' },
+  { id: 'realityos', name: 'RealityOS Control Plane', icon: 'shield', group: '系统中心' },
   { id: 'monitoring', name: '系统监控', icon: 'chart', group: '系统中心' },
   { id: 'systemcheck', name: '系统验收中心', icon: 'check', group: '系统中心' },
   { id: 'users', name: '用户管理', icon: 'book', group: '系统中心' },
@@ -167,11 +168,11 @@ const moduleById = id => MODULES.find(item => item.id === id) || MODULES[0];
 
 // 用户模式只展示客户到报价的日常路径；所有既有功能仍保留在实验室模式，
 // 不改变其权限、审批、审计或数据处理规则。
-const CORE_MODULE_IDS = Object.freeze(['home', 'crm', 'project', 'inquiries', 'quotation', 'ocr', 'worklog', 'operationlog', 'monitoring']);
+const CORE_MODULE_IDS = Object.freeze(['home', 'crm', 'project', 'inquiries', 'quotation', 'ocr', 'worklog', 'operationlog', 'monitoring', 'realityos']);
 const CORE_NAVIGATION = Object.freeze([
   ['核心工作台', ['home']],
   ['客户与报价', ['crm', 'project', 'inquiries', 'quotation']],
-  ['协同与保障', ['ocr', 'worklog', 'operationlog', 'monitoring']]
+  ['协同与保障', ['ocr', 'worklog', 'operationlog', 'monitoring', 'realityos']]
 ]);
 const isCoreModule = id => CORE_MODULE_IDS.includes(id);
 const DEMO_ONLY_MODULE_IDS = Object.freeze(['erp', 'mes', 'bom', 'process']);
@@ -876,6 +877,67 @@ const UI = {
     ];
     const observabilityPanel = `<section class="panel"><div class="panel-head"><div><h3>Agent / Skill 运行监控</h3><small>执行状态与人工验证状态分离；Mock 仅表示演示执行，不计入真实模型能力。</small></div><button class="secondary-btn" data-action="runtime-observability-refresh">${icon('refresh')}刷新运行记录</button></div><div class="panel-body">${observability.error ? `<div class="empty-state">${Utils.escape(observability.error)}</div>` : ''}<div class="address-grid">${runtimeComponents.map(item => `<div class="address-card"><b>${Utils.escape(item.name)}</b><small>${Utils.escape(item.type)} · ${Utils.escape(runtimeModeLabel(item.execution_mode))} · ${Utils.escape(item.health_status || 'UNKNOWN')}<br>成功 ${item.success_count || 0} · 失败 ${item.failure_count || 0} · 超时 ${item.timeout_count || 0}<br>平均 ${Math.round(Number(item.average_duration_ms || 0))} ms</small></div>`).join('') || '<div class="empty-state">点击“刷新运行记录”读取后端 Registry；静态 Pages 不伪造运行数据。</div>'}</div><div class="result-box">${runtimeRuns.slice(0, 12).map(run => `${Utils.escape(run.started_at || '')} · ${Utils.escape(run.component_id)} · 执行 ${Utils.escape(run.execution_status)} · 验证 ${Utils.escape(run.verification_status)} · ${Math.round(Number(run.duration_ms || 0))} ms${run.error_code ? ` · ${Utils.escape(run.error_code)}` : ''}`).join('\n') || '暂无真实运行 Trace。OCR 执行后将在已认证后端模式写入记录；重试请回到 OCR 人工复核页。'}</div></div></section>`;
     return `${this.pageHead('AI状态中心', '查看 DeepSeek 安全网关、Token、费用、预算、缓存和熔断状态。', `<button class="primary-btn" data-action="demo-load">${icon('download')}一键加载演示数据</button><button class="secondary-btn" data-action="refresh-ai-status">${icon('check')}刷新服务端状态</button>`)}<section class="panel"><div class="panel-head"><div><h3>在线状态</h3></div><button class="secondary-btn" data-action="refresh-ai-status">${icon('refresh')}刷新状态</button></div><div class="panel-body">${items.map(([name, status]) => `<div class="activity"><span class="activity-icon">${icon('shield')}</span><span><b>${name}</b><small>${status}</small></span></div>`).join('')}</div></section>${observabilityPanel}<section class="panel"><div class="panel-head"><div><h3>AI Gateway 统计面板</h3></div><span class="badge">${serverUsage.today?.requests ?? history.length}</span></div><div class="panel-body"><div class="address-grid"><div class="address-card"><b>今日请求</b><small>${serverUsage.today?.requests ?? todayCount}</small></div><div class="address-card"><b>本月请求</b><small>${serverUsage.month?.requests ?? monthCount}</small></div><div class="address-card"><b>今日输入 Token</b><small>${serverUsage.today?.inputTokens ?? 0}</small></div><div class="address-card"><b>今日输出 Token</b><small>${serverUsage.today?.outputTokens ?? 0}</small></div><div class="address-card"><b>本月 Token</b><small>${serverUsage.month?.totalTokens ?? totalTokens}</small></div><div class="address-card"><b>今日美元估算费用</b><small>$${Number(serverUsage.today?.estimatedCost ?? 0).toFixed(6)}</small></div><div class="address-card"><b>本月美元估算费用</b><small>$${Number(serverUsage.month?.estimatedCost ?? totalCost).toFixed(6)}</small></div><div class="address-card"><b>人民币估算</b><small>${serverUsage.month?.cost?.cnyEstimate != null ? `¥${Number(serverUsage.month.cost.cnyEstimate).toFixed(6)}（汇率 ${serverUsage.month.cost.exchangeRate}）` : '未配置汇率'}</small></div><div class="address-card"><b>预算使用比例</b><small>${(Number(serverUsage.budget?.ratio || 0) * 100).toFixed(1)}%</small></div><div class="address-card"><b>缓存命中 / 节省请求</b><small>${serverUsage.cache?.hits || 0} / ${serverUsage.cache?.savedRequests || 0}</small></div><div class="address-card"><b>失败 / 超时 / 限流 / 熔断</b><small>${serverUsage.failures?.failed || 0} / ${serverUsage.failures?.timeout || 0} / ${serverUsage.failures?.rateLimited || 0} / ${serverUsage.failures?.circuitOpen || 0}</small></div><div class="address-card"><b>最高消耗任务</b><small>${Utils.escape(serverUsage.highestCost?.module || '无')} · ${serverUsage.highestCost?.totalTokens || 0} Token</small></div><div class="address-card"><b>Pages 静态安全</b><small>${displayMode ? '已启用：不直连 DeepSeek' : '非 Pages 环境'}</small></div></div></div></section>`;
+  },
+  realityos() {
+    const model = App.temp.realityosControlPlane || {};
+    const status = model.status || {};
+    const proof = model.proof_levels || {};
+    const runs = Array.isArray(model.runs) ? model.runs : [];
+    const selected = App.temp.realityosSelectedRun || (runs[0]?.run_id || '');
+    const detail = App.temp.realityosRunDetail || null;
+    const kv = items => `<div class="address-grid">${items.map(([name, value]) => `<div class="address-card"><b>${Utils.escape(name)}</b><small>${Utils.escape(String(value ?? 'NOT_AVAILABLE'))}</small></div>`).join('')}</div>`;
+    const table = (headers, rows, empty) => rows.length ? `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map(h => `<th>${Utils.escape(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(value => `<td>${Utils.escape(String(value ?? 'NOT_AVAILABLE'))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : `<div class="empty-state">${Utils.escape(empty)}</div>`;
+    const statusCards = kv([
+      ['Active Runs', status.active_runs ?? 0],
+      ['Non-terminal Runs', status.non_terminal_runs ?? 0],
+      ['Verification Pending', status.verification_pending ?? 0],
+      ['Effect Unknown', status.effect_unknown ?? 0],
+      ['Recovery Required', status.recovery_required ?? 0],
+      ['Evidence Receipt Count', status.evidence_receipt_count ?? 0],
+      ['Failed / Blocked Runs', status.failed_blocked_runs ?? 0],
+      ['Durable Store', Object.entries(status.durable_store_health || {}).filter(([key]) => !/directory|path/.test(key)).map(([k, v]) => `${k}:${v}`).join(' · ') || 'NOT_AVAILABLE'],
+    ]);
+    const proofCards = kv([
+      ['Kernel Run Durability', proof.kernel_run_durability || 'NOT_AVAILABLE'],
+      ['Evidence Durability', proof.evidence_durability || 'NOT_AVAILABLE'],
+      ['Verification Durability', proof.verification_durability || 'NOT_AVAILABLE'],
+      ['Recovery Linkage', proof.recovery_linkage || 'NOT_AVAILABLE'],
+      ['Jev Adapter', proof.jev_adapter || 'NOT_AVAILABLE'],
+      ['Real Jev Runtime', proof.real_jev_runtime || 'NOT_INTEGRATED'],
+      ['Enterprise Identity', proof.enterprise_identity || 'PARTIAL'],
+      ['Organization', proof.organization || 'PARTIAL'],
+      ['Represented Principal', proof.represented_principal || 'REFERENCE_ONLY'],
+      ['Delegation', proof.delegation || 'NOT_IMPLEMENTED'],
+      ['Human Control Runtime', proof.human_control_runtime || 'NOT_READY'],
+      ['Product Migration', proof.product_migration || 'CONTROL_PLANE_READ_ONLY'],
+      ['Production Ready', proof.production_ready || 'NO'],
+      ['Enterprise Pilot Ready', proof.enterprise_pilot_ready || 'NO'],
+    ]);
+    const runsTable = table(['run_id', 'task', 'attempts', 'lifecycle', 'previous', 'revision', 'effect', 'verification', 'recovery', 'updated'],
+      runs.map(run => [run.run_id, run.task_id, run.attempt_count, run.lifecycle, run.previous_state, run.revision, run.effect_certainty, run.verification_state, run.recovery_state, run.updated_at]), 'NO_GOVERNED_RUNS_YET');
+    const selectedRun = detail?.run || runs.find(run => run.run_id === selected);
+    const detailPanel = detail ? `<div class="stack">
+      <section class="panel"><div class="panel-head"><div><h3>Run Detail · ${Utils.escape(detail.run.run_id)}</h3></div><span class="status-pill warning">${Utils.escape(detail.effect_reality?.certainty || 'UNKNOWN')}</span></div><div class="panel-body">${kv([
+        ['Lifecycle', detail.run.lifecycle],
+        ['Previous State', detail.run.previous_state],
+        ['Revision', detail.run.revision],
+        ['Effect Reality', detail.effect_reality?.message || 'NOT_AVAILABLE'],
+        ['Resume Admission', detail.effect_reality?.resume_admission || 'NOT_AVAILABLE'],
+        ['Expected ↔ Actual', detail.expected_actual || 'NOT_AVAILABLE_FOR_THIS_RUN'],
+        ['Identity', JSON.stringify(detail.run.identity || 'REFERENCE_ONLY')],
+        ['Authority', JSON.stringify(detail.run.authority || 'REFERENCE_ONLY')],
+      ])}</div></section>
+      <section class="panel"><div class="panel-head"><div><h3>Execution Timeline</h3></div><span class="badge">${detail.transitions.length}</span></div><div class="panel-body">${table(['state', 'previous', 'revision', 'sequence', 'phase', 'timestamp'], detail.transitions.map(t => [t.to_state, t.from_state || 'NOT_AVAILABLE', t.revision_after, t.checkpoint_sequence, t.phase, t.created_at]), 'No transition records')}</div></section>
+      <section class="panel"><div class="panel-head"><div><h3>Evidence</h3></div><span class="badge">${detail.evidence.length}</span></div><div class="panel-body">${table(['evidence_id', 'type', 'source', 'schema', 'payload', 'integrity', 'time'], detail.evidence.map(e => [e.evidence_id, e.evidence_type, JSON.stringify(e.source_ref || {}), e.schema_version, e.payload, e.integrity_ref, e.created_at]), 'No Evidence receipts')}</div></section>
+      <section class="panel"><div class="panel-head"><div><h3>Verification</h3></div><span class="badge">${detail.verification.length}</span></div><div class="panel-body">${table(['verification_id', 'status', 'verifier', 'decision', 'reason', 'time'], detail.verification.map(v => [v.verification_id, v.status, JSON.stringify(v.verifier_ref || {}), v.decision || 'PENDING', JSON.stringify(v.reason_ref || {}), v.updated_at]), 'No Verification cases')}</div></section>
+      <section class="panel"><div class="panel-head"><div><h3>Recovery</h3></div><span class="badge">${detail.recovery.length}</span></div><div class="panel-body">${table(['recovery_case_id', 'state', 'effect', 'retry', 'reauthorize', 'human', 'auto execution'], detail.recovery.map(r => [r.recovery_case_id, r.recovery_state, r.effect_certainty, r.retry_eligibility, r.reauthorization_required, r.human_control_required, r.automated_recovery_execution]), 'No Recovery cases')}<div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>AUTOMATED RECOVERY EXECUTION: NOT_READY。Control Plane 是只读投影，不提供重新执行按钮。</span></div></div></section>
+    </div>` : `<section class="panel"><div class="panel-head"><div><h3>Run Detail</h3></div><span class="status-pill">NOT_AVAILABLE</span></div><div class="panel-body">${this.result(selectedRun ? '点击“查看”读取真实 Run 明细。' : 'NO_GOVERNED_RUNS_YET', 'Execution Success ≠ Verification Success', true)}</div></section>`;
+    return `${this.pageHead('RealityOS Control Plane', '只读查看真实 Runtime / Evidence / Verification / Recovery 状态；不展示 mock，不创建第二套 Runtime。', `<button class="secondary-btn" data-action="realityos-refresh">${icon('refresh')}刷新真实状态</button>`)}
+      <section class="panel"><div class="panel-head"><div><h3>System Capability Status</h3><small>PROJECT GOVERNANCE STATUS + canonical durable store readback</small></div><span class="status-pill warning">${Utils.escape(model.zero_data_state || 'NOT_AVAILABLE')}</span></div><div class="panel-body">${statusCards}</div></section>
+      <section class="panel"><div class="panel-head"><div><h3>Proof-level Badges</h3></div><span class="badge">truth-only</span></div><div class="panel-body">${proofCards}<div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>JEV ADAPTER: VERIFIED；REAL JEV PROVIDER: NOT INTEGRATED。页面不会声称 Jev AI 已在生产中分类。</span></div></div></section>
+      <section class="panel"><div class="panel-head"><div><h3>Recent Governed Runs</h3></div><span class="badge">${runs.length}</span></div><div class="panel-body">${runsTable}${runs.length ? `<div class="button-row">${runs.slice(0, 8).map(run => `<button class="${selected === run.run_id ? 'primary-btn' : 'secondary-btn'} compact" data-action="realityos-run-select" data-id="${Utils.escape(run.run_id)}">${Utils.escape(run.run_id)}</button>`).join('')}</div>` : ''}</div></section>
+      ${detailPanel}
+      <section class="panel"><div class="panel-head"><div><h3>First Real Read-only Path</h3></div><span class="status-pill warning">${Utils.escape(model.first_read_only_path?.status || 'BLOCKED')}</span></div><div class="panel-body">${this.result(model.first_read_only_path?.reason || 'No governed read-only product path has been integrated yet.', 'FIRST_REAL_READ_ONLY_PATH', true)}</div></section>`;
   },
   monitoring() {
     const globalState = window.GlobalSystemState && typeof window.GlobalSystemState === 'object' ? window.GlobalSystemState : {};

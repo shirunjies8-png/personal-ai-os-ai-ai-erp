@@ -293,7 +293,7 @@ const App = {
 
   bindGlobalEvents() {
     const refreshMonitor = () => {
-      if (['monitoring', 'systemcheck', 'aistatus'].includes(this.route)) this.rerender();
+      if (['monitoring', 'systemcheck', 'aistatus', 'realityos'].includes(this.route)) this.rerender();
     };
     document.addEventListener('click', event => {
       const route = event.target.closest('[data-route]');
@@ -933,6 +933,12 @@ const App = {
       && !this.temp.manufacturing.loaded && !this.temp.manufacturing.loading) {
       this.loadManufacturingData({ silent: true });
     }
+    if (this.route === 'realityos'
+      && !this.temp.realityosControlPlane?.loaded
+      && !this.temp.realityosControlPlane?.loading) {
+      this.temp.realityosControlPlane = { ...(this.temp.realityosControlPlane || {}), loading: true };
+      this.refreshRealityOSControlPlane();
+    }
     if (this.route === 'chat') {
       const active = Store.state.chats.find(chat => chat.id === Store.state.activeChatId);
       const assistantMessages = (active?.messages || []).filter(message => message.role === 'assistant');
@@ -1201,6 +1207,8 @@ const App = {
       'ocr-review-retry': () => this.ocrRun(el, true),
       'ocr-provider-refresh': () => this.ocrRefreshProviders(),
       'runtime-observability-refresh': () => this.refreshRuntimeObservability(),
+      'realityos-refresh': () => this.refreshRealityOSControlPlane(),
+      'realityos-run-select': () => this.selectRealityOSRun(el.dataset.id),
       'ocr-diagnostics-copy': () => this.ocrCopyDiagnostics(),
       'ocr-transfer-quotation': () => this.ocrTransferQuotation(),
       'ocr-transfer-inquiry': () => this.ocrTransferInquiry(),
@@ -6107,6 +6115,37 @@ const App = {
       this.temp.runtimeObservability = { items: [], components: [], error: Utils.friendlyErrorMessage(error?.message || error) };
       this.rerender();
     }
+  },
+
+  async refreshRealityOSControlPlane() {
+    try {
+      const response = await APIClient.request('/api/realityos/control-plane?limit=50', {}, { timeout: 7000 });
+      this.temp.realityosControlPlane = { ...(response?.data || {}), loaded: true, loading: false };
+      const firstRunId = this.temp.realityosControlPlane?.runs?.[0]?.run_id || '';
+      if (firstRunId) await this.selectRealityOSRun(firstRunId, { silent: true });
+      else this.temp.realityosRunDetail = null;
+      this.rerender();
+    } catch (error) {
+      this.temp.realityosControlPlane = { error: Utils.friendlyErrorMessage(error?.message || error), runs: [], status: {}, proof_levels: {}, zero_data_state: 'NOT_AVAILABLE', loaded: true, loading: false };
+      this.temp.realityosRunDetail = null;
+      this.rerender();
+    }
+  },
+
+  async selectRealityOSRun(runId, options = {}) {
+    this.temp.realityosSelectedRun = runId || '';
+    if (!runId) {
+      this.temp.realityosRunDetail = null;
+      if (!options.silent) this.rerender();
+      return;
+    }
+    try {
+      const response = await APIClient.request(`/api/realityos/control-plane/runs/${encodeURIComponent(runId)}`, {}, { timeout: 7000 });
+      this.temp.realityosRunDetail = response?.data || null;
+    } catch (error) {
+      this.temp.realityosRunDetail = { error: Utils.friendlyErrorMessage(error?.message || error), run: { run_id: runId } };
+    }
+    if (!options.silent) this.rerender();
   },
 
   async ocrRun(btn, forceRetry = false) {

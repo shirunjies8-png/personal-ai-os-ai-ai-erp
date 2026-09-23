@@ -20,6 +20,7 @@ const trustedExecutionRoutes = require('./trustedExecutionRoutes');
 const transactionSafetyRoutes = require('./transactionSafetyRoutes');
 const auditRecoveryRoutes = require('./auditRecoveryRoutes');
 const ocrRoutes = require('./ocrRoutes');
+const realityosControlPlaneRoutes = require('./realityosControlPlaneRoutes');
 const { authRequired } = require('../middleware/auth');
 const qualityService = require('../services/aiQualityCheckService');
 const env = require('../config/env');
@@ -52,6 +53,7 @@ router.use('/trusted-execution', trustedExecutionRoutes);
 router.use('/transaction-safety', transactionSafetyRoutes);
 router.use('/audit-recovery', auditRecoveryRoutes);
 router.use('/ocr', ocrRoutes);
+router.use('/realityos/control-plane', realityosControlPlaneRoutes);
 
 function identityForAi(req) {
   return req.user ? { userId: req.user.id, enterpriseId: req.user.enterprise_id, role: req.user.role } : {};

@@ -16,6 +16,7 @@
 - TypeSafe/Jev Provider Integration Entry Review 已完成：Jev 仅定位为 Probabilistic Semantic Classifier / Structured Inference Provider，最小后续切片为 Effect Classification Provider Adapter；Jev = NOT_INTEGRATED；Product Migration = NO；W2.3 = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - Jev Effect Classification Provider Adapter 已完成并提交：Commit `18491ebbb8c9078b5e8898cc2983a1a88e66604c`；provider-neutral boundary、Jev-compatible adapter、canonical Effect mapping、schema/probability/provenance validation、Evidence receipt、Verification case、restart evidence reload 与 fail-safe negative cases 均通过；REAL_JEV_PROVIDER_RUNTIME_INTEGRATED = NO；External network = NOT_USED；Product Migration = NO；W2.3 = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - Post-Jev Mainline Decision Review 已完成：决策为 RETURN_TO_W2_3；真实 Jev runtime 保持 RESERVED / NOT_CURRENT_HARD_DEPENDENCY。W2.3 Enterprise Identity / Organization / Delegation / Authority Entry Review 已完成；首个建议切片为 Durable Enterprise Identity + Represented Principal + Delegation Binding，等待人工批准；W2.3 implementation = NOT_STARTED。
+- Production-visible Runtime Surface first slice 已实现为只读 Control Plane：读取 `realityos_kernel_*`、`realityos_evidence_receipts`、`realityos_verification_cases`、`realityos_recovery_cases` 与 Jev adapter 状态；不创建第二套 truth store，不展示 mock runtime state，不迁移 mutation path。FIRST_REAL_READ_ONLY_PATH = BLOCKED（尚无现有产品只读路径完成 Kernel→Evidence→Verification 迁移）。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -43,8 +44,8 @@
 
 # 待办
 
-- NOW：Post-Jev Mainline Decision Review 与 W2.3 Entry Review 已完成；保持 Push/Deploy = NO，真实 Jev provider runtime = NOT_INTEGRATED，Product Migration = NO，Production Ready = NO，Enterprise Pilot Ready = NO。
-- NEXT：等待批准 W2.3 first enterprise identity/delegation slice；不得自动开始 W2.3 implementation、真实 Jev runtime、产品迁移、Push 或 Deploy。
+- NOW：Production-visible Runtime Surface first slice 已实现，等待 Final Review；保持 Push/Deploy = NO，真实 Jev provider runtime = NOT_INTEGRATED，Product Migration = NO，Production Ready = NO，Enterprise Pilot Ready = NO。
+- NEXT：执行 `Production-visible Runtime Surface Final Review`，精确审核 Control Plane read-only changeset；不得自动开始 W2.3 implementation、真实 Jev runtime、产品迁移、Push 或 Deploy。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -67,7 +68,8 @@
 - Jev/TypeSafe 仍未集成；未来接入必须保持模型输出只是 Evidence，不能替代 Authority、Effect Runtime、Security/Data Egress Policy、Verification 或 Human Control。
 - 当前 Jev adapter 只验证 reference integration，不包含真实 Jev runtime、外部网络、依赖安装或产品路径接入。
 - W2.3 真实缺口仍在：当前 JWT/users/enterprises 提供 PARTIAL 身份与企业边界，W2 合约提供 represented principal / lease / reauthorization 的 reference tests，但 durable canonical delegation、revocation、expiry、authority binding 与 enterprise identity records 尚未实现。
+- Production-visible Runtime Surface 当前只让已有 Runtime facts 可见；FIRST_REAL_READ_ONLY_PATH 尚未接入，不能声明产品迁移完成。
 
 # 下一步
 
-等待批准 W2.3 first enterprise identity/delegation slice；不得自动开始 W2.3 implementation、真实 Jev runtime、产品迁移、Push 或 Deploy。
+执行 `Production-visible Runtime Surface Final Review`，精确审核 Control Plane read-only changeset；不得自动开始 W2.3 implementation、真实 Jev runtime、产品迁移、Push 或 Deploy。
