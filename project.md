@@ -19,6 +19,7 @@
 - Production-visible Runtime Surface first slice 已完成并提交：Commit `f157ff4cb842311674c39d0da59fd849236867c6`；Control Plane = READ_ONLY；Mock/Fake data = NONE；FIRST_REAL_GOVERNED_PRODUCT_PATH = NOT_YET_INTEGRATED；W2.3 implementation = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - First Real Governed Read-only Product Path Entry Review 已完成：推荐首条路径为首页 Dashboard 业务状态读取 `GET /api/dashboard` → `dashboardService.getDashboard`；Effect = OBSERVATION；使用当前 JWT `req.user` 作为 Authenticated Actor Context；不伪造 represented principal；等待人工批准 implementation。
 - First Real Governed Product Path 已完成并提交：Commit `91c005b29ad64c414136a191bc17e4ca96239070`；`GET /api/dashboard` 保持原路径并接入 RealityOS Kernel durable run、attempt、transition、Evidence receipt 与 Verification case；Dashboard 业务 owner 仍为 `dashboardService.getDashboard`；Reality Readback = VERIFIED；Control Plane Visibility = VERIFIED；Effect = OBSERVATION；Business Mutation = NO；Jev runtime = NOT_INTEGRATED；W2.3 implementation = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
+- First Governed Product Path Deployment / Public Visibility Review 已完成；当前公开地址 `https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/` 为 GitHub Pages 静态前端，默认 `STATIC_DEMO_ONLY` 且 `API_BASE_URL` 为空；Render 后端配置存在但未证明已部署或与 Pages 连接；PUBLIC_RUNTIME_PERSISTENCE_CLASS = UNKNOWN_PUBLIC_BACKEND_NOT_PROVEN；Control Plane 公开可见性因仅有 authenticated enterprise-scoped、缺少 admin/audit RBAC 而 `AUTHORIZATION_BLOCKED`；Public Visibility Ready = NO；Production Ready = NO；Enterprise Pilot Ready = NO。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -46,8 +47,8 @@
 
 # 待办
 
-- NOW：First Real Governed Product Path = COMPLETE；路径为 `GET /api/dashboard`，Capability = `capability.dashboard.read_status`，Effect = OBSERVATION；保持 Push/Deploy = NO，真实 Jev provider runtime = NOT_INTEGRATED，Production Ready = NO，Enterprise Pilot Ready = NO。
-- NEXT：执行 `First Governed Product Path Deployment / Public Visibility Review`，判断当前公开部署架构是否能真实运行 Dashboard backend、RealityOS durable runtime、Evidence、Verification 与 Control Plane；不得把本地 verified 直接等同于 publicly deployed。
+- NOW：First Governed Product Path Deployment / Public Visibility Review = COMPLETE；当前公开 Pages 仍是静态 demo 默认模式，未证明已连接 governed backend；保持 Push/Deploy = NO，真实 Jev provider runtime = NOT_INTEGRATED，Production Ready = NO，Enterprise Pilot Ready = NO。
+- NEXT：审批 `First Governed Product Public Deployment`，先解决公开 backend URL/API_BASE 注入、部署健康检查、持久化读回、Control Plane admin/audit 授权、生产默认管理员密钥与备份策略，再执行真实公开部署验证。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -71,7 +72,10 @@
 - 当前 Jev adapter 只验证 reference integration，不包含真实 Jev runtime、外部网络、依赖安装或产品路径接入。
 - W2.3 真实缺口仍在：当前 JWT/users/enterprises 提供 PARTIAL 身份与企业边界，W2 合约提供 represented principal / lease / reauthorization 的 reference tests，但 durable canonical delegation、revocation、expiry、authority binding 与 enterprise identity records 尚未实现。
 - Production-visible Runtime Surface 当前已有第一条真实产品路径 `GET /api/dashboard` governed observation commit；这只代表第一条 read-only path，不代表整个 Product Migration Complete、生产就绪或企业试点就绪。
+- 当前公开 GitHub Pages 默认不会连接 governed backend；Render 仅为候选部署配置，尚未有公开 `/api/health`、登录、Dashboard、Control Plane、restart/redeploy persistence 读回证据。不得把本地 SQLite restart PASS 或仓库配置解释为 Public Durability VERIFIED。
+- Control Plane API 当前要求 JWT 并按 `enterprise_id` 过滤，但尚无 admin/audit RBAC；公开部署前必须明确普通企业用户是否允许查看 Kernel Runs、Evidence、Verification、Recovery 审计轨迹。
+- 数据库初始化当前会创建/更新默认企业和默认管理员；生产部署必须确认 `JWT_SECRET` 与 `DEFAULT_ADMIN_PASSWORD` 由安全环境变量提供，不能使用默认值。
 
 # 下一步
 
-执行 `First Governed Product Path Deployment / Public Visibility Review`，判断当前公开部署架构是否能真实运行 Dashboard backend、RealityOS durable runtime、Evidence、Verification 与 Control Plane；不得把本地 verified 直接等同于 publicly deployed。
+审批 `First Governed Product Public Deployment`，先配置并验证公开后端、API_BASE、认证、CORS、SQLite/持久化磁盘读回、Control Plane 授权与备份策略，再证明公开 Dashboard 请求能产生可在 Control Plane 读回的真实 RealityOS Run/Evidence/Verification。
