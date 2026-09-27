@@ -181,6 +181,7 @@ function getSummary(options = {}) {
   const recoveryRequired = count(database, 'realityos_recovery_cases', `${recoveryScope.sql ? 'enterprise_id=? AND ' : ''}recovery_state IN ('REQUIRED','ADMISSION_REQUIRED','HUMAN_REQUIRED','UNRESOLVED')`, recoveryScope.params);
   const failedOrBlocked = count(database, 'realityos_kernel_runs', `${runsScope.sql ? 'enterprise_id=? AND ' : ''}lifecycle_state IN ('AUTHORITY_DENIED','PREFLIGHT_REJECTED','TERMINAL_FAILURE')`, runsScope.params);
   const evidenceReceiptCount = count(database, 'realityos_evidence_receipts', evidenceScope.sql.replace(/^WHERE /, ''), evidenceScope.params);
+  const governedDashboardRuns = count(database, 'realityos_kernel_runs', `${runsScope.sql ? 'enterprise_id=? AND ' : ''}capability_id='capability.dashboard.read_status'`, runsScope.params);
   return {
     status: {
       active_runs: activeRuns,
@@ -215,8 +216,14 @@ function getSummary(options = {}) {
       production_claim: 'NOT_CLAIMED',
     },
     first_read_only_path: {
-      status: 'BLOCKED',
-      reason: 'No existing product read-only path has yet been migrated through Kernel Run + Evidence + Verification without starting W2.3/product migration work.',
+      status: governedDashboardRuns > 0 ? 'VERIFIED' : 'NOT_YET_INTEGRATED',
+      path: 'GET /api/dashboard',
+      capability_id: 'capability.dashboard.read_status',
+      effect: 'OBSERVATION',
+      run_count: governedDashboardRuns,
+      reason: governedDashboardRuns > 0
+        ? 'Existing dashboard read-only path has produced durable Kernel Run + Evidence + Verification records.'
+        : 'No governed dashboard product run has been observed yet.',
     },
   };
 }

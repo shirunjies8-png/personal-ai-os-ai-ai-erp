@@ -154,7 +154,7 @@ try {
     assert.equal(controlPlane.status.evidence_receipt_count, 1);
     assert.equal(controlPlane.proof_levels.kernel_run_durability, 'DURABLE_VERIFIED');
     assert.equal(controlPlane.proof_levels.real_jev_runtime, 'NOT_INTEGRATED');
-    assert.equal(controlPlane.first_read_only_path.status, 'BLOCKED');
+    assert.equal(controlPlane.first_read_only_path.status, 'NOT_YET_INTEGRATED');
     assert.equal(controlPlane.runs[0].effect_certainty, 'UNKNOWN');
     assert.equal(controlPlane.runs[0].expected_actual, 'NOT_AVAILABLE_FOR_THIS_RUN');
 
