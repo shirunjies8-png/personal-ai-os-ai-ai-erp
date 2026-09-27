@@ -18,7 +18,7 @@
 - Post-Jev Mainline Decision Review 已完成：决策为 RETURN_TO_W2_3；真实 Jev runtime 保持 RESERVED / NOT_CURRENT_HARD_DEPENDENCY。W2.3 Enterprise Identity / Organization / Delegation / Authority Entry Review 已完成；首个建议切片为 Durable Enterprise Identity + Represented Principal + Delegation Binding，等待人工批准；W2.3 implementation = NOT_STARTED。
 - Production-visible Runtime Surface first slice 已完成并提交：Commit `f157ff4cb842311674c39d0da59fd849236867c6`；Control Plane = READ_ONLY；Mock/Fake data = NONE；FIRST_REAL_GOVERNED_PRODUCT_PATH = NOT_YET_INTEGRATED；W2.3 implementation = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - First Real Governed Read-only Product Path Entry Review 已完成：推荐首条路径为首页 Dashboard 业务状态读取 `GET /api/dashboard` → `dashboardService.getDashboard`；Effect = OBSERVATION；使用当前 JWT `req.user` 作为 Authenticated Actor Context；不伪造 represented principal；等待人工批准 implementation。
-- First Real Governed Dashboard Path implementation candidate 已完成但未提交：`GET /api/dashboard` 保持原路径并接入 RealityOS Kernel durable run、attempt、transition、Evidence receipt 与 Verification case；Dashboard 业务 owner 仍为 `dashboardService.getDashboard`；Effect = OBSERVATION；Jev runtime = NOT_INTEGRATED；W2.3 implementation = NOT_STARTED；Product Mutation = NO；Production Ready = NO；Enterprise Pilot Ready = NO。
+- First Real Governed Product Path 已完成并提交：Commit `91c005b29ad64c414136a191bc17e4ca96239070`；`GET /api/dashboard` 保持原路径并接入 RealityOS Kernel durable run、attempt、transition、Evidence receipt 与 Verification case；Dashboard 业务 owner 仍为 `dashboardService.getDashboard`；Reality Readback = VERIFIED；Control Plane Visibility = VERIFIED；Effect = OBSERVATION；Business Mutation = NO；Jev runtime = NOT_INTEGRATED；W2.3 implementation = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -46,8 +46,8 @@
 
 # 待办
 
-- NOW：First Real Governed Dashboard Path implementation candidate 已完成；等待 Final Review；保持 Push/Deploy = NO，真实 Jev provider runtime = NOT_INTEGRATED，Production Ready = NO，Enterprise Pilot Ready = NO。
-- NEXT：执行 `First Real Governed Dashboard Path Final Review`，只审核当前 Dashboard OBSERVATION 变更集并决定是否精确提交；不得自动开始 mutation path、真实 Jev runtime、Push 或 Deploy。
+- NOW：First Real Governed Product Path = COMPLETE；路径为 `GET /api/dashboard`，Capability = `capability.dashboard.read_status`，Effect = OBSERVATION；保持 Push/Deploy = NO，真实 Jev provider runtime = NOT_INTEGRATED，Production Ready = NO，Enterprise Pilot Ready = NO。
+- NEXT：执行 `First Governed Product Path Deployment / Public Visibility Review`，判断当前公开部署架构是否能真实运行 Dashboard backend、RealityOS durable runtime、Evidence、Verification 与 Control Plane；不得把本地 verified 直接等同于 publicly deployed。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -70,8 +70,8 @@
 - Jev/TypeSafe 仍未集成；未来接入必须保持模型输出只是 Evidence，不能替代 Authority、Effect Runtime、Security/Data Egress Policy、Verification 或 Human Control。
 - 当前 Jev adapter 只验证 reference integration，不包含真实 Jev runtime、外部网络、依赖安装或产品路径接入。
 - W2.3 真实缺口仍在：当前 JWT/users/enterprises 提供 PARTIAL 身份与企业边界，W2 合约提供 represented principal / lease / reauthorization 的 reference tests，但 durable canonical delegation、revocation、expiry、authority binding 与 enterprise identity records 尚未实现。
-- Production-visible Runtime Surface 当前已有 Dashboard OBSERVATION implementation candidate，但尚未 Final Review / Commit；不能声明产品迁移完成、生产就绪或企业试点就绪。
+- Production-visible Runtime Surface 当前已有第一条真实产品路径 `GET /api/dashboard` governed observation commit；这只代表第一条 read-only path，不代表整个 Product Migration Complete、生产就绪或企业试点就绪。
 
 # 下一步
 
-执行 `First Real Governed Dashboard Path Final Review`，只审核当前 Dashboard OBSERVATION 变更集并决定是否精确提交；不得自动开始 mutation path、真实 Jev runtime、Push 或 Deploy。
+执行 `First Governed Product Path Deployment / Public Visibility Review`，判断当前公开部署架构是否能真实运行 Dashboard backend、RealityOS durable runtime、Evidence、Verification 与 Control Plane；不得把本地 verified 直接等同于 publicly deployed。
