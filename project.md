@@ -21,6 +21,7 @@
 - First Real Governed Product Path 已完成并提交：Commit `91c005b29ad64c414136a191bc17e4ca96239070`；`GET /api/dashboard` 保持原路径并接入 RealityOS Kernel durable run、attempt、transition、Evidence receipt 与 Verification case；Dashboard 业务 owner 仍为 `dashboardService.getDashboard`；Reality Readback = VERIFIED；Control Plane Visibility = VERIFIED；Effect = OBSERVATION；Business Mutation = NO；Jev runtime = NOT_INTEGRATED；W2.3 implementation = NOT_STARTED；Production Ready = NO；Enterprise Pilot Ready = NO。
 - First Governed Product Path Deployment / Public Visibility Review 已完成；当前公开地址 `https://shirunjies8-png.github.io/personal-ai-os-ai-ai-erp/` 为 GitHub Pages 静态前端，默认 `STATIC_DEMO_ONLY` 且 `API_BASE_URL` 为空；Render 后端配置存在但未证明已部署或与 Pages 连接；PUBLIC_RUNTIME_PERSISTENCE_CLASS = UNKNOWN_PUBLIC_BACKEND_NOT_PROVEN；Control Plane 公开可见性因仅有 authenticated enterprise-scoped、缺少 admin/audit RBAC 而 `AUTHORIZATION_BLOCKED`；Public Visibility Ready = NO；Production Ready = NO；Enterprise Pilot Ready = NO。
 - 当前真实商业落地优先级已切换为 `VALVE_TENDER_QUOTATION_DRAWING`（阀门招投标 + 智能报价 + 参数化小样图），定位为 RealityOS First Industry / Enterprise Vertical Application；Public Deployment Hardening = PAUSED / PRESERVED；W2.3 implementation = NOT_STARTED。Entry Review 文档已创建并完成首轮 Source Package Reality Audit：`江苏招标文件(1).zip` 已复制为 `docs/source/valve/江苏招标文件(1).zip`，SHA-256 `96c8295c021fcedb8bb39c7cf082bd1bb34757e6d8c084e4917e4916a2181780`；真实业务文件 7 个（DOC 3、DOCX 2、DWG 2），无 PDF/XLS/XLSX；FIRST_REFERENCE_PROJECT = `连云港石化产业基地拓展区(板桥片区)蒸汽管道工程阀门采购`；FIRST_IMPLEMENTATION_SLICE = `Valve Tender Structured Extraction`；阀门系统未实现，云部署未开始，Production Ready = NO。
+- Valve Reference Tender Template Foundation 已创建实现候选：参考标书包被正式定位为 `REFERENCE_ONLY`，不是当前 ClientTenderProject；已建立 `ReferenceTenderPackage`、`ReferenceTenderDocument`、`ReferenceTenderTemplate`、`TemplateSection`、`TemplateTable`、`TemplateField`、`ReferenceValue`、inheritance policy、Reference Residual Scanner 与 generation safety gate；核心不变量为 `REFERENCE_DATA_CANNOT_BECOME_PROJECT_TRUTH`；真实 DOCX/Legacy DOC 结构化抽取均未实现，DWG 结构化抽取未验证；真实 source 文件保持 Git ignore / local-private；外部 AI 默认禁止，未来必须走 AI Gateway；UI = DEFERRED；Commit/Push/Deploy 均未执行。
 - RapidOCR 本地产品路径已在隔离 clean-room 中通过定向产品证明：同一保密输入、关键锚点、证据链、浏览器 UI 回读及清理均已验证。
 - OCR 变更集已冻结为 Git baseline：commit `ad8a5e534394960c05546d634980d3ccb1159e84`，内容等价于 approved staged patch SHA-256 `7a0984a5f711a0d5c3a7b543b53ef457db777e958c96487f6344e753cec728da`。
 - 已按 `tools/ocr-benchmark/rapidocr311.lock` 恢复持久化私有 RapidOCR Python 3.11 runtime：RapidOCR `3.9.2`、ONNX Runtime `1.29.0`、det/cls/rec 均使用 `CPUExecutionProvider`。
@@ -48,8 +49,8 @@
 
 # 待办
 
-- NOW：Valve Tender / Quotation / Sample Drawing Source Package Reality Audit = COMPLETE；真实资料确认包含截止阀、止回阀、球阀、蝶阀、闸阀、疏水阀、旋转补偿器相关内容；DWG_STRUCTURED_EXTRACTION = NOT_YET_VERIFIED；Legacy DOC = CONVERSION_REQUIRED_FOR_STRUCTURED_TABLES；不得声明阀门平台完成、云部署完成或生产就绪。
-- NEXT：审批 `Valve Tender Structured Extraction Slice`，以 `江苏招标文件/2.阀门/竞争性谈判文件-连云港石化产业基地拓展区板桥片区蒸汽管道工程阀门采购.docx` 为 first implementation input，输出 TenderProject、TenderDocument、ValveRequirementItem、TenderRule、QuoteRule、TechnicalRequirement、StandardRequirement、CertificateRequirement、ResolutionRule、Evidence/Provenance refs、Conflict candidates 与 Human Review flags。
+- NOW：Valve Reference Template Foundation = IMPLEMENTED_CANDIDATE；参考标书只能复用结构、字段、表格和响应组织，旧项目采购人/项目名/控制价/报价/DN/PN/数量/材料/图纸尺寸等不得进入新项目真值；不得声明真实 DOC/DOCX 抽取完成、阀门平台完成、报价完成、图纸完成、云部署完成或生产就绪。
+- NEXT：执行 `Valve Reference Tender Template Foundation Final Review`，审查服务、测试、文档、Git ignore、无 raw source 入 Git、REFERENCE_ONLY 不变量、残留扫描、生成安全门禁与 source-of-truth 边界；通过后再审批 `Valve Real DOCX Reference Template Structured Extraction Entry Review`。
 - RESERVED：W2 Platform Completion、W3 Evolution + Domain、Framework Freeze、Product Capability Validation Program。
 - RESERVED：OCR、PDF、Word、Excel、PPT、Email、Translation、Writing、Knowledge Product、Contract、Tender、Quote、Procurement、Sales、Production、Shipping、Warehouse、Quality、ERP、MES、Equipment、Data Analysis、GEO、WorkBuddy、Agent Economy、Robot、Physical AI、Effect Reality Closure Demo 均后移到 Product Validation Backlog。
 - RESERVED：在 OCR 变更正式集成后，使用用户明确提供的原始乱码文件执行同输入产品 Reality Proof；未获得该输入不得关闭真实用户 OCR 乱码问题。
@@ -76,8 +77,8 @@
 - 当前公开 GitHub Pages 默认不会连接 governed backend；Render 仅为候选部署配置，尚未有公开 `/api/health`、登录、Dashboard、Control Plane、restart/redeploy persistence 读回证据。不得把本地 SQLite restart PASS 或仓库配置解释为 Public Durability VERIFIED。
 - Control Plane API 当前要求 JWT 并按 `enterprise_id` 过滤，但尚无 admin/audit RBAC；公开部署前必须明确普通企业用户是否允许查看 Kernel Runs、Evidence、Verification、Recovery 审计轨迹。
 - 数据库初始化当前会创建/更新默认企业和默认管理员；生产部署必须确认 `JWT_SECRET` 与 `DEFAULT_ADMIN_PASSWORD` 由安全环境变量提供，不能使用默认值。
-- 阀门行业资料包已定位并完成首轮 Source Package Reality Audit，但 DWG 仅完成 metadata 级识别，尚不能结构化解析尺寸；Legacy DOC 虽可由 `textutil` 转为文本，但生产级表格/行/单元格 provenance 仍需正式 conversion/parser；任何报价、产品匹配、图纸尺寸和最终技术响应仍需 Human Review 与后续实现验证。
+- 阀门行业资料包已定位并完成首轮 Source Package Reality Audit，但 DWG 仅完成 metadata 级识别，尚不能结构化解析尺寸；Legacy DOC 虽可由 `textutil` 转为文本，但生产级表格/行/单元格 provenance 仍需正式 conversion/parser；任何报价、产品匹配、图纸尺寸和最终技术响应仍需 Human Review 与后续实现验证。新增 Reference Template 候选实现后，最大风险转为“参考数据污染新项目真值”，必须由 `REFERENCE_VALUE_CANNOT_SATISFY_REQUIRED_PROJECT_FIELD` 与 Reference Residual Scanner 持续防护。
 
 # 下一步
 
-审批 `Valve Tender Structured Extraction Slice`，以真实 DOCX 采购文件为 first implementation input，先实现 source-backed TenderProject / TenderDocument / ValveRequirementItem / TenderRule / QuoteRule / TechnicalRequirement / Evidence-Provenance / Conflict / Human Review flags 抽取闭环。
+执行 `Valve Reference Tender Template Foundation Final Review`，确认参考层模型、安全边界、REFERENCE_ONLY 不变量、残留扫描、测试证据和 Git 隔离均可进入正式候选提交。
