@@ -23,6 +23,10 @@ logs/*.log
 logs/ai-*
 ai-cache/
 *.cache.json
+docs/source/valve/*.zip
+docs/source/valve/extracted/
+docs/source/valve/private/
+docs/source/valve/tmp/
 BUG_REPORT.md
 TEST_REPORT.md
 dist/
