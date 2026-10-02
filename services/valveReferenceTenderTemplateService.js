@@ -138,6 +138,21 @@ function createReferenceTenderDocument({
   };
 }
 
+function createReferenceProvenance({ referenceDocument, sourceLocator, extractionMethod }) {
+  if (!referenceDocument?.reference_document_id || !referenceDocument?.source_hash) {
+    throw new Error('referenceDocument.reference_document_id and referenceDocument.source_hash are required');
+  }
+  if (!sourceLocator || !extractionMethod) {
+    throw new Error('sourceLocator and extractionMethod are required');
+  }
+  return {
+    source_document_id: referenceDocument.reference_document_id,
+    source_hash: referenceDocument.source_hash,
+    source_locator: sourceLocator,
+    extraction_method: extractionMethod,
+  };
+}
+
 function createTemplateField({
   fieldId,
   semanticKey,
@@ -212,6 +227,37 @@ function createTemplateTable({
     row_semantics: rowSemantics,
     repeatable: Boolean(repeatable),
     source_ref: sourceRef || null,
+  };
+}
+
+function createReferenceTenderTemplate({
+  referencePackage,
+  referenceDocuments = [],
+  templateId,
+  templateName = 'Valve tender reference template',
+  sections = [],
+  tables = [],
+  fields = [],
+  referenceValues = [],
+  ruleCandidates = [],
+  status = 'REFERENCE_TEMPLATE_CANDIDATE',
+}) {
+  if (!referencePackage?.reference_package_id) {
+    throw new Error('referencePackage.reference_package_id is required');
+  }
+  const resolvedTemplateId = templateId || `tmpl_${referencePackage.reference_package_id}`;
+  return {
+    template_id: resolvedTemplateId,
+    template_name: templateName,
+    status,
+    confidentiality: CONFIDENTIALITY.CONFIDENTIAL,
+    enterprise_id: referencePackage.enterprise_id || null,
+    source_refs: referenceDocuments.map((document) => document.source_ref).filter(Boolean),
+    section_candidates: sections,
+    table_candidates: tables,
+    field_candidates: fields,
+    reference_value_candidates: referenceValues,
+    rule_candidates: ruleCandidates,
   };
 }
 
@@ -463,9 +509,11 @@ module.exports = {
   DEFAULT_NEVER_INHERIT_KEYS,
   createReferenceTenderPackage,
   createReferenceTenderDocument,
+  createReferenceProvenance,
   createTemplateField,
   createTemplateSection,
   createTemplateTable,
+  createReferenceTenderTemplate,
   createReferenceValue,
   buildValveReferenceTemplate,
   validateProjectFieldValue,

@@ -11,7 +11,7 @@ quotation logic, and does not start W2.3.
 | Field | Value |
 | --- | --- |
 | Filename | `江苏招标文件(1).zip` |
-| Original user path | `PRIVATE_REFERENCE_SOURCE` |
+| Original user path | `<PRIVATE_LOCAL_PATH>` (not retained in the repository) |
 | Actual audited copy | `docs/source/valve/江苏招标文件(1).zip` |
 | Size | 9,756,940 bytes |
 | SHA-256 | `96c8295c021fcedb8bb39c7cf082bd1bb34757e6d8c084e4917e4916a2181780` |
