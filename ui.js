@@ -77,6 +77,7 @@ const MODULES = [
   { id: 'contract', name: '合同助手', icon: 'fileText', group: '企业办公' },
   { id: 'quotation', name: '报价助手', icon: 'chart', group: '企业办公' },
   { id: 'inquiries', name: '询盘管理', icon: 'message', group: '企业办公' },
+  { id: 'valve-tender', name: '阀门招投标工作台', icon: 'shield', group: '企业办公' },
   { id: 'purchase', name: '采购助手', icon: 'folder', group: '企业办公' },
   { id: 'sales', name: '销售助手', icon: 'chart', group: '企业办公' },
   { id: 'productionplan', name: '生产计划助手', icon: 'clock', group: '企业办公' },
@@ -168,10 +169,10 @@ const moduleById = id => MODULES.find(item => item.id === id) || MODULES[0];
 
 // 用户模式只展示客户到报价的日常路径；所有既有功能仍保留在实验室模式，
 // 不改变其权限、审批、审计或数据处理规则。
-const CORE_MODULE_IDS = Object.freeze(['home', 'crm', 'project', 'inquiries', 'quotation', 'ocr', 'worklog', 'operationlog', 'monitoring', 'realityos']);
+const CORE_MODULE_IDS = Object.freeze(['home', 'crm', 'project', 'inquiries', 'valve-tender', 'quotation', 'ocr', 'worklog', 'operationlog', 'monitoring', 'realityos']);
 const CORE_NAVIGATION = Object.freeze([
   ['核心工作台', ['home']],
-  ['客户与报价', ['crm', 'project', 'inquiries', 'quotation']],
+  ['客户与报价', ['crm', 'project', 'inquiries', 'valve-tender', 'quotation']],
   ['协同与保障', ['ocr', 'worklog', 'operationlog', 'monitoring', 'realityos']]
 ]);
 const isCoreModule = id => CORE_MODULE_IDS.includes(id);
@@ -319,7 +320,40 @@ const UI = {
     return `<div class="page-enter">${labNotice}${reusablePanel}${view.call(this, route)}</div>`;
   },
   login() {
-    return `<div class="workbench equal" style="min-height:calc(100vh - 140px);align-items:center"><section class="panel"><div class="panel-head"><div><h3>登录 Personal AI OS</h3></div><span class="status-pill">企业 AI 工作系统</span></div><div class="panel-body"><div class="field"><label>企业名称（注册时填写）</label><input class="input" id="accountEnterpriseName" placeholder="Personal AI OS Demo Enterprise"></div><div class="field"><label>姓名</label><input class="input" id="accountName" placeholder="企业管理员"></div><div class="field"><label>邮箱</label><input class="input" id="accountEmail" placeholder="admin@personal-ai-os.local"></div><div class="field"><label>角色</label><select class="select" id="accountRole"><option>企业管理员</option><option>计划员</option><option>仓库</option><option>采购</option><option>销售</option><option>普通员工</option></select></div><div class="field-row"><div class="field"><label>密码</label><input class="input" id="accountPassword" type="password" placeholder="输入密码"></div><div class="field"><label>确认密码（注册时可填）</label><input class="input" id="accountNextPassword" type="password" placeholder="可选"></div></div><div class="button-row"><button class="primary-btn" data-action="auth-login">${icon('check')}登录</button><button class="secondary-btn" data-action="auth-register">${icon('plus')}注册企业</button></div><div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>默认演示账号：admin@personal-ai-os.local / 123456。GitHub Pages 打开时会使用本地演示登录；本地开发或服务端环境可继续使用后端登录。</span></div></div></section><section class="panel"><div class="panel-head"><div><h3>系统入口说明</h3></div></div><div class="panel-body">${this.result('登录后可进入：首页仪表盘、Excel 上传中心、订单中心、库存中心、生产计划中心、异常预警中心、Agentic RL 学习中心、AI 邮件中心、系统设置页。', '请输入账号后进入系统', true)}</div></section></div>`;
+    const registering = App.temp?.authMode === 'register';
+    const backendBlocked = RuntimeConfig.PUBLIC_REAL_API_REQUIRED && RuntimeConfig.BACKEND_NOT_CONFIGURED;
+    const backendActionDisabled = backendBlocked ? 'disabled aria-disabled="true"' : '';
+    const backendGate = backendBlocked
+      ? `<div class="workflow-next"><span>${icon('shield')}</span><div><b>BACKEND_NOT_CONFIGURED</b><small>公网 RealityOS 尚未绑定经过批准的 HTTPS 后端，登录与企业注册已安全停止。</small></div></div>`
+      : '';
+    const form = registering
+      ? `<div class="auth-form-fields"><div class="field"><label>企业名称</label><input class="input" id="accountEnterpriseName" autocomplete="organization" placeholder="请输入企业名称"></div><div class="field"><label>姓名</label><input class="input" id="accountName" autocomplete="name" placeholder="请输入姓名"></div><div class="field"><label>企业邮箱</label><input class="input" id="accountEmail" type="email" autocomplete="email" placeholder="企业邮箱"></div><div class="field"><label>密码</label><input class="input" id="accountPassword" type="password" autocomplete="new-password" placeholder="请设置密码"></div><div class="field"><label>确认密码</label><input class="input" id="accountNextPassword" type="password" autocomplete="new-password" placeholder="请再次输入密码"></div></div><div class="button-row auth-button-row"><button class="primary-btn" data-action="auth-register" ${backendActionDisabled}>${icon('plus')}创建企业</button><button class="ghost-btn" data-action="auth-show-login">返回登录</button></div><p class="auth-footnote">创建企业会按现有服务端注册契约建立企业与首个管理员账号；角色不由登录页选择。</p>`
+      : `<div class="auth-form-fields"><div class="field"><label>企业邮箱</label><input class="input" id="accountEmail" type="email" autocomplete="email" placeholder="企业邮箱"></div><div class="field"><label>密码</label><input class="input" id="accountPassword" type="password" autocomplete="current-password" placeholder="请输入密码"></div></div><div class="button-row auth-button-row"><button class="primary-btn" data-action="auth-login" ${backendActionDisabled}>${icon('check')}登录</button><button class="ghost-btn" data-action="auth-show-register">创建企业</button></div><p class="auth-footnote">登录凭据由你的企业管理员或企业注册流程提供。登录后进入 RealityOS 首页。</p>`;
+    return `<div class="auth-shell"><section class="auth-intro"><div class="auth-mark">R</div><p class="eyebrow">AI Enterprise Operating System</p><h2>RealityOS</h2><p>AI 企业智能运行操作系统</p><p>让 AI 在权限、证据、验证与人工控制下参与企业真实运行。</p><small>认证、企业边界与角色由现有服务端契约决定。</small></section><section class="panel auth-card"><div class="panel-head"><div><h3>${registering ? '创建企业' : '登录 RealityOS'}</h3><small>${registering ? '企业注册' : '企业账户登录'}</small></div><span class="status-pill">${registering ? 'REGISTER' : 'LOGIN'}</span></div><div class="panel-body">${backendGate}${form}</div></section></div>`;
+  },
+  realityosHomeSurface() {
+    const capabilityRows = [
+      ['RealityOS Kernel', 'REFERENCE / VERIFIED AT CURRENT LEVEL'],
+      ['Evidence / Verification durable linkage', 'VERIFIED'],
+      ['Governed Dashboard observation path', 'VERIFIED'],
+      ['Valve template foundation', 'VERIFIED'],
+      ['Valve DOCX parser', 'VERIFIED'],
+      ['Reference data isolation', 'VERIFIED'],
+      ['Provenance', 'VERIFIED'],
+      ['Valve governed runtime', 'INTEGRATING'],
+      ['Product matching / quotation / sample drawing', 'NOT_IMPLEMENTED'],
+      ['DWG structured extraction', 'NOT_VERIFIED'],
+    ];
+    const statusClass = status => status.includes('VERIFIED') && !status.includes('NOT_') ? 'success' : status === 'INTEGRATING' ? 'warning' : '';
+    return `<section class="realityos-home-hero" aria-labelledby="realityos-home-title">
+      <div class="realityos-home-copy"><p class="eyebrow">AI Enterprise Operating System</p><h2 id="realityos-home-title">RealityOS · AI 企业智能运行操作系统</h2><p>让 AI 在身份、权限、效果、证据、验证与人工控制之下参与企业工作，而不是只生成一次性答案。</p><div class="realityos-home-actions"><button class="primary-btn" data-route="valve-tender">${icon('shield')}查看真实工作台</button><button class="secondary-btn" data-action="home-realityos-scroll">${icon('arrowDown')}查看执行与证据链</button></div></div>
+      <div class="realityos-home-proof"><span class="status-pill warning">TRUTH-ONLY SURFACE</span><b>当前首页不展示模拟运行、虚构成功或固定能力数量。</b><small>状态来自已提交的治理基线与当前真实产品接入边界；缺少运行事实时明确显示未接入或不可用。</small></div>
+    </section>
+    <section id="realityos-core" class="panel realityos-home-panel"><div class="panel-head"><div><h3>受治理的执行链</h3><small>执行完成不等于现实已经被证明。</small></div><span class="status-pill">READ-ONLY</span></div><div class="panel-body"><ol class="realityos-chain">${['目标', '身份', '权限', '执行', '现实回读', '证据', '验证', '结果', '恢复'].map((stage, index) => `<li><span>${index + 1}</span><b>${stage}</b></li>`).join('')}</ol><div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>当 Effect = UNKNOWN 或 Verification = PENDING 时，系统应保留真实状态并阻止未经验证的重试；不会把它伪装成成功或失败。</span></div></div></section>
+    <div class="home-grid realityos-home-grid"><section class="panel realityos-home-panel"><div class="panel-head"><div><h3>智能基础</h3><small>模型输出是候选证据，不是权限或最终结论。</small></div><span class="status-pill warning">CONSTRAINT FIRST</span></div><div class="panel-body"><div class="realityos-foundation-grid"><div><b>Discovery</b><small>LLM 用于候选发现。</small></div><div><b>Constraint</b><small>Ontology 与业务约束限制可接受结果。</small></div><div><b>Memory</b><small>Knowledge Graph 保存企业关系。</small></div><div><b>Proof</b><small>Provenance、Evidence 与 Verification 支撑结论。</small></div></div><p class="realityos-home-note">置信度不能替代策略、授权、现实回读或人工审批。</p></div></section>
+      <section class="panel realityos-home-panel"><div class="panel-head"><div><h3>数据主权与控制边界</h3><small>仅展示当前已经有对应实现或明确边界的事实。</small></div></div><div class="panel-body"><div class="realityos-foundation-grid"><div><b>Enterprise isolation</b><small>当前产品 API 已按企业范围读取。</small></div><div><b>Least privilege</b><small>受治理工作台要求当前管理员角色。</small></div><div><b>Local / private source</b><small>阀门参考源位于本地私有、Git ignored 运行位置。</small></div><div><b>Human review</b><small>参考数据不可自动成为客户项目、报价或技术结论。</small></div></div><p class="realityos-home-note">AI Gateway、最小化外发、审计与证据验证遵循现有实现边界；未证明的生产能力不在此处声称完成。</p></div></section></div>
+    <section class="panel realityos-home-panel"><div class="panel-head"><div><h3>阀门行业工作空间</h3><small>真实参考模板能力与当前 Runtime 接入状态。</small></div><button class="secondary-btn compact" data-route="valve-tender">打开工作台</button></div><div class="panel-body"><div class="realityos-capability-grid">${capabilityRows.map(([name, status]) => `<div><b>${Utils.escape(name)}</b><span class="status-pill ${statusClass(status)}">${Utils.escape(status)}</span></div>`).join('')}</div><div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>参考源：REFERENCE_ONLY；Raw source Git：NO；External AI parser：0。阀门工作台尚未完成 durable Run / Evidence / Verification 链路，因此不能显示为 Runtime VERIFIED。</span></div></div></section>
+    <section class="panel realityos-home-panel"><div class="panel-head"><div><h3>现实、证据与恢复</h3><small>Control Plane 只读取 canonical runtime/store 的真实记录。</small></div><span class="status-pill">NO_GOVERNED_RUNS_YET / AS AVAILABLE</span></div><div class="panel-body"><div class="realityos-foundation-grid"><div><b>Reality Readback</b><small>确认实际发生了什么。</small></div><div><b>Evidence & Audit</b><small>保留来源、引用与完整性信息。</small></div><div><b>Verification</b><small>执行成功不等于验证成功。</small></div><div><b>Recovery</b><small>不确定结果先读回；自动重试仍未就绪。</small></div></div><div class="button-row"><button class="secondary-btn" data-route="realityos">${icon('shield')}打开 RealityOS Control Plane</button></div></div></section>`;
   },
   home() {
     const state = App.temp.manufacturing || ManufacturingWorkspace.emptyState();
@@ -339,7 +373,9 @@ const UI = {
       : attention.length
         ? `<div class="kb-list">${attention.map(item => `<article class="kb-item"><span>${icon('shield')}</span><div><b>${Utils.escape(item.rfq_no || 'RFQ')} · ${Utils.escape(item.product_name || '待补充产品')}</b><p>${Utils.escape((item.assessment?.blockers || []).map(blocker => blocker.message).join('；') || '请查看评审详情')}</p><small>${Utils.escape(item.customer_name || '未关联客户')}</small></div><button class="secondary-btn compact" data-route="inquiries">处理</button></article>`).join('')}</div>`
         : this.coreEmptyState({ iconName: 'check', title: '暂无待处理阻断项', description: '创建或提交 RFQ 后，缺失项、风险和审批阻断会在这里集中提示。', actionLabel: '查看 RFQ', actionRoute: 'inquiries' });
-    return `${this.pageHead('核心业务工作台', '围绕客户、项目、RFQ 评审和报价的日常闭环。进度、风险和审批结果均以后端确定性规则为准。', `<button class="secondary-btn" data-action="manufacturing-refresh">${icon('refresh')}${loading ? '同步中…' : '刷新业务数据'}</button><button class="primary-btn" data-route="inquiries">${icon('plus')}新建 RFQ</button>`)}
+    return `${this.pageHead('RealityOS · 企业智能运行操作系统', '真实能力、业务状态与治理边界优先；企业工作能力位于下方。', `<button class="secondary-btn" data-action="manufacturing-refresh">${icon('refresh')}${loading ? '同步中…' : '刷新企业业务数据'}</button><button class="primary-btn" data-route="valve-tender">${icon('shield')}查看真实工作台</button>`)}
+      ${this.realityosHomeSurface()}
+      <section class="enterprise-capability-layer"><div><p class="eyebrow">Enterprise Capability Layer</p><h2>企业能力层</h2><p>客户、项目、RFQ 与报价保留既有真实业务读取与规则边界；以下统计来自当前业务数据，不是 RealityOS 运行指标。</p></div></section>
       ${this.businessSyncNote(state.mode === 'fallback' ? 'fallback' : '')}
       <section class="core-journey"><div class="core-journey-copy"><p class="eyebrow">核心路径</p><h2>客户 → 项目 → RFQ → 人工评审 → 报价</h2><p>默认只显示可形成真实业务闭环的页面。其余原有功能仍在实验室模式保留，并会清晰标注演示或试验边界。</p></div><div class="core-journey-actions"><button class="secondary-btn" data-route="crm">${icon('book')}客户</button><button class="secondary-btn" data-route="project">${icon('folder')}项目</button><button class="secondary-btn" data-route="inquiries">${icon('message')}RFQ</button><button class="primary-btn" data-route="quotation">${icon('chart')}报价</button></div></section>
       <section class="stat-grid core-stat-grid"><article class="panel stat-card"><span class="stat-icon">${icon('book')}</span><span class="stat-copy"><span>客户档案</span><strong>${customers.length}</strong><small>企业持久化客户</small></span></article><article class="panel stat-card"><span class="stat-icon blue">${icon('folder')}</span><span class="stat-copy"><span>项目档案</span><strong>${projects.length}</strong><small>关联客户与 RFQ</small></span></article><article class="panel stat-card"><span class="stat-icon amber">${icon('message')}</span><span class="stat-copy"><span>进行中 RFQ</span><strong>${activeRfqs.length}</strong><small>待评审、可报价或报价中</small></span></article><article class="panel stat-card"><span class="stat-icon green">${icon('check')}</span><span class="stat-copy"><span>可转报价</span><strong>${quoteReady}</strong><small>已满足当前评审条件</small></span></article></section>
@@ -938,6 +974,20 @@ const UI = {
       <section class="panel"><div class="panel-head"><div><h3>Recent Governed Runs</h3></div><span class="badge">${runs.length}</span></div><div class="panel-body">${runsTable}${runs.length ? `<div class="button-row">${runs.slice(0, 8).map(run => `<button class="${selected === run.run_id ? 'primary-btn' : 'secondary-btn'} compact" data-action="realityos-run-select" data-id="${Utils.escape(run.run_id)}">${Utils.escape(run.run_id)}</button>`).join('')}</div>` : ''}</div></section>
       ${detailPanel}
       <section class="panel"><div class="panel-head"><div><h3>First Real Read-only Path</h3></div><span class="status-pill warning">${Utils.escape(model.first_read_only_path?.status || 'BLOCKED')}</span></div><div class="panel-body">${this.result(model.first_read_only_path?.reason || 'No governed read-only product path has been integrated yet.', 'FIRST_REAL_READ_ONLY_PATH', true)}</div></section>`;
+  },
+  valveTender() {
+    const model = App.temp.valveTenderWorkbench || { loading: true };
+    const summary = model.parse_summary || {};
+    const rows = (title, headers, items) => `<section class="panel"><div class="panel-head"><div><h3>${title}</h3></div></div><div class="panel-body">${items?.length ? `<div class="table-wrap"><table class="data-table"><thead><tr>${headers.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${items.map(row => `<tr>${row.map(value => `<td>${Utils.escape(String(value ?? 'NOT_AVAILABLE'))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<div class="empty-state">NO_REFERENCE_DATA</div>'}</div></section>`;
+    if (model.loading) return `${this.pageHead('阀门招投标工作台', '读取真实参考模板，不使用演示数据。')}<section class="panel"><div class="panel-body"><div class="empty-state">正在读取真实参考模板…</div></div></section>`;
+    if (model.error || model.workspace_status !== 'READY') return `${this.pageHead('阀门招投标工作台', '只读参考模板工作台。')}<section class="panel"><div class="panel-body"><div class="empty-state">${Utils.escape(model.error || model.workspace_status || 'REFERENCE_SOURCE_UNAVAILABLE')}</div><div class="privacy-note">${icon('shield')}<span>未配置或不可验证的参考源不会回退到演示模板。</span></div></div></section>`;
+    return `${this.pageHead('阀门招投标工作台', '真实参考结构仅供人工审核；不会带入新项目或报价。', `<button class="secondary-btn" data-action="valve-tender-refresh">${icon('refresh')}刷新</button>`)}
+      <section class="panel"><div class="panel-head"><div><h3>${Utils.escape(model.reference_template?.template_name || 'REFERENCE TEMPLATE')}</h3><small>${Utils.escape(model.reference_template?.safe_source_filename || 'NOT_AVAILABLE')} · ${Utils.escape(model.reference_template?.source_hash_fingerprint || 'NOT_AVAILABLE')}</small></div><span class="status-pill warning">${Utils.escape(model.reference_template?.truth_scope || 'REFERENCE_ONLY')}</span></div><div class="panel-body"><div class="address-grid"><div class="address-card"><b>企业机密</b><small>${Utils.escape(model.reference_template?.confidentiality || 'CONFIDENTIAL')}</small></div><div class="address-card"><b>解析状态</b><small>${Utils.escape(model.reference_template?.parser_status || 'NOT_AVAILABLE')}</small></div><div class="address-card"><b>段落</b><small>${summary.paragraph_count ?? 0}</small></div><div class="address-card"><b>表格 / 行 / 合并表</b><small>${summary.table_count ?? 0} / ${summary.row_count ?? 0} / ${summary.merged_table_count ?? 0}</small></div></div><div class="privacy-note" style="margin-top:12px">${icon('shield')}<span>仅参考，不会带入新项目；Reference Auto-Inheritance: BLOCKED。</span></div></div></section>
+      ${rows('文档结构', ['heading','level','truth','locator'], (model.sections || []).map(x => [x.heading,x.level,x.truth_status,x.source_locator]))}
+      ${rows('表格结构', ['table','rows','columns','merged','locator'], (model.tables || []).map(x => [x.table_index,x.row_count,(x.column_schema || []).join(' / '),x.merged,x.source_locator]))}
+      ${rows('字段与继承策略', ['label','semantic key','policy','truth','locator'], (model.fields || []).map(x => [x.label,x.semantic_key,x.inheritance_policy,x.truth_status,x.source_locator]))}
+      ${rows('规则与来源证据', ['rule','scope','status','locator'], (model.rules || []).map(x => [x.rule_type,x.truth_scope,x.status,x.source_locator]))}
+      ${rows('当前能力', ['capability','status'], Object.entries(model.capability_status || {}))}`;
   },
   monitoring() {
     const globalState = window.GlobalSystemState && typeof window.GlobalSystemState === 'object' ? window.GlobalSystemState : {};

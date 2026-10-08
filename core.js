@@ -814,6 +814,12 @@ const APIClient = {
     return '';
   },
   async request(path, options = {}, meta = {}) {
+    if (RuntimeConfig.PUBLIC_REAL_API_REQUIRED && RuntimeConfig.BACKEND_NOT_CONFIGURED) {
+      const configurationError = new Error('BACKEND_NOT_CONFIGURED：公网 RealityOS 尚未配置 HTTPS 后端。');
+      configurationError.code = 'BACKEND_NOT_CONFIGURED';
+      configurationError.failureType = 'CONFIGURATION_ERROR';
+      throw configurationError;
+    }
     const headers = {
       'Content-Type': 'application/json',
       ...(options.headers || {})

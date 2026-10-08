@@ -151,6 +151,11 @@ const App = {
     if (!Store.state.chats.length) this.createChat(false);
     // 先绑定交互事件，避免状态同步较慢时聊天提交被丢失。
     this.bindGlobalEvents();
+    if (RuntimeConfig.PUBLIC_REAL_API_REQUIRED && RuntimeConfig.BACKEND_NOT_CONFIGURED) {
+      // A public-real surface cannot treat an unverifiable persisted browser
+      // session as authenticated when its canonical HTTPS backend is absent.
+      AuthClient.clear();
+    }
     const startupSession = StartupReliability.reconcileSession(AuthClient.session, {
       staticDemo: StartupReliability.isStaticDemoEnvironment(RuntimeConfig, Utils.isGitHubPagesHost())
     });
@@ -230,9 +235,9 @@ const App = {
     const workspaceMode = this.getWorkspaceMode();
     const renderModule = module => `<button class="nav-link" data-route="${module.id}">${icon(module.icon)}<span>${module.name}</span>${module.id === 'chat' ? `<span class="nav-count">${Store.state.chats.length}</span>` : ''}${workspaceMode === 'lab' && !isCoreModule(module.id) ? '<span class="nav-count lab">实验</span>' : ''}</button>`;
     if (workspaceMode === 'user') {
-      nav.innerHTML = CORE_NAVIGATION.map(([group, ids]) => `<span class="nav-group-label">${group}</span>${ids.map(id => moduleById(id)).map(renderModule).join('')}`).join('');
+      nav.innerHTML = CORE_NAVIGATION.map(([group, ids]) => `<span class="nav-group-label">${group}</span>${this.visibleNavigationIds(ids).map(id => moduleById(id)).map(renderModule).join('')}`).join('');
     } else {
-      const visibleModules = MODULES.filter(item => !item.hidden);
+      const visibleModules = MODULES.filter(item => !item.hidden && (item.id !== 'realityos' || this.isRealityOSControlPlaneAdmin()));
       const coreModules = visibleModules.filter(item => isCoreModule(item.id));
       const labModules = visibleModules.filter(item => !isCoreModule(item.id));
       const groups = [...new Set(labModules.map(item => item.group))];
@@ -249,6 +254,15 @@ const App = {
     return Store.state?.settings?.workspaceMode === 'lab' ? 'lab' : 'user';
   },
 
+  isRealityOSControlPlaneAdmin() {
+    const role = String(AuthClient.session?.user?.role || '').toLowerCase();
+    return /admin|企业管理员|管理员/.test(role);
+  },
+
+  visibleNavigationIds(ids = []) {
+    return ids.filter(id => id !== 'realityos' || this.isRealityOSControlPlaneAdmin());
+  },
+
   toggleWorkspaceMode() {
     const nextMode = this.getWorkspaceMode() === 'lab' ? 'user' : 'lab';
     Store.state.settings.workspaceMode = nextMode;
@@ -261,8 +275,17 @@ const App = {
     const preserveScroll = options.preserveScroll === true;
     const previousScrollY = preserveScroll ? window.scrollY : 0;
     if (!AuthClient.isLoggedIn() && route !== 'login') route = 'login';
+    if (['realityos', 'valve-tender'].includes(route) && !this.isRealityOSControlPlaneAdmin()) {
+      route = 'home';
+      this.toast('该受治理工作台仅企业管理员可见。', 'warning');
+    }
     this.route = moduleById(route).id;
+    document.body.classList.toggle('auth-route', this.route === 'login');
     if (this.route === 'ocr' && !this.temp.ocr.providerResult) this.restoreOcrSession();
+    if (this.route === 'valve-tender' && !this.temp.valveTenderWorkbench?.loaded) {
+      this.temp.valveTenderWorkbench = { loading: true };
+      setTimeout(() => this.refreshValveTenderWorkbench(), 0);
+    }
     if (updateHash) history.replaceState(null, '', `#/${this.route}`);
     document.getElementById('topTitle').textContent = moduleById(this.route).name;
     document.getElementById('workspace').innerHTML = UI.render(this.route);
@@ -1208,6 +1231,8 @@ const App = {
       'ocr-provider-refresh': () => this.ocrRefreshProviders(),
       'runtime-observability-refresh': () => this.refreshRuntimeObservability(),
       'realityos-refresh': () => this.refreshRealityOSControlPlane(),
+      'valve-tender-refresh': () => this.refreshValveTenderWorkbench(),
+      'home-realityos-scroll': () => document.getElementById('realityos-core')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
       'realityos-run-select': () => this.selectRealityOSRun(el.dataset.id),
       'ocr-diagnostics-copy': () => this.ocrCopyDiagnostics(),
       'ocr-transfer-quotation': () => this.ocrTransferQuotation(),
@@ -1435,6 +1460,8 @@ const App = {
       'integration-select': () => { this.temp.integrationSelectedId = el.dataset.id; this.rerender(); },
       'auth-login': () => this.authLogin(),
       'auth-register': () => this.authRegister(),
+      'auth-show-register': () => { this.temp.authMode = 'register'; this.rerender(); },
+      'auth-show-login': () => { this.temp.authMode = 'login'; this.rerender(); },
       'auth-logout': () => this.authLogout(),
       'auth-change-password': () => this.authChangePassword(),
       'auth-save-enterprise': () => this.authSaveEnterprise(),
@@ -6130,6 +6157,21 @@ const App = {
       this.temp.realityosRunDetail = null;
       this.rerender();
     }
+  },
+
+  async refreshValveTenderWorkbench() {
+    this.temp.valveTenderWorkbench = { loading: true };
+    this.rerender();
+    try {
+      const response = await APIClient.request('/api/valve/reference-workbench', {}, { timeout: 30000 });
+      this.temp.valveTenderWorkbench = { ...(response?.data || { workspace_status: 'NO_REFERENCE_DATA' }), loaded: true, loading: false };
+    } catch (error) {
+      this.temp.valveTenderWorkbench = {
+        workspace_status: error?.httpStatus === 403 ? 'ACCESS_DENIED' : 'REFERENCE_SOURCE_UNAVAILABLE',
+        error: Utils.friendlyErrorMessage(error?.message || error), loaded: true, loading: false,
+      };
+    }
+    this.rerender();
   },
 
   async selectRealityOSRun(runId, options = {}) {
