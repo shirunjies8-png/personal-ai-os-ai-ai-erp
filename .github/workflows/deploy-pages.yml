@@ -45,7 +45,11 @@ jobs:
           test -f dist/rfq-store.js
           test -f dist/rfq-validation.js
           test -f dist/rfq-risk.js
-          grep -q "Industrial AI OS · v1.4 RFQ Demo" dist/index.html
+          grep -Fq "RealityOS" dist/index.html
+          if grep -Fq "Industrial AI OS · v1.4 RFQ Demo" dist/index.html; then
+            echo "Stale RFQ Demo product identity detected"
+            exit 1
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
