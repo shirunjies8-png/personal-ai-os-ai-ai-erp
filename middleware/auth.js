@@ -1,6 +1,7 @@
 const { verifyToken } = require('../utils/jwt');
 const userModel = require('../models/userModel');
 const { fail } = require('../utils/response');
+const policy = require('../services/securityPolicyService');
 
 function authRequired(req, res, next) {
   const header = req.headers.authorization || '';
@@ -30,7 +31,17 @@ function optionalAuth(req, _res, next) {
   next();
 }
 
+function adminRequired(req, res, next) {
+  try {
+    policy.requireRole(req.user?.role, 'admin');
+    return next();
+  } catch (error) {
+    return fail(res, error.status || 403, error.message || '权限不足', error.code || 'FORBIDDEN');
+  }
+}
+
 module.exports = {
   authRequired,
-  optionalAuth
+  optionalAuth,
+  adminRequired
 };

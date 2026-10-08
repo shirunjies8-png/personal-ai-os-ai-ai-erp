@@ -6,16 +6,14 @@ const cors = require('cors');
 const morgan = require('morgan');
 
 const env = require('./config/env');
+const deploymentReadiness = require('./services/deploymentReadinessService');
+deploymentReadiness.validateProductionEnvironment(env);
 require('./database/init');
 const apiRoutes = require('./routes');
 const errorHandler = require('./middleware/errorHandler');
 
 const app = express();
 const publicDir = path.join(process.cwd(), 'public');
-
-if (env.nodeEnv === 'production' && (env.jwtSecret === 'change-me' || String(env.jwtSecret).length < 32)) {
-  throw new Error('Production requires a strong JWT_SECRET configured only in the deployment environment.');
-}
 
 const deepseekStatus = env.deepseekApiKey
   ? `DeepSeek 网关已配置 | Model: ${env.deepseekModel}`

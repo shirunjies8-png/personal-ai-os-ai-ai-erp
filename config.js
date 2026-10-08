@@ -26,11 +26,13 @@
   const runtimeApiBase = typeof window !== 'undefined' && isSafeApiBase(window.PERSONAL_AI_OS_API_BASE_URL)
     ? normalizeApiBase(window.PERSONAL_AI_OS_API_BASE_URL)
     : '';
+  const publicRealApiRequired = Boolean(typeof window !== 'undefined' && window.PERSONAL_AI_OS_PUBLIC_REAL_MODE === true && isGithubPages);
+  const backendNotConfigured = publicRealApiRequired && !runtimeApiBase;
 
-  // Pages is a static demonstration surface by default. It must not turn a
-  // normal open into a known-unavailable backend probe. A deliberately
+  // Pages is a static demonstration surface by default.  It must not turn a
+  // normal open into a known-unavailable backend probe.  A deliberately
   // supplied runtime URL remains the explicit opt-in for a hosted gateway.
-  const staticDemoOnly = isGithubPages && !runtimeApiBase;
+  const staticDemoOnly = isGithubPages && !runtimeApiBase && !publicRealApiRequired;
 
   const apiBaseUrl =
     (isGithubPages ? runtimeApiBase : (safeStoredApiBase || runtimeApiBase)) ||
@@ -39,6 +41,8 @@
 
   window.PERSONAL_AI_OS_CONFIG = {
     API_BASE_URL: apiBaseUrl,
+    PUBLIC_REAL_API_REQUIRED: publicRealApiRequired,
+    BACKEND_NOT_CONFIGURED: backendNotConfigured,
     DEMO_LOGIN_ENABLED: true,
     DEMO_LOGIN_ONLY: window.location.protocol === 'file:' || staticDemoOnly,
     STATIC_DEMO_ONLY: staticDemoOnly,

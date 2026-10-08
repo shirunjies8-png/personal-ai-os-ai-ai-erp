@@ -21,6 +21,7 @@ const transactionSafetyRoutes = require('./transactionSafetyRoutes');
 const auditRecoveryRoutes = require('./auditRecoveryRoutes');
 const ocrRoutes = require('./ocrRoutes');
 const realityosControlPlaneRoutes = require('./realityosControlPlaneRoutes');
+const valveTenderWorkbenchRoutes = require('./valveTenderWorkbenchRoutes');
 const { authRequired } = require('../middleware/auth');
 const qualityService = require('../services/aiQualityCheckService');
 const env = require('../config/env');
@@ -29,6 +30,7 @@ const agentRuntimeService = require('../services/agentRuntimeService');
 const aiGateway = require('../services/aiGateway');
 const db = require('../database/client');
 const runtimeObservabilityService = require('../services/runtimeObservabilityService');
+const deploymentReadiness = require('../services/deploymentReadinessService');
 
 const router = express.Router();
 runtimeObservabilityService.registerDefaults({ deepseekConfigured: Boolean(env.deepseekApiKey) });
@@ -54,6 +56,7 @@ router.use('/transaction-safety', transactionSafetyRoutes);
 router.use('/audit-recovery', auditRecoveryRoutes);
 router.use('/ocr', ocrRoutes);
 router.use('/realityos/control-plane', realityosControlPlaneRoutes);
+router.use('/valve', valveTenderWorkbenchRoutes);
 
 function identityForAi(req) {
   return req.user ? { userId: req.user.id, enterpriseId: req.user.enterprise_id, role: req.user.role } : {};
@@ -94,6 +97,7 @@ router.post('/quality/export', requireAuthenticatedAi, async (req, res, next) =>
 
 router.get('/health', (_req, res) => {
   const aiStatus = aiGateway.getStatus();
+  const readiness = deploymentReadiness.runtimeReadiness(env, db);
   res.json({
     ok: true,
     service: 'personal-ai-os-api',
@@ -105,7 +109,8 @@ router.get('/health', (_req, res) => {
     model: aiStatus.model,
     deepseekConfigured: aiStatus.enabled,
     aiGateway: { mode: aiStatus.mode, healthy: aiStatus.healthy, budgetStatus: aiStatus.budgetStatus, circuit: aiStatus.circuit },
-    databaseOk: true,
+    databaseOk: readiness.database === 'ready',
+    readiness,
     toolRegistryOk: typeof toolRegistry.listTools === 'function',
     agentRuntimeOk: typeof agentRuntimeService.getMonitorStats === 'function'
   });

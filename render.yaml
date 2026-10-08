@@ -19,9 +19,23 @@ services:
         value: 3000
       - key: DB_PATH
         value: /var/data/ai-gateway.sqlite
+      - key: PERSISTENT_DATA_ROOT
+        value: /var/data
       - key: JWT_SECRET
         sync: false
       - key: DEFAULT_ADMIN_PASSWORD
+        sync: false
+      - key: DEFAULT_ADMIN_EMAIL
+        sync: false
+      - key: DEFAULT_ENTERPRISE_NAME
+        sync: false
+      - key: VALVE_REFERENCE_PRIVATE_ROOT
+        value: /var/data/valve/private
+      - key: VALVE_REFERENCE_DOCX_PATH
+        value: /var/data/valve/private/reference-template.docx
+      - key: VALVE_REFERENCE_DOCX_SHA256
+        sync: false
+      - key: VALVE_REFERENCE_ENTERPRISE_ID
         sync: false
       - key: CORS_ALLOWED_ORIGINS
         value: https://shirunjies8-png.github.io

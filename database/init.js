@@ -6,6 +6,7 @@ const { hashPassword } = require('../utils/password');
 const enterpriseModel = require('../models/enterpriseModel');
 const userModel = require('../models/userModel');
 const { runManufacturingPhase2Migrations } = require('./migrations/manufacturingPhase2');
+const deploymentReadiness = require('../services/deploymentReadinessService');
 
 fs.mkdirSync(env.uploadsDir, { recursive: true });
 fs.mkdirSync(env.logsDir, { recursive: true });
@@ -456,12 +457,7 @@ async function seed() {
   const now = new Date().toISOString();
   const existing = userModel.findByEmail(env.defaultAdminEmail);
   if (existing) {
-    enterpriseModel.updateById(existing.enterprise_id, {
-      name: env.defaultEnterpriseName,
-      contact_name: '系统管理员',
-      contact_phone: ''
-    });
-    userModel.updatePassword(existing.id, await hashPassword(env.defaultAdminPassword));
+    if (deploymentReadiness.isProduction(env)) return;
     db.prepare(`
       UPDATE users
       SET name = ?, role = ?, status = ?, department = ?, team = ?, updated_at = ?
@@ -469,6 +465,7 @@ async function seed() {
     `).run('企业管理员', '企业管理员', '启用', '管理部', '默认班组', now, existing.id);
     return;
   }
+  deploymentReadiness.validateProductionEnvironment(env);
   const enterpriseId = uuidv4();
   enterpriseModel.create({
     id: enterpriseId,

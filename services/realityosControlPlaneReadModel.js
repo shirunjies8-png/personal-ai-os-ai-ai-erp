@@ -163,7 +163,7 @@ function tableHealth(database) {
     recovery_cases: tableExists(database, 'realityos_recovery_cases') ? 'AVAILABLE' : 'NOT_AVAILABLE',
     database_path_present: Boolean(env.dbPath),
     database_file_present: Boolean(env.dbPath && fs.existsSync(env.dbPath)),
-    database_directory: env.dbPath ? path.dirname(env.dbPath) : 'NOT_AVAILABLE',
+    database_directory: env.dbPath ? 'REDACTED' : 'NOT_AVAILABLE',
   };
 }
 
